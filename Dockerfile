@@ -15,7 +15,7 @@ COPY start.sh /app/start.sh
 ARG HERMES_WEBUI_VERSION=unknown
 
 RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-webui/api/_version.py \
-    && uv pip install --system --no-cache -e /app/vendor/hermes-agent \
+    && uv pip install --system --no-cache -e "/app/vendor/hermes-agent[messaging]" \
     && uv pip install --system --no-cache -r /app/vendor/hermes-webui/requirements.txt \
     && uv pip install --system --no-cache -r /app/requirements-control-plane.txt \
     && chmod +x /app/start.sh \
