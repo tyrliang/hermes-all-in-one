@@ -289,35 +289,37 @@ This is Hermes' self-improvement loop — it literally rewrites its own procedur
 
 ## How the Skills System Works
 
-A **skill** is a Markdown file with a YAML frontmatter header. It lives in `~/.hermes/skills/` (on Railway: `/data/.hermes/skills/`). When Hermes sees a task that matches a skill's description, it loads that skill's instructions automatically.
+Skills are already running. Nothing to set up.
+
+Hermes ships with a full library of built-in skills covering research, GitHub, email, feeds, diagramming, social media, note-taking, productivity tools (Notion, Linear, Google Workspace), devops, data science, and more. Every time you start a conversation, Hermes scans its skills directory, builds an index of everything available, and injects it into its own system prompt. It knows what it can do before you say a word.
+
+When you ask it something that matches a skill — "review this PR", "summarize these papers", "draft a LinkedIn post" — it loads that skill's procedures automatically. You don't invoke it. It just picks up the right tool for the job.
+
+**A skill is a Markdown file.** Name, description, version, and a set of instructions the agent follows when it activates. That's it. The system is intentionally simple so you can read, edit, and write them yourself.
 
 ```
 /data/.hermes/skills/
-  my-skill/
-    SKILL.md       ← the skill definition
-    references/    ← optional supporting docs the skill can reference
+  github-code-review/
+    SKILL.md         ← instructions + frontmatter
+    references/      ← optional supporting docs
 ```
 
-Every skill has:
-- A `name` and `description` (used for auto-detection)
-- A `version` and `category`
-- Instructions the agent follows when the skill activates
+**Beyond the built-ins, there are two more layers:**
 
-**Three ways to get skills:**
-
-1. **From the Skills Hub** — `hermes skills browse` or visit [agentskills.io](https://agentskills.io). Community-built, curated, one command to install.
-
-2. **Ask Hermes to write one** — "Write a skill for X" and it creates the file. You review it, save it, done.
-
-3. **Write it yourself** — Create a `SKILL.md` in the right folder. It's just Markdown with frontmatter.
-
-**To activate, list, or manage skills:**
+**Optional skills** ship with Hermes but aren't active by default — niche integrations, heavier dependencies, things only some users need. Browse and install them in one command:
 ```
-/skills                          # list installed skills
-/skills install web-research     # install from hub
-/skills create                   # guided skill creation
-/<skill-name>                    # invoke a skill directly
+/skills                           # see everything active
+/skills install arxiv             # add from the optional library
+/skills install github-pr-workflow
 ```
+
+**Community skills** at [agentskills.io](https://agentskills.io) — an open standard anyone can publish to. Same install flow, same format:
+```
+/skills search "cold email"
+/skills install cold-email-outreach
+```
+
+And if none of that covers what you need, ask Hermes to write a skill from scratch. Describe the workflow once, tell it to save it as a skill, and it handles the file. Next time, it follows the procedure without you re-explaining anything.
 
 ---
 
