@@ -244,39 +244,11 @@ The gateway starts automatically. Send `/start` to your bot on Telegram — it s
 
 ## Your Agent's Identity — SOUL.md
 
-Every Hermes agent has a `SOUL.md` — a plain-text file that defines who the agent is: its name, personality, values, how it speaks, what it cares about.
+`SOUL.md` controls the agent's persistent persona and behavior — its name, how it speaks, what it cares about. In this template it lives at `/data/.hermes/SOUL.md` on the persistent volume.
 
-On Railway, it lives at `/data/.hermes/SOUL.md`.
+Edit it directly from the Hermes WebUI, then restart the gateway from `/admin` → Overview → **Restart** to apply changes.
 
-To edit it:
-
-```bash
-railway ssh
-nano /data/.hermes/SOUL.md
-```
-
-Example structure (adapt to your liking):
-
-```markdown
-# Atlas
-
-You are Atlas — a sharp, curious AI assistant deployed by [your name].
-
-## Personality
-- Direct and confident, but never arrogant
-- Uses concrete examples over abstract explanations
-- Remembers context across conversations
-
-## Values
-- Honesty over comfort
-- Precision over vagueness
-- Action over analysis paralysis
-
-## Speaking style
-Short paragraphs. No unnecessary filler. Asks clarifying questions when genuinely needed.
-```
-
-After editing, restart the gateway from `/admin` → Overview → **Restart**.
+For full formatting guidance, persona examples, and what `SOUL.md` can control, see the [Hermes Agent documentation](https://github.com/NousResearch/hermes-agent).
 
 ---
 
@@ -369,34 +341,9 @@ The control plane is a thin Starlette wrapper — not a framework, not a product
 
 ---
 
-## Updating Upstream Vendors
-
-Both `hermes-agent` and `hermes-webui` are vendored via `git subtree`. To pull upstream changes:
-
-```bash
-# Pull latest hermes-agent
-git subtree pull --prefix=vendor/hermes-agent https://github.com/NousResearch/hermes-agent main --squash
-
-# Pull latest hermes-webui
-git subtree pull --prefix=vendor/hermes-webui https://github.com/NousResearch/hermes-webui main --squash
-```
-
-Then rebuild and redeploy on Railway.
-
-> If an upstream change breaks something, check `docs/vendor-patches.md` for any local overrides that may need updating.
-
----
-
 ## Credits
 
-- **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** by NousResearch — the agent runtime
-- **[Hermes WebUI](https://github.com/NousResearch/hermes-webui)** by NousResearch — the browser chat interface
-- **[Railway](https://railway.com)** — the deployment platform
+This repository is a Railway deployment wrapper. All agent and WebUI logic lives upstream:
 
-This template is a deployment wrapper. All agent and WebUI logic lives upstream.
-
----
-
-<p align="center">
-  <sub>Built for Railway · Powered by NousResearch Hermes · One container to rule them all</sub>
-</p>
+- **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** — agent runtime by NousResearch
+- **[Hermes WebUI](https://github.com/NousResearch/hermes-webui)** — browser chat interface by NousResearch
