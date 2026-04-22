@@ -1,9 +1,9 @@
 <img src="assets/banner.svg" width="900" alt="Hermes All-in-One · Railway Template">
 
-# Hermes All-in-One · Railway Template
+# Hermes All-in-One | WebUI + Admin Panel + Gateway — No Terminal Setup
 
-> **One container. One volume. One Hermes identity.**
-> Deploy a production-grade AI agent to Railway in minutes — chat on Telegram, browse the web UI, manage everything from `/admin`.
+> **Browser-based setup at `/admin` — no terminal, no config files.**
+> One container, one shared agent identity across WebUI, Telegram, Discord, and Slack. Persistent memory, built-in skills, cron automations ready on deploy.
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/PLACEHOLDER)
 
