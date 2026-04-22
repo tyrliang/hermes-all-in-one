@@ -110,6 +110,281 @@ The gateway starts automatically once both provider and channel are configured.
 
 ---
 
+## Your First Prompts
+
+Hermes is deployed but blank. It doesn't know who you are, what you need, or how you work. The first 10 minutes are the most important — they shape how the agent behaves for the rest of its life on your machine.
+
+### Prompt 1 — Self-optimize for a first-time user
+
+Paste this as your very first message. It tells Hermes to read its own documentation, understand its full capabilities, and then guide you through setup like a pro:
+
+```
+Use your hermes-agent skill and help me with first-time setup.
+Read your own documentation, understand what you're capable of,
+then walk me through how to make you as useful as possible for
+someone who just deployed you for the first time.
+Start by asking me what I do, what I want to automate, and what
+kind of help I need daily. Then suggest what to set up first.
+```
+
+Hermes will read its own skill files, explain what it can do, and interview you before recommending what to build.
+
+---
+
+### Prompt 2 — The onboarding interview
+
+After the first prompt, paste this to give Hermes everything it needs to understand you as a person. A well-briefed agent is 10x more useful than a blank one:
+
+```
+I want to brief you on who I am so you can serve me better.
+Ask me these questions one at a time, wait for my answer,
+then move on:
+
+1. What do you do for work or what are you building?
+2. What's your biggest time drain right now?
+3. What do you wish you had a daily assistant for?
+4. What tools or platforms do you use most (Notion, Gmail, Telegram, etc.)?
+5. What's something you've always wanted to automate but never had time to set up?
+
+After I answer all five, write a brief summary of who I am,
+save it to your memory, and suggest the three most valuable
+things to set up first based on my answers.
+```
+
+This seeds Hermes' memory with your context. Every future conversation builds on it.
+
+---
+
+### Prompt 3 — Install your first skill
+
+Hermes ships with a skills system — modular "instruction packs" that teach it how to do specific things (use certain tools, follow specific workflows, talk to specific APIs). There are hundreds of community skills at [agentskills.io](https://agentskills.io).
+
+To see what's available and install something useful immediately:
+
+```
+Show me your available skills with /skills.
+Then browse the skills hub and find me something
+useful for [your goal — e.g. "web research", "email drafting",
+"daily briefings", "job hunting"].
+Install the most relevant one and show me how to use it.
+```
+
+Or install a specific skill directly:
+```
+/skills install arxiv
+/skills install github-code-review
+/skills install web-research
+```
+
+Once installed, skills activate automatically when relevant — or you can call them explicitly with `/skill-name`.
+
+---
+
+## Starter Automations
+
+These are the highest-value things to set up in your first hour. Each one is a real working prompt you can send to Hermes as-is.
+
+---
+
+### Client Hunter (B2B / freelancers)
+
+Hermes monitors job boards, LinkedIn searches, or RSS feeds and sends you a digest of prospects matching your criteria — every morning, to Telegram.
+
+**Setup prompt:**
+```
+Set up a daily client hunting automation for me.
+
+My service: [describe what you sell — e.g. "React development", "copywriting", "SEO consulting"]
+My ideal client: [describe — e.g. "early-stage SaaS startups", "e-commerce brands over $1M revenue"]
+
+Search LinkedIn, Upwork, and relevant job boards for new posts matching this.
+Filter for posts from the last 24 hours only.
+Send me a Telegram digest every morning at 8am with:
+- Company name and link
+- What they're looking for
+- Why it's a match for me
+- A suggested 2-sentence cold opener I could use
+
+Name this automation "Client Hunter" and show me the cron schedule.
+```
+
+---
+
+### Job Seeker (career transition / active search)
+
+Hermes monitors multiple job boards for your target roles, deduplicates across sites, and delivers a curated shortlist to Telegram daily.
+
+**Setup prompt:**
+```
+Build me a daily job search automation.
+
+Target role: [e.g. "Senior Product Manager", "Full Stack Developer", "Growth Marketing Lead"]
+Preferred companies: [e.g. "Series A-C startups, remote-first, fintech or developer tools"]
+Deal-breakers: [e.g. "no agencies, no relocation required, no Java"]
+
+Search LinkedIn Jobs, Wellfound, and Greenhouse postings from the last 48 hours.
+Rank results by how closely they match my profile.
+Send me a Telegram digest every weekday at 7am with:
+- Job title, company, and direct application link
+- Salary range if listed
+- Why it's a strong/medium/weak match
+- One thing I should customize in my application for each
+
+Name this "Job Seeker Daily" and activate it.
+```
+
+---
+
+### Daily Intelligence Feed (RSS + AI curation)
+
+Instead of doom-scrolling through 20 RSS feeds, Hermes reads everything and sends you a curated 5-item briefing on what actually matters — filtered for your interests.
+
+**Setup prompt:**
+```
+Create a daily intelligence briefing that runs every morning at 7am and delivers to Telegram.
+
+My interests: [e.g. "AI/ML, indie hacking, startup funding news, productivity tools"]
+What I want to skip: [e.g. "politics, sports, crypto price updates, press releases"]
+
+Pull from these sources:
+- Hacker News top 10
+- TechCrunch, The Verge (recent posts)
+- Any relevant subreddits: r/MachineLearning, r/entrepreneur
+- arXiv CS papers if there are any trending
+
+For each item include:
+- Title and link
+- 2-sentence summary
+- Why it's relevant to me personally
+- A "so what" — what action or insight does this give me?
+
+Limit to the 5 most relevant items. Skip anything I've likely already seen.
+Name this "Morning Briefing" and schedule it.
+```
+
+---
+
+### Skill Creator (build your own tools)
+
+This is the meta-skill: teach Hermes how to teach itself. After completing a complex task, Hermes can write a skill that makes it faster next time — permanently.
+
+**Trigger it manually after any successful task:**
+```
+That worked well. Write a skill that captures this workflow
+so you can do it faster next time without needing my instructions.
+Give it a clear name and description, then save it to your skills folder.
+```
+
+**Or turn it on permanently:**
+```
+From now on, after every multi-step task you complete successfully,
+write a skill file that captures the approach so you can improve on it next time.
+Check your existing skills first to avoid duplicates.
+Update existing skills if you found a better way to do something.
+```
+
+This is Hermes' self-improvement loop — it literally rewrites its own procedures from experience.
+
+---
+
+## How the Skills System Works
+
+A **skill** is a Markdown file with a YAML frontmatter header. It lives in `~/.hermes/skills/` (on Railway: `/data/.hermes/skills/`). When Hermes sees a task that matches a skill's description, it loads that skill's instructions automatically.
+
+```
+/data/.hermes/skills/
+  my-skill/
+    SKILL.md       ← the skill definition
+    references/    ← optional supporting docs the skill can reference
+```
+
+Every skill has:
+- A `name` and `description` (used for auto-detection)
+- A `version` and `category`
+- Instructions the agent follows when the skill activates
+
+**Three ways to get skills:**
+
+1. **From the Skills Hub** — `hermes skills browse` or visit [agentskills.io](https://agentskills.io). Community-built, curated, one command to install.
+
+2. **Ask Hermes to write one** — "Write a skill for X" and it creates the file. You review it, save it, done.
+
+3. **Write it yourself** — Create a `SKILL.md` in the right folder. It's just Markdown with frontmatter.
+
+**To activate, list, or manage skills:**
+```
+/skills                          # list installed skills
+/skills install web-research     # install from hub
+/skills create                   # guided skill creation
+/<skill-name>                    # invoke a skill directly
+```
+
+---
+
+## How the Self-Learning Loop Works
+
+Hermes has a closed learning loop built into the agent. This is what makes it different from a stateless chatbot:
+
+**1. Memory nudges.** After complex conversations, the agent notices what it learned about you and prompts itself to save it. You don't have to remember to say "save that" — it just does.
+
+**2. Session search.** Hermes indexes every conversation with FTS5 full-text search. Ask it something it learned in a conversation from two weeks ago and it can find it. Use `/insights` to see what it knows about you.
+
+**3. Automatic skill creation.** After completing a complex multi-step task, Hermes can recognize that it just learned a repeatable procedure and write a skill from it. The next time you ask for the same thing, it's faster because it's following a procedure it wrote itself.
+
+**4. User modeling.** Via [Honcho](https://github.com/plastic-labs/honcho), Hermes builds a model of who you are — your preferences, working style, what you care about — and adjusts how it responds over time.
+
+**5. Skill improvement.** When Hermes uses a skill and finds a better approach, it updates the skill. Skills get sharper the more you use them.
+
+The practical result: the longer you run Hermes, the more capable it gets at your specific workflows. It's not the same agent in month 3 that it was on day 1.
+
+---
+
+## How Scheduling Works
+
+Hermes has a built-in cron scheduler. Schedule anything in natural language:
+
+```
+hermes cron create "every day at 8am" "your prompt here" --name "My Task" --deliver telegram
+```
+
+Or with a cron expression:
+```
+hermes cron create "0 8 * * 1-5" "your prompt here" --name "Weekday Briefing" --deliver telegram
+```
+
+**Delivery targets:**
+```
+--deliver telegram          # your Telegram home channel
+--deliver discord           # your Discord home channel
+--deliver slack             # your Slack channel
+--deliver local             # save to file, no notification
+```
+
+**Power feature: script injection.** Run a Python script before the agent runs. The script's output becomes context the agent can reason about. Use this to fetch data, diff files, or do any mechanical work before handing off to the LLM:
+
+```
+hermes cron create "every 1h" \
+  "If CHANGE DETECTED, summarize what changed and why it matters. If NO_CHANGE, respond with [SILENT]." \
+  --script ~/.hermes/scripts/watch-prices.py \
+  --name "Price Monitor" \
+  --deliver telegram
+```
+
+The `[SILENT]` pattern is key — Hermes only sends a notification when something actually changes. Zero spam.
+
+**Chain skills into automations:**
+```
+hermes cron create "0 9 * * *" \
+  "Search for top AI papers from yesterday. Summarize the top 3 and save as notes." \
+  --skills "arxiv,obsidian" \
+  --name "Daily Paper Digest" \
+  --deliver telegram
+```
+
+Full scheduling docs: [hermes-agent.nousresearch.com/docs/user-guide/features/cron](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron)
+
+---
+
 ## Environment Variables
 
 ### Required
