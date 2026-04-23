@@ -18,8 +18,17 @@ mkdir -p \
   "${HERMES_HOME}" \
   "${HERMES_HOME}/sessions" \
   "${HERMES_HOME}/skills" \
+  "${HERMES_HOME}/optional-skills" \
   "${HERMES_WEBUI_STATE_DIR}" \
   "${HERMES_WORKSPACE_DIR}"
+
+# Seed vendored built-in skills on first run (no-clobber preserves user edits)
+if [ -d "/app/vendor/hermes-agent/skills" ]; then
+  cp -rn /app/vendor/hermes-agent/skills/. "${HERMES_HOME}/skills/" 2>/dev/null || true
+fi
+if [ -d "/app/vendor/hermes-agent/optional-skills" ]; then
+  cp -rn /app/vendor/hermes-agent/optional-skills/. "${HERMES_HOME}/optional-skills/" 2>/dev/null || true
+fi
 
 echo "[start] launching Hermes control plane on 0.0.0.0:${PORT:-8787}"
 echo "[start] internal WebUI target ${CONTROL_PLANE_INTERNAL_WEBUI_HOST}:${CONTROL_PLANE_INTERNAL_WEBUI_PORT}"
