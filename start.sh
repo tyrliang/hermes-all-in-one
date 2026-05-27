@@ -38,6 +38,15 @@ if [ -d "/app/vendor/hermes-agent/optional-skills" ]; then
   cp -rn /app/vendor/hermes-agent/optional-skills/. "${HERMES_HOME}/optional-skills/" 2>/dev/null || true
 fi
 
+# Patch OpenAI SDK: guard against response.output=null from Codex backend
+SDK_RESPONSES=$(python3 -c "import openai; from pathlib import Path; print(Path(openai.__file__).parent / 'lib/_parsing/_responses.py')" 2>/dev/null || true)
+if [ -n "$SDK_RESPONSES" ] && [ -f "$SDK_RESPONSES" ]; then
+  if grep -q 'for output in response\.output:' "$SDK_RESPONSES"; then
+    sed -i 's/for output in response\.output:/for output in (response.output or []):/' "$SDK_RESPONSES"
+    echo "[start] patched OpenAI SDK: null-guard response.output"
+  fi
+fi
+
 echo "[start] launching Hermes control plane on 0.0.0.0:${PORT:-8787}"
 echo "[start] internal WebUI target ${CONTROL_PLANE_INTERNAL_WEBUI_HOST}:${CONTROL_PLANE_INTERNAL_WEBUI_PORT}"
 echo "[start] gateway autostart mode ${HERMES_GATEWAY_AUTOSTART}"
