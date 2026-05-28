@@ -63,13 +63,6 @@ if ! git diff --quiet vendor/hermes-webui/api/config.py; then
   git commit -m "chore(sync): patch webui model list from hermes-agent"
 fi
 
-echo "[sync] patching codex transport null guard..."
-python3 "${ROOT_DIR}/scripts/patch-codex-null-guard.py"
-if ! git diff --quiet vendor/hermes-agent/agent/transports/codex.py; then
-  git add vendor/hermes-agent/agent/transports/codex.py
-  git commit -m "fix(sync): re-apply codex transport null guard after subtree pull"
-fi
-
 echo "[sync] upstream refresh complete"
 echo "[sync] next steps:"
 echo "  1. Review changes in vendor/ and root integration files"
