@@ -14,9 +14,8 @@ services:
     container_name: hermes-all-in-one
     restart: unless-stopped
     ports:
-      - "${PORT:-8787}:8787"
+      - "8787:8787"
     environment:
-      PORT: "8787"
       HERMES_WEBUI_PASSWORD: ${HERMES_WEBUI_PASSWORD:-test}
       HERMES_ADMIN_PASSWORD: ${HERMES_ADMIN_PASSWORD:-test}
     volumes:
