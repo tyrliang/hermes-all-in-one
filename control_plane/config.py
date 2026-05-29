@@ -171,6 +171,7 @@ def extract_model_config(config: dict[str, Any]) -> dict[str, str]:
         "provider": str(model_cfg.get("provider") or "").strip(),
         "default": str(model_cfg.get("default") or "").strip(),
         "base_url": str(model_cfg.get("base_url") or "").strip(),
+        "api_key": str(model_cfg.get("api_key") or "").strip(),
     }
 
 
@@ -228,12 +229,20 @@ def has_valid_channel_credentials(env_values: dict[str, str]) -> bool:
 
 def has_valid_provider_setup(config: dict[str, Any], env_values: dict[str, str]) -> bool:
     model_cfg = extract_model_config(config)
+    if not model_cfg["default"]:
+        return False
     provider = model_cfg["provider"].lower()
     if provider in _SUPPORTED_PROVIDER_SETUPS:
-        env_var = _SUPPORTED_PROVIDER_SETUPS[provider]["env_var"]
-        return bool(model_cfg["default"] and env_values.get(env_var, "").strip())
+        meta = _SUPPORTED_PROVIDER_SETUPS[provider]
+        env_var = meta["env_var"]
+        api_key = env_values.get(env_var, "").strip() or model_cfg["api_key"]
+        if not api_key:
+            return False
+        if meta.get("requires_base_url"):
+            return bool(model_cfg["base_url"])
+        return True
     if provider:
-        return bool(model_cfg["default"])
+        return True
     return False
 
 

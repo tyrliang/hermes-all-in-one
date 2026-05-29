@@ -8,6 +8,7 @@ from control_plane.config import (
     _SUPPORTED_PROVIDER_SETUPS,
     apply_provider_setup,
     has_valid_channel_credentials,
+    has_valid_provider_setup,
     load_env_file,
     should_autostart_gateway,
     write_env_updates,
@@ -72,6 +73,25 @@ def test_has_valid_channel_credentials_prefers_real_channel_tokens():
     assert has_valid_channel_credentials({"DISCORD_BOT_TOKEN": "discord-token"}) is True
     assert has_valid_channel_credentials({"WHATSAPP_ENABLED": "1"}) is True
     assert has_valid_channel_credentials({"OPENROUTER_API_KEY": "sk-only"}) is False
+
+
+def test_has_valid_provider_setup_accepts_api_key_in_config_yaml(tmp_path: Path):
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "provider": "custom",
+                    "default": "deepseek-r1",
+                    "base_url": "https://example.com/v1",
+                    "api_key": "sk-inline",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert has_valid_provider_setup(yaml.safe_load(config_path.read_text(encoding="utf-8")), load_env_file(env_path)) is True
 
 
 def test_should_autostart_gateway_requires_provider_and_channel(tmp_path: Path):
