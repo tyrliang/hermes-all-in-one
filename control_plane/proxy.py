@@ -6,6 +6,7 @@ from starlette.requests import Request
 from starlette.responses import Response, StreamingResponse
 
 from control_plane.config import INTERNAL_WEBUI_BASE
+from control_plane.webui_proxy import normalize_upstream_path
 
 _HOP_BY_HOP = {
     "connection",
@@ -21,7 +22,7 @@ _HOP_BY_HOP = {
 
 
 async def proxy_to_webui(request: Request, path: str) -> Response:
-    upstream_path = "/" + path.lstrip("/")
+    upstream_path = normalize_upstream_path(path)
     target_url = f"{INTERNAL_WEBUI_BASE}{upstream_path}"
     if request.url.query:
         target_url = f"{target_url}?{request.url.query}"

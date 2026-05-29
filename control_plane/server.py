@@ -50,6 +50,7 @@ from control_plane.config import (
 )
 from control_plane.gateway_manager import GatewayManager
 from control_plane.proxy import proxy_to_webui
+from control_plane.webui_proxy import login_trailing_slash_redirect_location
 from control_plane.runtime_mode import use_s6_supervision
 from control_plane.webui_manager import WebUIManager
 
@@ -344,6 +345,9 @@ async def api_pairing_revoke(request: Request) -> Response:
 
 async def proxy_catchall(request: Request) -> Response:
     path = request.path_params.get("path", "")
+    location = login_trailing_slash_redirect_location(path, request.url.query)
+    if location is not None:
+        return RedirectResponse(url=location, status_code=301)
     return await proxy_to_webui(request, path)
 
 
