@@ -1,11 +1,11 @@
-<img src="assets/banner.svg" width="900" alt="Hermes All-in-One · Railway Template">
+<img src="assets/banner.svg" width="900" alt="Hermes All-in-One · WebUI + Admin + Gateway">
 
 # Hermes All-in-One | WebUI + Admin Panel + Gateway — No Terminal Setup
 
 > **Browser-based setup at `/admin` — no terminal, no config files.**
 > One container, one shared agent identity across WebUI, Telegram, Discord, and Slack. Persistent memory, built-in skills, cron automations ready on deploy.
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/hermes-all-in-one-or-webui-admin-panel-g?referralCode=1uw5HI)
+Built on the official [`nousresearch/hermes-agent`](https://github.com/NousResearch/hermes-agent) image with **s6-overlay** supervision (control plane, WebUI, and gateway as managed services). Persistent state lives under **`/opt/data`** (official Hermes layout).
 
 ---
 
@@ -23,13 +23,13 @@ Log in with `HERMES_ADMIN_PASSWORD` (or `HERMES_WEBUI_PASSWORD` if admin passwor
 
 ## What is this?
 
-[Hermes Agent](https://github.com/NousResearch/hermes-agent) is a self-improving AI agent from NousResearch — it can use tools, remember things, and talk to you over multiple channels. This repo packages it into a single Railway-deployable container with:
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) is a self-improving AI agent from NousResearch — it can use tools, remember things, and talk to you over multiple channels. This repo packages it into a single deployable container with:
 
 | Surface | URL | What it is |
 |---------|-----|-----------|
 | **WebUI** | `/` | Hermes chat interface in the browser |
 | **Control Plane** | `/admin` | Provider + channel setup, gateway controls, logs |
-| **Health** | `/health` | Railway health check endpoint |
+| **Health** | `/health` | Liveness check (`railway.toml` / load balancers) |
 
 Everything shares one Hermes identity — the same memory, skills, config, and SOUL file — whether you're talking on Telegram or in the browser.
 
@@ -47,19 +47,52 @@ Everything shares one Hermes identity — the same memory, skills, config, and S
 
 ---
 
-## Quick Deploy
+## Quick Start
 
-### 1. Deploy to Railway
+### Local (Docker Compose)
 
-Click the button above or create a new Railway service from this repo manually.
+Fastest way to try the stack on your machine:
 
-### 2. Add a volume
+```bash
+cp .env.example .env   # set HERMES_WEBUI_PASSWORD and HERMES_ADMIN_PASSWORD
+docker compose up -d --build
+```
+
+| Surface | URL |
+|---------|-----|
+| WebUI | http://127.0.0.1:8787/ |
+| Admin | http://127.0.0.1:8787/admin |
+| Health | http://127.0.0.1:8787/health |
+
+Data persists in `./.hermes-data` (mounted at `/opt/data` in the container). Configure your provider at `/admin`, same as production.
+
+To build and run the image directly:
+
+```bash
+docker build -t hermes-all-in-one .
+docker run -d --name hermes-all-in-one \
+  -p 8787:8787 \
+  -e HERMES_WEBUI_PASSWORD=your-password \
+  -e HERMES_ADMIN_PASSWORD=your-admin-password \
+  -v "$(pwd)/.hermes-data:/opt/data" \
+  hermes-all-in-one
+```
+
+Pre-built images are published to GitHub Container Registry on each release (`ghcr.io/<owner>/hermes-all-in-one` — see `.github/workflows/docker.yml`).
+
+---
+
+### Deploy to Railway
+
+Create a new Railway service from this repo (Dockerfile + `railway.toml`).
+
+#### 1. Add a volume
 
 In Railway → your service → **Volumes** tab → mount a persistent volume at **`/opt/data`** (official Hermes layout).
 
 > Without a volume, all your agent memory, config, and credentials are lost on every redeploy.
 
-### 3. Set required environment variables
+#### 2. Set required environment variables
 
 Go to **Variables** in your Railway service and set at minimum:
 
@@ -68,7 +101,7 @@ HERMES_WEBUI_PASSWORD=your-secure-password
 HERMES_ADMIN_PASSWORD=your-admin-password
 ```
 
-### 4. Deploy
+#### 3. Deploy
 
 Railway builds the Dockerfile and starts the container. The control plane at `/admin` is ready in ~30 seconds.
 
@@ -79,11 +112,11 @@ Railway builds the Dockerfile and starts the container. The control plane at `/a
 - Set `CONTROL_PLANE_HOST=0.0.0.0` only if you need to override the image default (already baked in).
 - Mount the volume at **`/opt/data`** (not `/data`).
 
-### 5. Configure your AI provider at `/admin`
+#### 4. Configure your AI provider at `/admin`
 
 Go to `/admin` → **Providers** → pick your provider → enter your API key → Save.
 
-### 6. (Optional) Connect Telegram
+#### 5. (Optional) Connect Telegram
 
 Go to `/admin` → **Channels** → enter your bot token and your numeric Telegram user ID → Save.
 
@@ -279,7 +312,7 @@ When you ask it something that matches a skill — "review this PR", "summarize 
 **A skill is a Markdown file.** Name, description, version, and a set of instructions the agent follows when it activates. That's it. The system is intentionally simple so you can read, edit, and write them yourself.
 
 ```
-/data/.hermes/skills/
+/opt/data/skills/
   github-code-review/
     SKILL.md         ← instructions + frontmatter
     references/      ← optional supporting docs
@@ -453,9 +486,9 @@ In `/admin` → Providers:
 
 ### OpenAI Subscription / ChatGPT account login (advanced)
 
-> **Disclaimer:** This uses your personal ChatGPT account via Railway's SSH terminal. It works but is fragile — OpenAI may change their auth flow at any time. Use at your own risk. Your credentials are stored only in your container's `/data` volume.
+> **Disclaimer:** This uses your personal ChatGPT account via the host's SSH/shell into the container. It works but is fragile — OpenAI may change their auth flow at any time. Use at your own risk. Your credentials are stored only on the persistent volume at `/opt/data`.
 
-OAuth-style and subscription-based provider flows (ChatGPT, Codex, Nous Portal) can't be completed in the browser on Railway. Use the Railway CLI instead:
+OAuth-style and subscription-based provider flows (ChatGPT, Codex, Nous Portal) can't be completed in the browser UI. Use shell access instead (Railway CLI, `docker exec`, etc.):
 
 ```bash
 # Install Railway CLI
@@ -469,7 +502,7 @@ railway ssh
 
 # Inside the container, run Hermes auth
 hermes auth login
-# Follow the prompts — this stores credentials in /data/.hermes
+# Follow the prompts — this stores credentials under /opt/data
 ```
 
 After completing auth in the terminal, go back to `/admin` and the provider should appear as configured.
@@ -504,7 +537,7 @@ The gateway starts automatically. Send `/start` to your bot on Telegram — it s
 
 ## Your Agent's Identity — SOUL.md
 
-`SOUL.md` controls the agent's persistent persona and behavior — its name, how it speaks, what it cares about. In this template it lives at `/data/.hermes/SOUL.md` on the persistent volume.
+`SOUL.md` controls the agent's persistent persona and behavior — its name, how it speaks, what it cares about. On the persistent volume it lives at `/opt/data/SOUL.md`.
 
 Edit it directly from the Hermes WebUI, then restart the gateway from `/admin` → Overview → **Restart** to apply changes.
 
@@ -514,15 +547,17 @@ For full formatting guidance, persona examples, and what `SOUL.md` can control, 
 
 ## Memory & Sessions
 
-Hermes remembers everything in `/data/.hermes/`:
+Hermes remembers everything under `/opt/data/` (`HERMES_HOME`):
 
 ```
-/data/.hermes/
+/opt/data/
   config.yaml        ← provider + model config
   .env               ← channel credentials (tokens, API keys)
   sessions/          ← conversation history per channel
   skills/            ← agent skills and tools
   SOUL.md            ← agent identity
+  webui/             ← WebUI state
+  workspace/         ← agent workspace
 ```
 
 The WebUI and Telegram gateway share this directory. That means:
@@ -530,7 +565,7 @@ The WebUI and Telegram gateway share this directory. That means:
 - Skills you add via one surface are available on the other
 - One personality, two frontends
 
-Back up `/data` entirely — not just `/data/.hermes`.
+Back up `/opt/data` entirely before destructive volume operations.
 
 ---
 
@@ -563,7 +598,7 @@ Keep `HERMES_GATEWAY_AUTOSTART=off`, deploy once, and use the WebUI exclusively 
 
 **Your agent's `SOUL.md` is the highest-leverage file you'll ever write.** 200 words of well-crafted identity beats 2000 words of prompt injection in system prompts.
 
-**Volume = memory.** If you delete the Railway volume, your agent forgets everything. Back up `/data` before destructive Railway operations.
+**Volume = memory.** If you delete the persistent volume, your agent forgets everything. Back up `/opt/data` before destructive deploy or volume operations.
 
 **The gateway health check is time-based, not HTTP.** Hermes gateway is a Telegram bot process — it's healthy if it's been running without crashing for ≥3 seconds. No HTTP endpoint to probe.
 
@@ -574,19 +609,19 @@ Keep `HERMES_GATEWAY_AUTOSTART=off`, deploy once, and use the WebUI exclusively 
 ## Architecture Overview
 
 ```
-Railway service (single container, FROM nousresearch/hermes-agent)
+Container (FROM nousresearch/hermes-agent)
 │
 ├── PID 1: /init (s6-overlay — zombie reaping, service supervision)
-│   ├── s6 longrun: control-plane → uvicorn :8787 (public /admin, /health, proxy)
-│   ├── s6 longrun: hermes-webui → server.py :8788 (loopback)
+│   ├── s6 longrun: control-plane → uvicorn on $PORT (public /, /admin, /health, proxy)
+│   ├── s6 longrun: hermes-webui → server.py :8788 (loopback only)
 │   └── s6 dynamic: gateway-default → hermes gateway (Telegram / Discord / Slack)
 │
 └── CMD: sleep infinity (container stays up while s6 runs services)
 │
-Volume: /opt/data
-  ├── config.yaml, .env, sessions/, skills/  ← Hermes identity (HERMES_HOME)
-  ├── webui/     ← WebUI state
-  └── workspace/ ← agent workspace
+Volume: /opt/data  (HERMES_HOME)
+  ├── config.yaml, .env, sessions/, skills/, SOUL.md
+  ├── webui/         ← WebUI state
+  └── workspace/     ← agent workspace
 ```
 
 The control plane is a thin Starlette wrapper — not a framework, not a product. It exists to:
@@ -600,7 +635,9 @@ Build with an optional pin: `docker build --build-arg HERMES_IMAGE=nousresearch/
 
 ## Credits
 
-This repository is a Railway deployment wrapper. All agent and WebUI logic lives upstream:
+This repository is an all-in-one deployment wrapper (control plane + WebUI proxy + gateway supervision). Agent and WebUI logic lives upstream:
 
-- **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** — agent runtime by NousResearch
-- **[Hermes WebUI](https://github.com/NousResearch/hermes-webui)** — browser chat interface by NousResearch
+- **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** — official base image and agent runtime (NousResearch)
+- **[Hermes WebUI](https://github.com/nesquena/hermes-webui)** — browser chat interface (vendored under `vendor/hermes-webui`)
+
+Forked from [sphinxcode/hermes-all-in-one](https://github.com/sphinxcode/hermes-all-in-one) and rebuilt on the official Hermes Docker image with s6-managed services and `/opt/data` persistence.
