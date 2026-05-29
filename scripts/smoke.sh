@@ -47,6 +47,25 @@ assert_eq() {
   fi
 }
 
+smoke_run_container() {
+  docker run -d \
+    --name "${CONTAINER_NAME}" \
+    -p "${HOST_PORT}:${CONTAINER_PORT}" \
+    -e PORT="${CONTAINER_PORT}" \
+    -e HERMES_WEBUI_PASSWORD="${WEBUI_PASSWORD}" \
+    -e HERMES_ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
+    -e HERMES_HOME=/opt/data \
+    -e HOME=/opt/data \
+    -e HERMES_DATA_DIR=/opt/data \
+    -e HERMES_CONFIG_PATH=/opt/data/config.yaml \
+    -e HERMES_WEBUI_STATE_DIR=/opt/data/webui \
+    -e HERMES_WORKSPACE_DIR=/opt/data/workspace \
+    -e HERMES_WEBUI_AGENT_DIR=/opt/hermes \
+    -e CONTROL_PLANE_RUNTIME=s6 \
+    -v "${DATA_DIR}:/opt/data" \
+    "${IMAGE_TAG}" >/dev/null
+}
+
 require docker
 require curl
 require python3
@@ -61,14 +80,7 @@ echo "[smoke] building image ${IMAGE_TAG}"
 docker build -t "${IMAGE_TAG}" .
 
 echo "[smoke] starting container with PORT=${CONTAINER_PORT}"
-docker run -d \
-  --name "${CONTAINER_NAME}" \
-  -p "${HOST_PORT}:${CONTAINER_PORT}" \
-  -e PORT="${CONTAINER_PORT}" \
-  -e HERMES_WEBUI_PASSWORD="${WEBUI_PASSWORD}" \
-  -e HERMES_ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
-  -v "${DATA_DIR}:/data" \
-  "${IMAGE_TAG}" >/dev/null
+smoke_run_container
 
 wait_for_health "http://127.0.0.1:${HOST_PORT}/health"
 
@@ -103,9 +115,9 @@ status_json="$(curl --silent --show-error --fail -b "${COOKIE_JAR}" "http://127.
 python3 - <<'PY' "$status_json"
 import json, sys
 payload = json.loads(sys.argv[1])
-assert payload['paths']['config_path'] == '/data/.hermes/config.yaml'
-assert payload['paths']['webui_state_dir'] == '/data/webui'
-assert payload['paths']['workspace_dir'] == '/data/workspace'
+assert payload['paths']['config_path'] == '/opt/data/config.yaml'
+assert payload['paths']['webui_state_dir'] == '/opt/data/webui'
+assert payload['paths']['workspace_dir'] == '/opt/data/workspace'
 print('[smoke] admin status paths OK')
 PY
 
@@ -115,22 +127,15 @@ wait_for_health "http://127.0.0.1:${HOST_PORT}/health"
 curl --silent --show-error --fail -b "${COOKIE_JAR}" -X POST "http://127.0.0.1:${HOST_PORT}/admin/api/gateway/restart" -o /dev/null >/dev/null
 wait_for_health "http://127.0.0.1:${HOST_PORT}/health"
 
-signing_before="$(docker exec "${CONTAINER_NAME}" /bin/sh -lc 'sha256sum /data/webui/.signing_key | awk "{print \$1}"')"
+signing_before="$(docker exec "${CONTAINER_NAME}" /bin/sh -lc 'sha256sum /opt/data/webui/.signing_key | awk "{print \$1}"')"
 
-echo "[smoke] restarting container with same /data volume"
+echo "[smoke] restarting container with same /opt/data volume"
 docker rm -f "${CONTAINER_NAME}" >/dev/null
 
-docker run -d \
-  --name "${CONTAINER_NAME}" \
-  -p "${HOST_PORT}:${CONTAINER_PORT}" \
-  -e PORT="${CONTAINER_PORT}" \
-  -e HERMES_WEBUI_PASSWORD="${WEBUI_PASSWORD}" \
-  -e HERMES_ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
-  -v "${DATA_DIR}:/data" \
-  "${IMAGE_TAG}" >/dev/null
+smoke_run_container
 
 wait_for_health "http://127.0.0.1:${HOST_PORT}/health"
-signing_after="$(docker exec "${CONTAINER_NAME}" /bin/sh -lc 'sha256sum /data/webui/.signing_key | awk "{print \$1}"')"
+signing_after="$(docker exec "${CONTAINER_NAME}" /bin/sh -lc 'sha256sum /opt/data/webui/.signing_key | awk "{print \$1}"')"
 assert_eq "$signing_after" "$signing_before" "WebUI signing key should persist across restart"
 
 echo "[smoke] PASS"

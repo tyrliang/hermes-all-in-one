@@ -1,0 +1,22 @@
+# Hermes All-in-One — local Docker Compose
+#
+#   docker compose up -d --build
+#
+# WebUI:  http://127.0.0.1:8787/
+# Admin:  http://127.0.0.1:8787/admin
+#
+# Defaults match the smoke-test passwords; override via .env (see .env.example).
+
+services:
+  hermes:
+    build: .
+    image: hermes-all-in-one:s6
+    container_name: hermes-all-in-one
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      HERMES_WEBUI_PASSWORD: ${HERMES_WEBUI_PASSWORD:-test}
+      HERMES_ADMIN_PASSWORD: ${HERMES_ADMIN_PASSWORD:-test}
+    volumes:
+      - ./.hermes-data:/opt/data

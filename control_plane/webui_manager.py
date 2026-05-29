@@ -21,6 +21,10 @@ from control_plane.config import (
     WEBUI_STATE_DIR,
     WORKSPACE_DIR,
 )
+from control_plane.runtime_mode import use_s6_supervision
+from control_plane.s6_ops import s6_service_up, s6_svc
+
+_WEBUI_SLOT = "/run/service/hermes-webui"
 
 
 class WebUIManager:
@@ -41,11 +45,17 @@ class WebUIManager:
             pass
 
     def is_running(self) -> bool:
+        if use_s6_supervision():
+            return s6_service_up(_WEBUI_SLOT)
         return self.process is not None and self.process.poll() is None
 
     def start(self) -> None:
         with self._lock:
             if self.is_running():
+                return
+            if use_s6_supervision():
+                s6_svc("up", _WEBUI_SLOT, check=True)
+                self.start_time = time.time()
                 return
             env = os.environ.copy()
             env.update(
@@ -76,6 +86,11 @@ class WebUIManager:
 
     def stop(self) -> None:
         with self._lock:
+            if use_s6_supervision():
+                s6_svc("down", _WEBUI_SLOT, check=False)
+                self.process = None
+                self.start_time = None
+                return
             if not self.is_running():
                 return
             assert self.process is not None
@@ -87,6 +102,16 @@ class WebUIManager:
                 self.process.wait(timeout=5)
 
     def restart(self) -> None:
+        with self._lock:
+            if use_s6_supervision():
+                s6_svc("down", _WEBUI_SLOT, check=False)
+                for _ in range(50):
+                    if not s6_service_up(_WEBUI_SLOT):
+                        break
+                    time.sleep(0.2)
+                s6_svc("up", _WEBUI_SLOT, check=True)
+                self.start_time = time.time()
+                return
         self.stop()
         self.start()
 
@@ -95,7 +120,7 @@ class WebUIManager:
         while time.time() < deadline:
             if self.health_ok():
                 return True
-            if self.process and self.process.poll() is not None:
+            if not use_s6_supervision() and self.process and self.process.poll() is not None:
                 return False
             time.sleep(0.5)
         return False
@@ -110,6 +135,18 @@ class WebUIManager:
             return False
 
     def status(self) -> dict:
+        if use_s6_supervision():
+            running = self.is_running()
+            return {
+                "running": running,
+                "pid": None,
+                "uptime_seconds": 0,
+                "healthy": self.health_ok(),
+                "internal_base_url": INTERNAL_WEBUI_BASE,
+                "log_tail": [],
+                "supervisor": "s6",
+                "service": _WEBUI_SLOT,
+            }
         pid = self.process.pid if self.process else None
         return {
             "running": self.is_running(),
@@ -118,4 +155,5 @@ class WebUIManager:
             "healthy": self.health_ok(),
             "internal_base_url": INTERNAL_WEBUI_BASE,
             "log_tail": list(self.logs)[-50:],
+            "supervisor": "subprocess",
         }
