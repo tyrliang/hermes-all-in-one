@@ -50,6 +50,7 @@ from control_plane.config import (
 )
 from control_plane.gateway_manager import GatewayManager
 from control_plane.proxy import proxy_to_webui
+from control_plane.runtime_mode import use_s6_supervision
 from control_plane.webui_manager import WebUIManager
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -102,16 +103,21 @@ def _admin_required(request: Request) -> Response | None:
 
 async def on_startup() -> None:
     ensure_runtime_dirs()
-    webui_manager.start()
-    webui_manager.wait_until_ready(timeout=30)
-    if gateway_manager.should_autostart():
-        gateway_manager.start()
+    if use_s6_supervision():
+        if not webui_manager.wait_until_ready(timeout=90):
+            print("[control-plane] WebUI s6 service not healthy after 90s", flush=True)
+    else:
+        webui_manager.start()
+        webui_manager.wait_until_ready(timeout=30)
+        if gateway_manager.should_autostart():
+            gateway_manager.start()
     _invalidate_status_cache()
 
 
 async def on_shutdown() -> None:
-    gateway_manager.stop()
-    webui_manager.stop()
+    if not use_s6_supervision():
+        gateway_manager.stop()
+        webui_manager.stop()
 
 
 async def health(request: Request) -> JSONResponse:

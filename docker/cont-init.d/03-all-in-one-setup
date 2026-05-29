@@ -1,0 +1,42 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Railway all-in-one bootstrap on top of the official Hermes image layout (/opt/data).
+
+set -eu
+
+HERMES_HOME="${HERMES_HOME:-/opt/data}"
+WEBUI_STATE="${HERMES_WEBUI_STATE_DIR:-/opt/data/webui}"
+WORKSPACE="${HERMES_WORKSPACE_DIR:-/opt/data/workspace}"
+
+s6-setuidgid hermes mkdir -p \
+    "$HERMES_HOME" \
+    "$HERMES_HOME/sessions" \
+    "$HERMES_HOME/skills" \
+    "$HERMES_HOME/optional-skills" \
+    "$HERMES_HOME/pairing" \
+    "$WEBUI_STATE" \
+    "$WORKSPACE"
+
+for f in telegram-approved.json telegram-pending.json _rate_limits.json; do
+    target="$HERMES_HOME/pairing/$f"
+    if [ ! -s "$target" ]; then
+        printf '{}' | s6-setuidgid hermes tee "$target" >/dev/null
+    fi
+done
+chmod 600 "$HERMES_HOME"/pairing/*.json 2>/dev/null || true
+
+if [ -d /opt/hermes/skills ]; then
+    s6-setuidgid hermes cp -rn /opt/hermes/skills/. "$HERMES_HOME/skills/" 2>/dev/null || true
+fi
+if [ -d /opt/hermes/optional-skills ]; then
+    s6-setuidgid hermes cp -rn /opt/hermes/optional-skills/. "$HERMES_HOME/optional-skills/" 2>/dev/null || true
+fi
+
+# shellcheck disable=SC1091
+. /opt/hermes/.venv/bin/activate
+export PYTHONPATH="/app:${PYTHONPATH:-}"
+export HOME="$HERMES_HOME"
+export HERMES_CONFIG_PATH="${HERMES_CONFIG_PATH:-$HERMES_HOME/config.yaml}"
+python /app/docker/scripts/gateway_autostart.py || true
+
+echo "[all-in-one] bootstrap complete (HERMES_HOME=$HERMES_HOME)"

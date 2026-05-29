@@ -55,7 +55,7 @@ Click the button above or create a new Railway service from this repo manually.
 
 ### 2. Add a volume
 
-In Railway → your service → **Volumes** tab → mount a persistent volume at `/data`.
+In Railway → your service → **Volumes** tab → mount a persistent volume at **`/opt/data`** (official Hermes layout).
 
 > Without a volume, all your agent memory, config, and credentials are lost on every redeploy.
 
@@ -395,10 +395,12 @@ Full scheduling docs: [hermes-agent.nousresearch.com/docs/user-guide/features/cr
 
 | Variable | Default |
 |----------|---------|
-| `HERMES_HOME` | `/data/.hermes` |
-| `HERMES_CONFIG_PATH` | `/data/.hermes/config.yaml` |
-| `HERMES_WEBUI_STATE_DIR` | `/data/webui` |
-| `HERMES_WORKSPACE_DIR` | `/data/workspace` |
+| `HERMES_HOME` | `/opt/data` |
+| `HERMES_CONFIG_PATH` | `/opt/data/config.yaml` |
+| `HERMES_WEBUI_STATE_DIR` | `/opt/data/webui` |
+| `HERMES_WORKSPACE_DIR` | `/opt/data/workspace` |
+| `HERMES_WEBUI_AGENT_DIR` | `/opt/hermes` (agent from official base image) |
+| `CONTROL_PLANE_RUNTIME` | `s6` (in Docker; use subprocess mode only for local `start.sh`) |
 | `PORT` | `8787` |
 
 ---
@@ -565,22 +567,17 @@ Keep `HERMES_GATEWAY_AUTOSTART=off`, deploy once, and use the WebUI exclusively 
 ## Architecture Overview
 
 ```
-Railway service (single container)
+Railway service (single container, FROM nousresearch/hermes-agent)
 │
-├── PID 1: Starlette control plane (:8787, public)
-│   ├── / → proxy to internal WebUI
-│   ├── /admin → control plane UI
-│   └── /health → Railway health check
+├── PID 1: /init (s6-overlay — zombie reaping, service supervision)
+│   ├── s6 longrun: control-plane → uvicorn :8787 (public /admin, /health, proxy)
+│   ├── s6 longrun: hermes-webui → server.py :8788 (loopback)
+│   └── s6 dynamic: gateway-default → hermes gateway (Telegram / Discord / Slack)
 │
-├── Internal: Hermes WebUI (:8788, loopback only)
-│   └── imports hermes-agent directly via sys.path
+└── CMD: sleep infinity (container stays up while s6 runs services)
 │
-└── Optional: Hermes gateway (subprocess)
-    └── connects to Telegram / Discord / Slack
-        └── reads /data/.hermes (shared with WebUI)
-│
-Volume: /data
-  ├── .hermes/   ← agent identity, memory, config
+Volume: /opt/data
+  ├── config.yaml, .env, sessions/, skills/  ← Hermes identity (HERMES_HOME)
   ├── webui/     ← WebUI state
   └── workspace/ ← agent workspace
 ```
@@ -588,7 +585,9 @@ Volume: /data
 The control plane is a thin Starlette wrapper — not a framework, not a product. It exists to:
 1. Proxy WebUI behind auth
 2. Expose `/admin` for initial setup
-3. Manage the gateway process lifecycle
+3. Start/stop/restart the gateway via official `hermes gateway` + s6 (not raw subprocesses)
+
+Build with an optional pin: `docker build --build-arg HERMES_IMAGE=nousresearch/hermes-agent:<tag> .`
 
 ---
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Local/dev fallback: subprocess supervision (not used by the published Docker image).
+# The production image is based on nousresearch/hermes-agent with s6 — see Dockerfile.
 set -euo pipefail
 
 export HOME="${HOME:-/data}"
