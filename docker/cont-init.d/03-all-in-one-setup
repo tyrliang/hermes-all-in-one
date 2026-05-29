@@ -32,11 +32,8 @@ if [ -d /opt/hermes/optional-skills ]; then
     s6-setuidgid hermes cp -rn /opt/hermes/optional-skills/. "$HERMES_HOME/optional-skills/" 2>/dev/null || true
 fi
 
-# shellcheck disable=SC1091
-. /opt/hermes/.venv/bin/activate
-export PYTHONPATH="/app:${PYTHONPATH:-}"
-export HOME="$HERMES_HOME"
-export HERMES_CONFIG_PATH="${HERMES_CONFIG_PATH:-$HERMES_HOME/config.yaml}"
-python /app/docker/scripts/gateway_autostart.py || true
+# Gateway autostart runs from control-plane on_startup (after s6-svscan is
+# listening). cont-init is too early — hermes gateway start / s6-svc -u fails
+# with "supervisor not listening" (rc=102).
 
 echo "[all-in-one] bootstrap complete (HERMES_HOME=$HERMES_HOME)"

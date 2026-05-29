@@ -10,7 +10,7 @@ sys.path.insert(0, "/app")
 
 from control_plane.config import should_autostart_gateway  # noqa: E402
 from control_plane.runtime_mode import use_s6_supervision  # noqa: E402
-from control_plane.s6_ops import hermes_gateway_start, s6_available, s6_service_up  # noqa: E402
+from control_plane.s6_ops import hermes_gateway_start, s6_available, s6_service_up, s6_service_want_up  # noqa: E402
 
 _GATEWAY_SLOT = "/run/service/gateway-default"
 
@@ -24,7 +24,7 @@ def main() -> int:
     if not should_autostart_gateway():
         print("[all-in-one] gateway autostart not eligible yet", flush=True)
         return 0
-    if s6_service_up(_GATEWAY_SLOT):
+    if s6_service_up(_GATEWAY_SLOT) or s6_service_want_up(_GATEWAY_SLOT):
         print("[all-in-one] gateway-default already up", flush=True)
         return 0
     try:

@@ -107,6 +107,12 @@ async def on_startup() -> None:
     if use_s6_supervision():
         if not webui_manager.wait_until_ready(timeout=90):
             print("[control-plane] WebUI s6 service not healthy after 90s", flush=True)
+        elif gateway_manager.should_autostart() and not gateway_manager.is_running():
+            try:
+                gateway_manager.start()
+                print("[control-plane] gateway autostart requested", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[control-plane] gateway autostart failed: {exc}", flush=True)
     else:
         webui_manager.start()
         webui_manager.wait_until_ready(timeout=30)
