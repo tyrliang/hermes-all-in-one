@@ -72,6 +72,13 @@ HERMES_ADMIN_PASSWORD=your-admin-password
 
 Railway builds the Dockerfile and starts the container. The control plane at `/admin` is ready in ~30 seconds.
 
+**Railway networking notes:**
+
+- Railway injects `PORT` (often `8080`). **Do not set `PORT=8787` in Railway variables** — that desyncs routing from the platform.
+- The public service is the **control plane** on `0.0.0.0:$PORT`. The internal WebUI intentionally binds to **`127.0.0.1:8788`** and is reached via the control-plane proxy — that loopback bind is correct, not a misconfiguration.
+- Set `CONTROL_PLANE_HOST=0.0.0.0` only if you need to override the image default (already baked in).
+- Mount the volume at **`/opt/data`** (not `/data`).
+
 ### 5. Configure your AI provider at `/admin`
 
 Go to `/admin` → **Providers** → pick your provider → enter your API key → Save.
