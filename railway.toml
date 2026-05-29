@@ -4,6 +4,8 @@ dockerfilePath = "Dockerfile"
 
 [deploy]
 # Uses image ENTRYPOINT (/init) + CMD (sleep infinity); s6 supervises the control plane.
+# Railway injects PORT at runtime — do not set PORT=8787 in service variables.
 healthcheckPath = "/health"
+healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
