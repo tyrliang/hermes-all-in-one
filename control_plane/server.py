@@ -122,6 +122,12 @@ async def on_shutdown() -> None:
 
 
 async def health(request: Request) -> JSONResponse:
+    """Liveness probe for Railway — always HTTP 200 once the control plane is up.
+
+    The internal WebUI intentionally binds to loopback (:8788); it may still be
+    starting when this endpoint first responds. Use the JSON ``status`` field for
+    readiness (``ok`` vs ``degraded``), not the HTTP status code.
+    """
     status = _current_status()
     webui_ok = bool(status["webui"]["healthy"])
     payload = {
@@ -133,7 +139,7 @@ async def health(request: Request) -> JSONResponse:
             "healthy": status["gateway"]["healthy"],
         },
     }
-    return JSONResponse(payload, status_code=200 if webui_ok else 503)
+    return JSONResponse(payload, status_code=200)
 
 
 async def admin_login_page(request: Request) -> HTMLResponse:
