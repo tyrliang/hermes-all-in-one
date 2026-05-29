@@ -7,6 +7,8 @@
 ARG HERMES_IMAGE=nousresearch/hermes-agent:latest
 FROM ${HERMES_IMAGE}
 
+COPY --from=infisical/agent-vault:latest /usr/local/bin/agent-vault /usr/local/bin/agent-vault
+
 USER root
 
 WORKDIR /app
@@ -17,6 +19,7 @@ COPY requirements-control-plane.txt /app/requirements-control-plane.txt
 COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
 COPY docker/cont-init.d/ /etc/cont-init.d/
 COPY docker/scripts/ /app/docker/scripts/
+COPY templates/hermes-data.env.example /app/templates/hermes-data.env.example
 
 ARG HERMES_WEBUI_VERSION=unknown
 
@@ -28,7 +31,10 @@ RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-w
     && chmod +x /etc/cont-init.d/03-all-in-one-setup \
     && chmod +x /etc/s6-overlay/s6-rc.d/control-plane/run \
     && chmod +x /etc/s6-overlay/s6-rc.d/hermes-webui/run \
-    && chmod +x /app/docker/scripts/gateway_autostart.py
+    && chmod +x /app/docker/scripts/gateway_autostart.py \
+    && chmod +x /app/docker/scripts/agent-vault/entrypoint.sh \
+    && chmod +x /app/docker/scripts/agent-vault/install-broker-ca.sh \
+    && chmod +x /app/docker/scripts/agent-vault/seed-agent-vault-skills.sh
 
 # Official layout: persistent state on /opt/data (not /data/.hermes).
 ENV HOME=/opt/data \
@@ -40,14 +46,15 @@ ENV HOME=/opt/data \
     HERMES_WORKSPACE_DIR=/opt/data/workspace \
     CONTROL_PLANE_INTERNAL_WEBUI_HOST=127.0.0.1 \
     CONTROL_PLANE_INTERNAL_WEBUI_PORT=8788 \
+    CONTROL_PLANE_HOST=0.0.0.0 \
     CONTROL_PLANE_RUNTIME=s6 \
     HERMES_GATEWAY_AUTOSTART=auto \
     HERMES_DASHBOARD=0 \
-    PORT=8787 \
     PYTHONPATH=/app
 
 EXPOSE 8787
 
-# Inherits ENTRYPOINT ["/init", "/opt/hermes/docker/main-wrapper.sh"] from the base image.
+# Opt-in Agent Vault: entrypoint.sh forwards to /init when AGENT_VAULT_* is unset.
+ENTRYPOINT ["/app/docker/scripts/agent-vault/entrypoint.sh"]
 # Hold the container open while s6 supervises control-plane, hermes-webui, and gateways.
 CMD ["sleep", "infinity"]

@@ -72,6 +72,13 @@ HERMES_ADMIN_PASSWORD=your-admin-password
 
 Railway builds the Dockerfile and starts the container. The control plane at `/admin` is ready in ~30 seconds.
 
+**Railway networking notes:**
+
+- Railway injects `PORT` (often `8080`). **Do not set `PORT=8787` in Railway variables** — that desyncs routing from the platform.
+- The public service is the **control plane** on `0.0.0.0:$PORT`. The internal WebUI intentionally binds to **`127.0.0.1:8788`** and is reached via the control-plane proxy — that loopback bind is correct, not a misconfiguration.
+- Set `CONTROL_PLANE_HOST=0.0.0.0` only if you need to override the image default (already baked in).
+- Mount the volume at **`/opt/data`** (not `/data`).
+
 ### 5. Configure your AI provider at `/admin`
 
 Go to `/admin` → **Providers** → pick your provider → enter your API key → Save.
@@ -81,6 +88,30 @@ Go to `/admin` → **Providers** → pick your provider → enter your API key �
 Go to `/admin` → **Channels** → enter your bot token and your numeric Telegram user ID → Save.
 
 The gateway starts automatically once both provider and channel are configured.
+
+---
+
+## Agent Vault (optional)
+
+[Infisical Agent Vault](https://docs.agent-vault.dev/) is an opt-in MITM broker: outbound HTTPS from the gateway goes through the broker, which substitutes placeholders in `/opt/data/.env` with real secrets from the vault UI. No in-app vault SDK — enable it with Railway environment variables only.
+
+| Mode | Where real secrets live | `/opt/data/.env` on the volume |
+|------|-------------------------|--------------------------------|
+| **Default** | Railway variables + `/admin` | Real API keys and tokens |
+| **Agent Vault** | Agent Vault UI only | Placeholders (`__anthropic_api_key__`, etc.) |
+
+**Setup checklist**
+
+1. Run a remote Agent Vault broker ([Hermes on VPS guide](https://docs.agent-vault.dev/guides/hermes-on-vps)).
+2. On Railway, set `AGENT_VAULT_ADDR`, `AGENT_VAULT_TOKEN`, and `AGENT_VAULT_VAULT` (and optionally `AGENT_VAULT_SKILLS_REF`).
+3. Ensure the service can reach the broker on `:14321` (control) and `:14322` (proxy).
+4. Put placeholders on the volume — copy [`templates/hermes-data.env.example`](templates/hermes-data.env.example) to `/opt/data/.env`. Do **not** store real API keys on the volume when vault is enabled.
+5. Configure providers and channels in `/admin` using placeholder names that match your vault substitution rules.
+6. Confirm `/opt/data/.agent-vault-mitm-ca.pem` exists (owned by `hermes`) and gateway traffic succeeds (logs under `/opt/data/logs/`).
+
+`HERMES_WEBUI_PASSWORD` and `HERMES_ADMIN_PASSWORD` stay in platform env (not brokered). For local testing with a remote broker, use `docker compose` and see [`.env.example`](.env.example) for `AGENT_VAULT_*` and optional proxy/CA passthrough.
+
+Further reading: [deploy agent container](https://docs.agent-vault.dev/guides/deploy-agent-container), [Hermes quickstart](https://docs.agent-vault.dev/quickstart/hermes-agent).
 
 ---
 
@@ -272,7 +303,7 @@ When you ask it something that matches a skill — "review this PR", "summarize 
 **A skill is a Markdown file.** Name, description, version, and a set of instructions the agent follows when it activates. That's it. The system is intentionally simple so you can read, edit, and write them yourself.
 
 ```
-/data/.hermes/skills/
+/opt/data/skills/
   github-code-review/
     SKILL.md         ← instructions + frontmatter
     references/      ← optional supporting docs
@@ -391,6 +422,15 @@ Full scheduling docs: [hermes-agent.nousresearch.com/docs/user-guide/features/cr
 |----------|---------|-------------|
 | `HERMES_GATEWAY_AUTOSTART` | `auto` | `auto` = start when provider + channel ready; `off` = never autostart |
 
+### Agent Vault (optional)
+
+| Variable | Description |
+|----------|-------------|
+| `AGENT_VAULT_ADDR` | Broker control URL (e.g. `https://vault.example.com:14321`) |
+| `AGENT_VAULT_TOKEN` | Agent token (`av_agt_...`) — enables vault entrypoint when set with `AGENT_VAULT_ADDR` |
+| `AGENT_VAULT_VAULT` | Vault name (e.g. `prod`) |
+| `AGENT_VAULT_SKILLS_REF` | Git ref for seeding vault skills (default `main`) |
+
 ### Internal paths (don't change these unless you know why)
 
 | Variable | Default |
@@ -446,7 +486,7 @@ In `/admin` → Providers:
 
 ### OpenAI Subscription / ChatGPT account login (advanced)
 
-> **Disclaimer:** This uses your personal ChatGPT account via Railway's SSH terminal. It works but is fragile — OpenAI may change their auth flow at any time. Use at your own risk. Your credentials are stored only in your container's `/data` volume.
+> **Disclaimer:** This uses your personal ChatGPT account via Railway's SSH terminal. It works but is fragile — OpenAI may change their auth flow at any time. Use at your own risk. Your credentials are stored only on your container's `/opt/data` volume.
 
 OAuth-style and subscription-based provider flows (ChatGPT, Codex, Nous Portal) can't be completed in the browser on Railway. Use the Railway CLI instead:
 
@@ -462,7 +502,7 @@ railway ssh
 
 # Inside the container, run Hermes auth
 hermes auth login
-# Follow the prompts — this stores credentials in /data/.hermes
+# Follow the prompts — this stores credentials under /opt/data
 ```
 
 After completing auth in the terminal, go back to `/admin` and the provider should appear as configured.
@@ -497,7 +537,7 @@ The gateway starts automatically. Send `/start` to your bot on Telegram — it s
 
 ## Your Agent's Identity — SOUL.md
 
-`SOUL.md` controls the agent's persistent persona and behavior — its name, how it speaks, what it cares about. In this template it lives at `/data/.hermes/SOUL.md` on the persistent volume.
+`SOUL.md` controls the agent's persistent persona and behavior — its name, how it speaks, what it cares about. In this template it lives at `/opt/data/SOUL.md` on the persistent volume.
 
 Edit it directly from the Hermes WebUI, then restart the gateway from `/admin` → Overview → **Restart** to apply changes.
 
@@ -507,12 +547,12 @@ For full formatting guidance, persona examples, and what `SOUL.md` can control, 
 
 ## Memory & Sessions
 
-Hermes remembers everything in `/data/.hermes/`:
+Hermes remembers everything under `/opt/data/` (mount your Railway volume there):
 
 ```
-/data/.hermes/
+/opt/data/
   config.yaml        ← provider + model config
-  .env               ← channel credentials (tokens, API keys)
+  .env               ← channel credentials (tokens, API keys) or vault placeholders
   sessions/          ← conversation history per channel
   skills/            ← agent skills and tools
   SOUL.md            ← agent identity
@@ -523,7 +563,7 @@ The WebUI and Telegram gateway share this directory. That means:
 - Skills you add via one surface are available on the other
 - One personality, two frontends
 
-Back up `/data` entirely — not just `/data/.hermes`.
+Back up the entire `/opt/data` volume before destructive Railway operations.
 
 ---
 
@@ -556,7 +596,7 @@ Keep `HERMES_GATEWAY_AUTOSTART=off`, deploy once, and use the WebUI exclusively 
 
 **Your agent's `SOUL.md` is the highest-leverage file you'll ever write.** 200 words of well-crafted identity beats 2000 words of prompt injection in system prompts.
 
-**Volume = memory.** If you delete the Railway volume, your agent forgets everything. Back up `/data` before destructive Railway operations.
+**Volume = memory.** If you delete the Railway volume, your agent forgets everything. Back up `/opt/data` before destructive Railway operations.
 
 **The gateway health check is time-based, not HTTP.** Hermes gateway is a Telegram bot process — it's healthy if it's been running without crashing for ≥3 seconds. No HTTP endpoint to probe.
 
@@ -569,6 +609,7 @@ Keep `HERMES_GATEWAY_AUTOSTART=off`, deploy once, and use the WebUI exclusively 
 ```
 Railway service (single container, FROM nousresearch/hermes-agent)
 │
+├── ENTRYPOINT: agent-vault/entrypoint.sh (opt-in) → /init when vault disabled
 ├── PID 1: /init (s6-overlay — zombie reaping, service supervision)
 │   ├── s6 longrun: control-plane → uvicorn :8787 (public /admin, /health, proxy)
 │   ├── s6 longrun: hermes-webui → server.py :8788 (loopback)

@@ -18,5 +18,16 @@ services:
     environment:
       HERMES_WEBUI_PASSWORD: ${HERMES_WEBUI_PASSWORD:-test}
       HERMES_ADMIN_PASSWORD: ${HERMES_ADMIN_PASSWORD:-test}
+      # Agent Vault (optional — remote broker; see .env.example)
+      AGENT_VAULT_ADDR: ${AGENT_VAULT_ADDR:-}
+      AGENT_VAULT_TOKEN: ${AGENT_VAULT_TOKEN:-}
+      AGENT_VAULT_VAULT: ${AGENT_VAULT_VAULT:-}
+      AGENT_VAULT_SKILLS_REF: ${AGENT_VAULT_SKILLS_REF:-main}
+      # For `docker compose exec` debugging when vault is enabled (set in .env if needed)
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-}
+      SSL_CERT_FILE: ${SSL_CERT_FILE:-}
+      REQUESTS_CA_BUNDLE: ${REQUESTS_CA_BUNDLE:-}
     volumes:
       - ./.hermes-data:/opt/data

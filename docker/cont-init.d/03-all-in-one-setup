@@ -7,6 +7,13 @@ set -eu
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
 WEBUI_STATE="${HERMES_WEBUI_STATE_DIR:-/opt/data/webui}"
 WORKSPACE="${HERMES_WORKSPACE_DIR:-/opt/data/workspace}"
+ENV_FILE="${HERMES_HOME}/.env"
+
+if [ -n "${AGENT_VAULT_TOKEN:-}" ] && [ ! -f "$ENV_FILE" ] && [ -f /app/templates/hermes-data.env.example ]; then
+    s6-setuidgid hermes cp -n /app/templates/hermes-data.env.example "$ENV_FILE"
+    chmod 600 "$ENV_FILE" 2>/dev/null || true
+    echo "[all-in-one] seeded $ENV_FILE from Agent Vault placeholder template (no-clobber)" >&2
+fi
 
 s6-setuidgid hermes mkdir -p \
     "$HERMES_HOME" \
