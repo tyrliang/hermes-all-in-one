@@ -2,7 +2,9 @@
 # shellcheck shell=sh
 # Public Starlette control plane — proxies to loopback WebUI and serves /admin.
 
-export HOME="${HERMES_HOME:-/opt/data}"
+export HOME="${HOME:-${HERMES_DATA_DIR:-/opt/data}}"
+export HERMES_DATA_DIR="${HERMES_DATA_DIR:-/opt/data}"
+export HERMES_HOME="${HERMES_HOME:-${HERMES_DATA_DIR}/.hermes}"
 cd "$HOME"
 
 # shellcheck disable=SC1091
@@ -10,9 +12,9 @@ cd "$HOME"
 
 export PYTHONPATH="/app:${PYTHONPATH:-}"
 export HERMES_WEBUI_AGENT_DIR="${HERMES_WEBUI_AGENT_DIR:-/opt/hermes}"
-export HERMES_WEBUI_STATE_DIR="${HERMES_WEBUI_STATE_DIR:-/opt/data/webui}"
-export HERMES_WORKSPACE_DIR="${HERMES_WORKSPACE_DIR:-/opt/data/workspace}"
-export HERMES_CONFIG_PATH="${HERMES_CONFIG_PATH:-/opt/data/config.yaml}"
+export HERMES_WEBUI_STATE_DIR="${HERMES_WEBUI_STATE_DIR:-${HERMES_DATA_DIR}/webui}"
+export HERMES_WORKSPACE_DIR="${HERMES_WORKSPACE_DIR:-${HERMES_DATA_DIR}/workspace}"
+export HERMES_CONFIG_PATH="${HERMES_CONFIG_PATH:-${HERMES_HOME}/config.yaml}"
 export CONTROL_PLANE_HOST="${CONTROL_PLANE_HOST:-0.0.0.0}"
 export CONTROL_PLANE_RUNTIME=s6
 

@@ -54,10 +54,10 @@ smoke_run_container() {
     -e PORT="${CONTAINER_PORT}" \
     -e HERMES_WEBUI_PASSWORD="${WEBUI_PASSWORD}" \
     -e HERMES_ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
-    -e HERMES_HOME=/opt/data \
     -e HOME=/opt/data \
     -e HERMES_DATA_DIR=/opt/data \
-    -e HERMES_CONFIG_PATH=/opt/data/config.yaml \
+    -e HERMES_HOME=/opt/data/.hermes \
+    -e HERMES_CONFIG_PATH=/opt/data/.hermes/config.yaml \
     -e HERMES_WEBUI_STATE_DIR=/opt/data/webui \
     -e HERMES_WORKSPACE_DIR=/opt/data/workspace \
     -e HERMES_WEBUI_AGENT_DIR=/opt/hermes \
@@ -115,7 +115,8 @@ status_json="$(curl --silent --show-error --fail -b "${COOKIE_JAR}" "http://127.
 python3 - <<'PY' "$status_json"
 import json, sys
 payload = json.loads(sys.argv[1])
-assert payload['paths']['config_path'] == '/opt/data/config.yaml'
+assert payload['paths']['config_path'] == '/opt/data/.hermes/config.yaml'
+assert payload['paths']['hermes_home'] == '/opt/data/.hermes'
 assert payload['paths']['webui_state_dir'] == '/opt/data/webui'
 assert payload['paths']['workspace_dir'] == '/opt/data/workspace'
 print('[smoke] admin status paths OK')

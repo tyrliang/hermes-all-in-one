@@ -30,11 +30,11 @@ RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-w
     && chmod +x /etc/s6-overlay/s6-rc.d/hermes-webui/run \
     && chmod +x /app/docker/scripts/gateway_autostart.py
 
-# Official layout: persistent state on /opt/data (not /data/.hermes).
+# Volume at /opt/data; agent state under /opt/data/.hermes (see cont-init migration).
 ENV HOME=/opt/data \
-    HERMES_HOME=/opt/data \
     HERMES_DATA_DIR=/opt/data \
-    HERMES_CONFIG_PATH=/opt/data/config.yaml \
+    HERMES_HOME=/opt/data/.hermes \
+    HERMES_CONFIG_PATH=/opt/data/.hermes/config.yaml \
     HERMES_WEBUI_STATE_DIR=/opt/data/webui \
     HERMES_WEBUI_AGENT_DIR=/opt/hermes \
     HERMES_WORKSPACE_DIR=/opt/data/workspace \
