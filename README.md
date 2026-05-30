@@ -5,7 +5,7 @@
 > **Browser-based setup at `/admin` — no terminal, no config files.**
 > One container, one shared agent identity across WebUI, Telegram, Discord, and Slack. Persistent memory, built-in skills, cron automations ready on deploy.
 
-Built on the official [`nousresearch/hermes-agent`](https://github.com/NousResearch/hermes-agent) image with **s6-overlay** supervision (control plane, WebUI, and gateway as managed services). Persistent state lives under **`/opt/data`** (official Hermes layout).
+Built on the official [`nousresearch/hermes-agent`](https://github.com/NousResearch/hermes-agent) image with **s6-overlay** supervision (control plane, WebUI, and gateway as managed services). Mount one volume at **`/opt/data`**; agent config and memory live in **`/opt/data/.hermes`**.
 
 ---
 
@@ -64,7 +64,7 @@ docker compose up -d --build
 | Admin | http://127.0.0.1:8787/admin |
 | Health | http://127.0.0.1:8787/health |
 
-Data persists in `./.hermes-data` (mounted at `/opt/data` in the container). Configure your provider at `/admin`, same as production.
+Data persists in `./.hermes-data` (bind-mounted at `/opt/data`; agent files under `.hermes/` inside that directory). Configure your provider at `/admin`, same as production.
 
 To build and run the image directly:
 
@@ -88,7 +88,7 @@ Create a new Railway service from this repo (Dockerfile + `railway.toml`).
 
 #### 1. Add a volume
 
-In Railway → your service → **Volumes** tab → mount a persistent volume at **`/opt/data`** (official Hermes layout).
+In Railway → your service → **Volumes** tab → mount a persistent volume at **`/opt/data`**.
 
 > Without a volume, all your agent memory, config, and credentials are lost on every redeploy.
 
@@ -312,7 +312,7 @@ When you ask it something that matches a skill — "review this PR", "summarize 
 **A skill is a Markdown file.** Name, description, version, and a set of instructions the agent follows when it activates. That's it. The system is intentionally simple so you can read, edit, and write them yourself.
 
 ```
-/opt/data/skills/
+/opt/data/.hermes/skills/
   github-code-review/
     SKILL.md         ← instructions + frontmatter
     references/      ← optional supporting docs
@@ -435,8 +435,9 @@ Full scheduling docs: [hermes-agent.nousresearch.com/docs/user-guide/features/cr
 
 | Variable | Default |
 |----------|---------|
-| `HERMES_HOME` | `/opt/data` |
-| `HERMES_CONFIG_PATH` | `/opt/data/config.yaml` |
+| `HERMES_DATA_DIR` | `/opt/data` (volume mount point) |
+| `HERMES_HOME` | `/opt/data/.hermes` (agent config, sessions, skills) |
+| `HERMES_CONFIG_PATH` | `/opt/data/.hermes/config.yaml` |
 | `HERMES_WEBUI_STATE_DIR` | `/opt/data/webui` |
 | `HERMES_WORKSPACE_DIR` | `/opt/data/workspace` |
 | `HERMES_WEBUI_AGENT_DIR` | `/opt/hermes` (agent from official base image) |
@@ -486,7 +487,7 @@ In `/admin` → Providers:
 
 ### OpenAI Subscription / ChatGPT account login (advanced)
 
-> **Disclaimer:** This uses your personal ChatGPT account via the host's SSH/shell into the container. It works but is fragile — OpenAI may change their auth flow at any time. Use at your own risk. Your credentials are stored only on the persistent volume at `/opt/data`.
+> **Disclaimer:** This uses your personal ChatGPT account via the host's SSH/shell into the container. It works but is fragile — OpenAI may change their auth flow at any time. Use at your own risk. Your credentials are stored only on the persistent volume under `/opt/data/.hermes`.
 
 OAuth-style and subscription-based provider flows (ChatGPT, Codex, Nous Portal) can't be completed in the browser UI. Use shell access instead (Railway CLI, `docker exec`, etc.):
 
@@ -502,7 +503,7 @@ railway ssh
 
 # Inside the container, run Hermes auth
 hermes auth login
-# Follow the prompts — this stores credentials under /opt/data
+# Follow the prompts — this stores credentials under /opt/data/.hermes
 ```
 
 After completing auth in the terminal, go back to `/admin` and the provider should appear as configured.
@@ -537,7 +538,7 @@ The gateway starts automatically. Send `/start` to your bot on Telegram — it s
 
 ## Your Agent's Identity — SOUL.md
 
-`SOUL.md` controls the agent's persistent persona and behavior — its name, how it speaks, what it cares about. On the persistent volume it lives at `/opt/data/SOUL.md`.
+`SOUL.md` controls the agent's persistent persona and behavior — its name, how it speaks, what it cares about. On the persistent volume it lives at `/opt/data/.hermes/SOUL.md`.
 
 Edit it directly from the Hermes WebUI, then restart the gateway from `/admin` → Overview → **Restart** to apply changes.
 
@@ -547,17 +548,18 @@ For full formatting guidance, persona examples, and what `SOUL.md` can control, 
 
 ## Memory & Sessions
 
-Hermes remembers everything under `/opt/data/` (`HERMES_HOME`):
+Hermes agent state lives under `/opt/data/.hermes` (`HERMES_HOME`). The WebUI and workspace sit alongside it on the volume:
 
 ```
-/opt/data/
-  config.yaml        ← provider + model config
-  .env               ← channel credentials (tokens, API keys)
-  sessions/          ← conversation history per channel
-  skills/            ← agent skills and tools
-  SOUL.md            ← agent identity
-  webui/             ← WebUI state
-  workspace/         ← agent workspace
+/opt/data/                 ← mount this (HERMES_DATA_DIR)
+  .hermes/                 ← HERMES_HOME
+    config.yaml            ← provider + model config
+    .env                   ← channel credentials (tokens, API keys)
+    sessions/              ← conversation history per channel
+    skills/                ← agent skills and tools
+    SOUL.md                ← agent identity
+  webui/                   ← WebUI state
+  workspace/               ← agent workspace
 ```
 
 The WebUI and Telegram gateway share this directory. That means:
@@ -566,6 +568,8 @@ The WebUI and Telegram gateway share this directory. That means:
 - One personality, two frontends
 
 Back up `/opt/data` entirely before destructive volume operations.
+
+**Upgrading from v0.1.3 or earlier (flat layout):** On first container start, `cont-init` automatically moves agent files from `/opt/data/` into `/opt/data/.hermes/` when it finds `config.yaml` at the volume root. `webui/` and `workspace/` stay in place.
 
 ---
 
@@ -618,8 +622,8 @@ Container (FROM nousresearch/hermes-agent)
 │
 └── CMD: sleep infinity (container stays up while s6 runs services)
 │
-Volume: /opt/data  (HERMES_HOME)
-  ├── config.yaml, .env, sessions/, skills/, SOUL.md
+Volume: /opt/data  (HERMES_DATA_DIR)
+  ├── .hermes/       ← HERMES_HOME (config.yaml, .env, sessions/, skills/, SOUL.md)
   ├── webui/         ← WebUI state
   └── workspace/     ← agent workspace
 ```
@@ -640,4 +644,4 @@ This repository is an all-in-one deployment wrapper (control plane + WebUI proxy
 - **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** — official base image and agent runtime (NousResearch)
 - **[Hermes WebUI](https://github.com/nesquena/hermes-webui)** — browser chat interface (vendored under `vendor/hermes-webui`)
 
-Forked from [sphinxcode/hermes-all-in-one](https://github.com/sphinxcode/hermes-all-in-one) and rebuilt on the official Hermes Docker image with s6-managed services and `/opt/data` persistence.
+Forked from [sphinxcode/hermes-all-in-one](https://github.com/sphinxcode/hermes-all-in-one) and rebuilt on the official Hermes Docker image with s6-managed services and `/opt/data` volume persistence (`/opt/data/.hermes` for agent state).

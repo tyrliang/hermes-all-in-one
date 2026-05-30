@@ -1,21 +1,34 @@
 #!/command/with-contenv sh
 # shellcheck shell=sh
-# Railway all-in-one bootstrap on top of the official Hermes image layout (/opt/data).
+# Railway all-in-one bootstrap: /opt/data volume, agent state in /opt/data/.hermes.
 
 set -eu
 
-HERMES_HOME="${HERMES_HOME:-/opt/data}"
-WEBUI_STATE="${HERMES_WEBUI_STATE_DIR:-/opt/data/webui}"
-WORKSPACE="${HERMES_WORKSPACE_DIR:-/opt/data/workspace}"
+DATA_DIR="${HERMES_DATA_DIR:-/opt/data}"
+HERMES_HOME="${HERMES_HOME:-${DATA_DIR}/.hermes}"
+WEBUI_STATE="${HERMES_WEBUI_STATE_DIR:-${DATA_DIR}/webui}"
+WORKSPACE="${HERMES_WORKSPACE_DIR:-${DATA_DIR}/workspace}"
+
+# Migrate legacy flat layout (config.yaml at volume root) into .hermes/.
+if [ -f "${DATA_DIR}/config.yaml" ] && [ ! -f "${HERMES_HOME}/config.yaml" ]; then
+    echo "[all-in-one] migrating flat volume layout to ${HERMES_HOME}"
+    mkdir -p "${HERMES_HOME}"
+    for base in $(ls -A "${DATA_DIR}"); do
+        case "${base}" in
+            webui|workspace|.hermes|.admin_signing_key) continue ;;
+        esac
+        mv "${DATA_DIR}/${base}" "${HERMES_HOME}/"
+    done
+fi
 
 s6-setuidgid hermes mkdir -p \
-    "$HERMES_HOME" \
-    "$HERMES_HOME/sessions" \
-    "$HERMES_HOME/skills" \
-    "$HERMES_HOME/optional-skills" \
-    "$HERMES_HOME/pairing" \
-    "$WEBUI_STATE" \
-    "$WORKSPACE"
+    "${HERMES_HOME}" \
+    "${HERMES_HOME}/sessions" \
+    "${HERMES_HOME}/skills" \
+    "${HERMES_HOME}/optional-skills" \
+    "${HERMES_HOME}/pairing" \
+    "${WEBUI_STATE}" \
+    "${WORKSPACE}"
 
 for f in telegram-approved.json telegram-pending.json _rate_limits.json; do
     target="$HERMES_HOME/pairing/$f"
@@ -36,4 +49,4 @@ fi
 # listening). cont-init is too early — hermes gateway start / s6-svc -u fails
 # with "supervisor not listening" (rc=102).
 
-echo "[all-in-one] bootstrap complete (HERMES_HOME=$HERMES_HOME)"
+echo "[all-in-one] bootstrap complete (HERMES_DATA_DIR=${DATA_DIR} HERMES_HOME=${HERMES_HOME})"
