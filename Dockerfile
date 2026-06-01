@@ -28,7 +28,10 @@ RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-w
     && chmod +x /etc/cont-init.d/03-all-in-one-setup \
     && chmod +x /etc/s6-overlay/s6-rc.d/control-plane/run \
     && chmod +x /etc/s6-overlay/s6-rc.d/hermes-webui/run \
-    && chmod +x /app/docker/scripts/gateway_autostart.py
+    && chmod +x /app/docker/scripts/gateway_autostart.py \
+    && mkdir -p /opt/data \
+    && chown hermes:hermes /opt/data \
+    && chmod 755 /opt/data
 
 # Volume at /opt/data; agent state under /opt/data/.hermes (see cont-init migration).
 ENV HOME=/opt/data \
