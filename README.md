@@ -101,12 +101,29 @@ docker exec -it --user hermes hermes-all-in-one sh
 
 **TUI over SSH (`hermes --tui`)**
 
-Node 22 is baked into the image at `/usr/local/bin/node`. Some shells (notably `railway ssh`) start with a minimal `PATH` that omits `/usr/local/bin`, which makes `hermes --tui` prompt to install Node and then fail. After v0.3.3+, cont-init fixes this for new deploys. If you still see it, run:
+Node 22 is baked into the image at `/usr/local/bin/node` (with `npm` alongside it). Some shells (notably Tailscale/OpenSSH into the `hermes` user) start with a `PATH` that omits `/usr/local/bin`, or a persisted `~/.zshrc` on `/opt/data` prepends other dirs first — either can make `hermes --tui` fail with `node not found` or `npm not found`. After v0.3.8+, cont-init symlinks `node`/`npm` into `/opt/data/.local/bin` and sets `HERMES_NODE` / `HERMES_NPM`. If you still see it on a running container:
 
 ```bash
-export PATH="/usr/local/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:$PATH"
+mkdir -p ~/.local/bin
+cat > ~/.local/bin/npm <<'EOF'
+#!/bin/sh
+exec /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npm-cli.js "$@"
+EOF
+chmod +x ~/.local/bin/npm
+export PATH="$HOME/.local/bin:/usr/local/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:$PATH"
+export HERMES_NODE=/usr/local/bin/node HERMES_NPM=$HOME/.local/bin/npm
+python3 -c "import os; p=os.environ['HERMES_NPM']; print('npm X_OK', os.access(p, os.X_OK))"
 hermes --tui
 ```
+
+If `which npm` works in zsh but `hermes --tui` still says npm not found, **`/opt/data/.hermes/.env` probably sets `PATH=`** without `/usr/local/bin`. Hermes loads that file with override on startup. Check:
+
+```bash
+grep '^PATH=' /opt/data/.hermes/.env
+/opt/hermes/.venv/bin/python -c "import hermes_cli.main, os, shutil; print(shutil.which('npm'))"
+```
+
+Comment out or fix the `PATH=` line in `.env`, or deploy v0.3.8+ (prepends Node paths after dotenv and copies the patched CLI into the image).
 
 The browser WebUI at `/` is usually a better fit on Railway than the terminal TUI (Ink needs a real TTY). Use the TUI mainly for local `docker compose exec`.
 

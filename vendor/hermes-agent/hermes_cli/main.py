@@ -308,6 +308,30 @@ from hermes_cli.env_loader import load_hermes_dotenv
 
 load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 
+
+def _ensure_container_node_path_after_dotenv() -> None:
+    """Keep Node/npm on PATH after ~/.hermes/.env load (all-in-one / Railway).
+
+    ``load_hermes_dotenv(override=True)`` lets a persisted ``PATH=`` in
+    ``$HERMES_HOME/.env`` replace the shell PATH. Symptom: ``which npm`` works
+    in zsh but ``hermes --tui`` reports ``npm not found`` because Python never
+    sees ``/usr/local/bin``. Idempotent; only prepends missing entries.
+    """
+    if not os.environ.get("HERMES_DATA_DIR"):
+        return
+    prefix = (
+        "/usr/local/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin"
+    )
+    current = os.environ.get("PATH", "")
+    parts = [p for p in current.split(os.pathsep) if p]
+    for entry in reversed(prefix.split(":")):
+        if entry and entry not in parts:
+            parts.insert(0, entry)
+    os.environ["PATH"] = os.pathsep.join(parts)
+
+
+_ensure_container_node_path_after_dotenv()
+
 # Bridge security.redact_secrets from config.yaml → HERMES_REDACT_SECRETS env
 # var BEFORE hermes_logging imports agent.redact (which snapshots the flag at
 # module-import time). Without this, config.yaml's toggle is ignored because
@@ -1273,6 +1297,29 @@ def _tui_need_rebuild(root: Path) -> bool:
     return False
 
 
+def _resolve_tool_bin(bin: str) -> str | None:
+    """Resolve node/npm for the TUI (env override, then PATH).
+
+    ``/usr/local/bin/npm`` is often a symlink to ``npm-cli.js`` (mode 644).
+    Shell ``which`` still prints it, but ``shutil.which`` and ``os.access(X_OK)``
+    reject it. Prefer ``HERMES_NPM`` pointing at an executable wrapper (see
+    hermes-all-in-one cont-init ``05-hermes-path``).
+    """
+    env_key = {"node": "HERMES_NODE", "npm": "HERMES_NPM", "npx": "HERMES_NPX"}.get(bin)
+    if env_key:
+        env_bin = (os.environ.get(env_key) or "").strip()
+        if env_bin and os.path.isfile(env_bin) and os.access(env_bin, os.X_OK):
+            return env_bin
+    path = shutil.which(bin)
+    if path:
+        return path
+    if bin in ("npm", "npx"):
+        local = Path.home() / ".local" / "bin" / bin
+        if local.is_file() and os.access(local, os.X_OK):
+            return str(local)
+    return None
+
+
 def _ensure_tui_node() -> None:
     """Make sure `node` + `npm` are on PATH for the TUI.
 
@@ -1286,7 +1333,10 @@ def _ensure_tui_node() -> None:
     Idempotent no-op when node+npm are already discoverable. Set
     ``HERMES_SKIP_NODE_BOOTSTRAP=1`` to disable auto-install.
     """
-    if shutil.which("node") and shutil.which("npm"):
+    def _discoverable(bin: str) -> bool:
+        return _resolve_tool_bin(bin) is not None
+
+    if _discoverable("node") and _discoverable("npm"):
         return
     if os.environ.get("HERMES_SKIP_NODE_BOOTSTRAP"):
         return
@@ -1343,11 +1393,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     _ensure_tui_node()
 
     def _node_bin(bin: str) -> str:
-        if bin == "node":
-            env_node = os.environ.get("HERMES_NODE")
-            if env_node and os.path.isfile(env_node) and os.access(env_node, os.X_OK):
-                return env_node
-        path = shutil.which(bin)
+        path = _resolve_tool_bin(bin)
         if not path and bin == "node":
             try:
                 from hermes_cli.dep_ensure import ensure_dependency
