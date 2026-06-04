@@ -187,6 +187,35 @@ Railway blocks `NET_ADMIN` and `/dev/net/tun`, so this image uses Tailscale **us
    ```
 3. Disable the service’s **public** Railway URL if you want tailnet-only access (the Tailscale IP/MagicDNS name still works).
 4. Optional — outbound to other tailnet nodes (homelab DB, etc.): `TAILSCALE_OUTBOUND_PROXY=1` (sets `ALL_PROXY` with `NO_PROXY` for loopback and `*.railway.internal`).
+5. Optional — **Tailscale SSH** (shell over the tailnet, no openssh on port 22): enabled by default when `TAILSCALE_AUTH_KEY` is set (`TAILSCALE_SSH=1`). Disable with `TAILSCALE_SSH=0`.
+
+**Tailscale SSH (not port 22)**
+
+This uses [Tailscale SSH](https://tailscale.com/kb/1193/tailscale-ssh): `tailscaled` advertises SSH on the tailnet; your laptop’s `ssh` client talks to Tailscale, not to TCP port 22 on the container. `Connection refused` on port 22 usually means Tailscale SSH is off or your tailnet ACL has no `ssh` rule yet.
+
+1. Redeploy with `TAILSCALE_SSH=1` (default) or enable on a running node:
+   ```bash
+   railway ssh
+   tailscale --socket=/run/tailscale/tailscaled.sock set --ssh
+   ```
+2. In the [Tailscale ACL editor](https://login.tailscale.com/admin/acls), allow SSH to this machine (adjust `dst` if you use tags on the auth key):
+   ```json
+   "ssh": [
+     {
+       "action": "accept",
+       "src": ["autogroup:members"],
+       "dst": ["autogroup:self"],
+       "users": ["hermes", "root"]
+     }
+   ]
+   ```
+3. From a device on the tailnet with the Tailscale client running:
+   ```bash
+   ssh hermes@hermes-richard
+   ```
+   Use the `hermes` Unix user (same UID as the gateway/WebUI). For root-only diagnostics: `ssh root@hermes-richard` (if your ACL allows `root`).
+
+`railway ssh` remains the Railway-hosted shell; Tailscale SSH is separate and works even when the public Railway URL is disabled.
 
 State persists under `/opt/data/.tailscale` on the volume. Without `TAILSCALE_AUTH_KEY`, the sidecar is a no-op and local/docker-compose behavior is unchanged.
 
