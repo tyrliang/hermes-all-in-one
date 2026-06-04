@@ -1,6 +1,6 @@
 #!/command/with-contenv sh
 # shellcheck shell=sh
-# Prepare ~/.ssh for TAILSCALE_SSH=openssh (authorized_keys on the volume).
+# Prepare /opt/data/.ssh for TAILSCALE_SSH=openssh and merge TAILSCALE_SSH_AUTHORIZED_KEYS.
 
 set -eu
 
@@ -11,13 +11,48 @@ esac
 
 DATA_DIR="${HERMES_DATA_DIR:-/opt/data}"
 SSH_DIR="${DATA_DIR}/.ssh"
+AK="${SSH_DIR}/authorized_keys"
 
 mkdir -p "${SSH_DIR}"
-if [ ! -f "${SSH_DIR}/authorized_keys" ]; then
-    touch "${SSH_DIR}/authorized_keys"
-fi
+touch "${AK}"
+
+_is_ssh_pubkey_line() {
+    case "$1" in
+        ssh-ed25519\ *|ssh-rsa\ *|ssh-dss\ *|ecdsa-sha2-*\ *|sk-ssh-ed25519@openssh.com\ *|sk-ecdsa-sha2-nistp256@openssh.com\ *)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+_append_authorized_keys_from_env() {
+    keys="${TAILSCALE_SSH_AUTHORIZED_KEYS:-}"
+    [ -n "${keys}" ] || return 0
+
+    added=0
+    while IFS= read -r line || [ -n "${line}" ]; do
+        line="$(printf '%s' "${line}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        [ -n "${line}" ] || continue
+        if ! _is_ssh_pubkey_line "${line}"; then
+            echo "[all-in-one] warning: skipping invalid line in TAILSCALE_SSH_AUTHORIZED_KEYS" >&2
+            continue
+        fi
+        if grep -qxF "${line}" "${AK}" 2>/dev/null; then
+            continue
+        fi
+        printf '%s\n' "${line}" >> "${AK}"
+        added=$((added + 1))
+    done <<EOF
+${keys}
+EOF
+
+    echo "[all-in-one] merged TAILSCALE_SSH_AUTHORIZED_KEYS (${added} new key(s)) into ${AK}" >&2
+}
+
+_append_authorized_keys_from_env
+
 chown -R hermes:hermes "${SSH_DIR}"
 chmod 700 "${SSH_DIR}"
-chmod 600 "${SSH_DIR}/authorized_keys"
+chmod 600 "${AK}"
 
-echo "[all-in-one] ${SSH_DIR}/authorized_keys ready for TAILSCALE_SSH=openssh"
+echo "[all-in-one] ${AK} ready for TAILSCALE_SSH=openssh" >&2

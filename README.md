@@ -205,9 +205,24 @@ Your ACL is fine for either mode (`action: accept`, `autogroup:nonroot` includes
 
 ### Setup (default openssh)
 
-1. Deploy **v0.3.5+** (or set `TAILSCALE_SSH=openssh` explicitly).
+1. Deploy **v0.3.6+** (or set `TAILSCALE_SSH=openssh` explicitly).
 
-2. Add your Mac’s public key (one time):
+2. Add your SSH public key — **recommended: Railway variable** (no `railway ssh` copy):
+
+```bash
+# On your Mac
+cat ~/.ssh/id_ed25519.pub
+```
+
+In Railway → **Variables**, set (multiline value is fine for several keys):
+
+```
+TAILSCALE_SSH_AUTHORIZED_KEYS=ssh-ed25519 AAAA...comment
+```
+
+Cont-init merges this into `/opt/data/.ssh/authorized_keys` on each boot (idempotent; existing volume keys are kept).
+
+Alternatively, append once via shell:
 
 ```bash
 railway ssh
