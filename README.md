@@ -176,6 +176,10 @@ Railway blocks `NET_ADMIN` and `/dev/net/tun`, so this image uses Tailscale **us
 
 State persists under `/opt/data/.tailscale` on the volume. Without `TAILSCALE_AUTH_KEY`, the sidecar is a no-op and local/docker-compose behavior is unchanged.
 
+**Railway logs look scary but are often fine:** s6 (`s6-rc: info: …`), cont-init (`cont-init: info: … exited 0`), and Tailscale startup lines are written to **stderr**, so Railway tags them `severity: error` even when the message says `info` or `successfully started`. Uvicorn `INFO:` lines behave the same way. Filter for real failures: non-zero exits, crash loops, or HTTP 5xx — not every red line.
+
+With `TAILSCALE_OUTBOUND_PROXY=1`, expect one-time Tailscale noise at boot (`TPM`, UDP buffer size, `profile not found`, brief `connection refused` on `127.0.0.1:1055` before the userspace proxy is up). After `[tailscaled] joined tailnet` and `Switching ipn state … -> Running`, the node is healthy. Optional `TAILSCALE_NO_PROXY_EXTRA` adds comma-separated hosts to `NO_PROXY` for APIs that must not go through the tailnet proxy (public LLM endpoints, etc.).
+
 #### 4. Configure your AI provider at `/admin`
 
 Go to `/admin` → **Providers** → pick your provider → enter your API key → Save.
