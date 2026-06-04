@@ -22,7 +22,14 @@ unset ALL_PROXY HTTP_PROXY HTTPS_PROXY http_proxy https_proxy all_proxy
 
 export TS_LOCAL_APP_DATA="${TS_STATE_DIR}/profile"
 
-echo "[tailscaled] starting userspace tailscaled (state=${TS_STATE_DIR})" >&2
+# Tailscale SSH (not openssh on :22): advertises SSH on the tailnet per ACL policy.
+# Disable with TAILSCALE_SSH=0. Requires an ssh rule in the tailnet ACL — see README.
+TS_SSH=0
+case "${TAILSCALE_SSH:-1}" in
+    1|true|TRUE|True|yes|YES|Yes) TS_SSH=1 ;;
+esac
+
+echo "[tailscaled] starting userspace tailscaled (state=${TS_STATE_DIR} ssh=${TS_SSH})" >&2
 
 tailscaled \
     --tun=userspace-networking \
@@ -33,12 +40,30 @@ tailscaled \
 
 TPID=$!
 
-until tailscale --socket="${TS_SOCKET}" up \
-    --auth-key="${TAILSCALE_AUTH_KEY}" \
-    --hostname="${TS_HOSTNAME}" \
-    --accept-dns=false; do
+while true; do
+    if [ "${TS_SSH}" -eq 1 ]; then
+        if tailscale --socket="${TS_SOCKET}" up \
+            --auth-key="${TAILSCALE_AUTH_KEY}" \
+            --hostname="${TS_HOSTNAME}" \
+            --accept-dns=false \
+            --ssh; then
+            break
+        fi
+    else
+        if tailscale --socket="${TS_SOCKET}" up \
+            --auth-key="${TAILSCALE_AUTH_KEY}" \
+            --hostname="${TS_HOSTNAME}" \
+            --accept-dns=false; then
+            break
+        fi
+    fi
     sleep 0.5
 done
 
-echo "[tailscaled] joined tailnet as ${TS_HOSTNAME}" >&2
+# Ensure SSH stays enabled after volume reuse (node may have joined without --ssh earlier).
+if [ "${TS_SSH}" -eq 1 ]; then
+    tailscale --socket="${TS_SOCKET}" set --ssh 2>/dev/null || true
+fi
+
+echo "[tailscaled] joined tailnet as ${TS_HOSTNAME} (ssh=${TS_SSH})" >&2
 wait "${TPID}"
