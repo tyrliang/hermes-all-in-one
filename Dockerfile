@@ -20,14 +20,19 @@ COPY docker/scripts/ /app/docker/scripts/
 
 ARG HERMES_WEBUI_VERSION=unknown
 
+# Tailscale userspace mode (no TUN): optional tailnet access on Railway. See README § Tailscale.
+RUN curl -fsSL https://tailscale.com/install.sh | sh
+
 RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-webui/api/_version.py \
     && uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir \
         -r /app/vendor/hermes-webui/requirements.txt \
         -r /app/requirements-control-plane.txt \
         "mcp>=1.24.0" \
     && chmod +x /etc/cont-init.d/03-all-in-one-setup \
+    && chmod +x /etc/cont-init.d/04-tailscale-env \
     && chmod +x /etc/s6-overlay/s6-rc.d/control-plane/run \
     && chmod +x /etc/s6-overlay/s6-rc.d/hermes-webui/run \
+    && chmod +x /etc/s6-overlay/s6-rc.d/tailscaled/run \
     && chmod +x /app/docker/scripts/gateway_autostart.py \
     && mkdir -p /opt/data \
     && chown hermes:hermes /opt/data \

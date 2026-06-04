@@ -112,6 +112,21 @@ Railway builds the Dockerfile and starts the container. The control plane at `/a
 - Set `CONTROL_PLANE_HOST=0.0.0.0` only if you need to override the image default (already baked in).
 - Mount the volume at **`/opt/data`** (not `/data`).
 
+#### Optional: Tailscale (tailnet-only access)
+
+Railway blocks `NET_ADMIN` and `/dev/net/tun`, so this image uses Tailscale **userspace networking** (no kernel TUN). When enabled, the container joins your tailnet and inbound traffic to `http://<magicdns>:$PORT/` reaches the control plane (same paths as the public URL: `/`, `/admin`, `/health`).
+
+1. Create an [ephemeral auth key](https://tailscale.com/kb/1085/auth-keys) in the Tailscale admin console.
+2. Set Railway variables:
+   ```
+   TAILSCALE_AUTH_KEY=tskey-auth-...
+   TAILSCALE_HOSTNAME=hermes-all-in-one
+   ```
+3. Disable the service’s **public** Railway URL if you want tailnet-only access (the Tailscale IP/MagicDNS name still works).
+4. Optional — outbound to other tailnet nodes (homelab DB, etc.): `TAILSCALE_OUTBOUND_PROXY=1` (sets `ALL_PROXY` with `NO_PROXY` for loopback and `*.railway.internal`).
+
+State persists under `/opt/data/.tailscale` on the volume. Without `TAILSCALE_AUTH_KEY`, the sidecar is a no-op and local/docker-compose behavior is unchanged.
+
 #### 4. Configure your AI provider at `/admin`
 
 Go to `/admin` → **Providers** → pick your provider → enter your API key → Save.
@@ -616,6 +631,7 @@ Keep `HERMES_GATEWAY_AUTOSTART=off`, deploy once, and use the WebUI exclusively 
 Container (FROM nousresearch/hermes-agent)
 │
 ├── PID 1: /init (s6-overlay — zombie reaping, service supervision)
+│   ├── s6 longrun: tailscaled → userspace tailnet (optional; `TAILSCALE_AUTH_KEY`)
 │   ├── s6 longrun: control-plane → uvicorn on $PORT (public /, /admin, /health, proxy)
 │   ├── s6 longrun: hermes-webui → server.py :8788 (loopback only)
 │   └── s6 dynamic: gateway-default → hermes gateway (Telegram / Discord / Slack)

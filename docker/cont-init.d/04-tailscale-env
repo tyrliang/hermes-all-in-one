@@ -1,0 +1,25 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Optional outbound proxy env for supervised services (tailnet egress via userspace SOCKS5).
+
+set -eu
+
+case "${TAILSCALE_AUTH_KEY:-}" in "") exit 0 ;; esac
+
+case "${TAILSCALE_OUTBOUND_PROXY:-}" in
+    1|true|TRUE|True|yes|YES|Yes) ;;
+    *) exit 0 ;;
+esac
+
+CONT_ENV="/run/s6/container_environment"
+if [ ! -d "${CONT_ENV}" ]; then
+    echo "[tailscale-env] warning: ${CONT_ENV} missing; skipping proxy env" >&2
+    exit 0
+fi
+
+printf '%s' 'socks5://127.0.0.1:1055/' > "${CONT_ENV}/ALL_PROXY"
+printf '%s' 'http://127.0.0.1:1055/' > "${CONT_ENV}/HTTP_PROXY"
+printf '%s' 'http://127.0.0.1:1055/' > "${CONT_ENV}/HTTPS_PROXY"
+printf '%s' 'localhost,127.0.0.1,::1,.railway.internal' > "${CONT_ENV}/NO_PROXY"
+
+echo "[tailscale-env] outbound tailnet proxy enabled (ALL_PROXY + NO_PROXY for loopback)" >&2
