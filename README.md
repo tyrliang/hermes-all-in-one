@@ -125,7 +125,10 @@ From another device on your tailnet (MagicDNS or `100.x.x.x`; local compose uses
 
 ```bash
 curl -s "http://hermes-local:8787/health"
+curl -s -o /dev/null -w "%{http_code}" "http://hermes-local:8787/admin/login"
 ```
+
+If `/` works but `/admin` shows the chat UI or hangs, your browser still has the WebUI **service worker** from an earlier visit — it intercepts `/admin` navigations. Hard-refresh `/admin`, use a private window, or unregister the service worker for that host (v0.3.2+ ships a fix in `sw.js`).
 
 After the node has joined once, restarts usually reuse machine credentials in `/opt/data/.tailscale/` even if the auth key in env has expired — you only need a fresh key when that state is wiped or the machine was removed from the tailnet.
 
