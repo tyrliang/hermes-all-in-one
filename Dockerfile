@@ -23,6 +23,37 @@ ARG HERMES_WEBUI_VERSION=unknown
 # Tailscale userspace mode (no TUN): optional tailnet access on Railway. See README § Tailscale.
 RUN curl -fsSL https://tailscale.com/install.sh | sh
 
+# docker exec shell: micro editor, zsh + Oh My Zsh (root and hermes).
+# OMZ/plugins match hermes-agent-docker/Dockerfile (RUNZSH=no … zsh-syntax-highlighting).
+ARG MICRO_VERSION=2.0.14
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        zsh git curl ca-certificates \
+    && ARCH="$(dpkg --print-architecture)" \
+    && case "$ARCH" in \
+         amd64) MICRO_DIR="micro-${MICRO_VERSION}-linux64" ;; \
+         arm64) MICRO_DIR="micro-${MICRO_VERSION}-linux-arm64" ;; \
+         *) echo "unsupported architecture for micro: $ARCH" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL "https://github.com/zyedidia/micro/releases/download/v${MICRO_VERSION}/${MICRO_DIR}.tar.gz" \
+        | tar -xzO "micro-${MICRO_VERSION}/micro" > /usr/local/bin/micro \
+    && chmod 0755 /usr/local/bin/micro \
+    && mkdir -p /opt/data \
+    && chown hermes:hermes /opt/data \
+    && for OMZ_HOME in /root /opt/data; do \
+         HOME="${OMZ_HOME}" RUNZSH=no CHSH=no KEEP_ZSHRC=yes \
+           sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" \
+         && ZSH_CUSTOM="${OMZ_HOME}/.oh-my-zsh/custom" \
+         && git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions "${ZSH_CUSTOM}/plugins/zsh-autosuggestions" \
+         && git clone --depth=1 https://github.com/zsh-users/zsh-syntax-highlighting "${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting" \
+         && sed -i 's/^plugins=(git)/plugins=(sudo history colored-man-pages zsh-autosuggestions zsh-syntax-highlighting)/' "${OMZ_HOME}/.zshrc"; \
+       done \
+    && chown -R hermes:hermes /opt/data/.oh-my-zsh /opt/data/.zshrc \
+    && chsh -s "$(command -v zsh)" root \
+    && chsh -s "$(command -v zsh)" hermes \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-webui/api/_version.py \
     && uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir \
         -r /app/vendor/hermes-webui/requirements.txt \
@@ -40,6 +71,7 @@ RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-w
 
 # Volume at /opt/data; agent state under /opt/data/.hermes (see cont-init migration).
 ENV HOME=/opt/data \
+    SHELL=/bin/zsh \
     HERMES_DATA_DIR=/opt/data \
     HERMES_HOME=/opt/data/.hermes \
     HERMES_CONFIG_PATH=/opt/data/.hermes/config.yaml \

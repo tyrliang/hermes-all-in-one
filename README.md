@@ -80,6 +80,55 @@ docker run -d --name hermes-all-in-one \
 
 Pre-built images are published to GitHub Container Registry on each release (`ghcr.io/<owner>/hermes-all-in-one` — see `.github/workflows/docker.yml`).
 
+### Container shell & useful commands
+
+Compose names the container **`hermes-all-in-one`** (service name `hermes`). From the repo root:
+
+**Shell (interactive)**
+
+```bash
+# Compose (recommended)
+docker compose exec hermes sh
+
+# Same container, direct docker exec
+docker exec -it hermes-all-in-one sh
+
+# Drop to the hermes user (how the app and gateway run)
+docker exec -it --user hermes hermes-all-in-one sh
+```
+
+`s6` binaries live under `/command/` and are on `PATH` only inside supervised processes. For manual `s6-svc` / `s6-svstat`, use the full path, e.g. `/command/s6-svstat /run/service/gateway-default`.
+
+**Logs & lifecycle**
+
+```bash
+docker compose logs -f hermes
+docker compose ps
+docker compose down          # stop and remove container
+docker compose up -d --build # rebuild after Dockerfile changes
+```
+
+**Health (host → published port)**
+
+```bash
+curl -s http://127.0.0.1:8787/health | python3 -m json.tool
+```
+
+**Tailscale (when `TAILSCALE_AUTH_KEY` is set)**
+
+```bash
+docker exec hermes-all-in-one tailscale --socket=/run/tailscale/tailscaled.sock status
+docker exec hermes-all-in-one ls -la /opt/data/.tailscale
+```
+
+From another device on your tailnet (MagicDNS or `100.x.x.x`; local compose uses port **8787**):
+
+```bash
+curl -s "http://hermes-local:8787/health"
+```
+
+After the node has joined once, restarts usually reuse machine credentials in `/opt/data/.tailscale/` even if the auth key in env has expired — you only need a fresh key when that state is wiped or the machine was removed from the tailnet.
+
 ---
 
 ### Deploy to Railway
