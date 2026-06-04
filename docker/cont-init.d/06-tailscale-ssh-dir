@@ -5,7 +5,9 @@
 set -eu
 
 case "${TAILSCALE_AUTH_KEY:-}" in "") exit 0 ;; esac
-case "${TAILSCALE_SSH:-1}" in openssh|OPENSSH|Openssh) ;; *) exit 0 ;; esac
+case "${TAILSCALE_SSH:-openssh}" in
+    0|false|FALSE|False|no|NO|No|off|OFF|Off|tailscale|TAILSCALE|Tailscale) exit 0 ;;
+esac
 
 DATA_DIR="${HERMES_DATA_DIR:-/opt/data}"
 SSH_DIR="${DATA_DIR}/.ssh"
