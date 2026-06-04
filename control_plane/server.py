@@ -148,6 +148,11 @@ async def health(request: Request) -> JSONResponse:
     return JSONResponse(payload, status_code=200)
 
 
+async def admin_trailing_slash(request: Request) -> Response:
+    query = f"?{request.url.query}" if request.url.query else ""
+    return RedirectResponse(url=f"/admin{query}", status_code=301)
+
+
 async def admin_login_page(request: Request) -> HTMLResponse:
     if is_admin_authenticated(request):
         return RedirectResponse(url="/admin", status_code=302)
@@ -366,6 +371,7 @@ async def proxy_catchall(request: Request) -> Response:
 routes = [
     Route("/health", health),
     Route("/admin", admin_index),
+    Route("/admin/", admin_trailing_slash, methods=["GET"]),
     Route("/admin/login", admin_login_page, methods=["GET"]),
     Route("/admin/login", admin_login, methods=["POST"]),
     Route("/admin/logout", admin_logout, methods=["POST"]),

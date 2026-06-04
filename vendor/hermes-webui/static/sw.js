@@ -109,9 +109,11 @@ self.addEventListener('fetch', (event) => {
     url.pathname.includes('/api/') ||
     url.pathname.includes('/stream') ||
     url.pathname.startsWith('/health') ||
-    url.pathname.includes('/health')
+    url.pathname.includes('/health') ||
+    url.pathname === '/admin' ||
+    url.pathname.startsWith('/admin/')
   ) {
-    return; // let browser handle normally
+    return; // let browser handle normally (control-plane /admin is not part of WebUI shell)
   }
 
   // Page navigations must be network-first. A stale cached './' response can
