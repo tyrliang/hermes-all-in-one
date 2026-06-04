@@ -1,0 +1,21 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Prepare ~/.ssh for TAILSCALE_SSH=openssh (authorized_keys on the volume).
+
+set -eu
+
+case "${TAILSCALE_AUTH_KEY:-}" in "") exit 0 ;; esac
+case "${TAILSCALE_SSH:-1}" in openssh|OPENSSH|Openssh) ;; *) exit 0 ;; esac
+
+DATA_DIR="${HERMES_DATA_DIR:-/opt/data}"
+SSH_DIR="${DATA_DIR}/.ssh"
+
+mkdir -p "${SSH_DIR}"
+if [ ! -f "${SSH_DIR}/authorized_keys" ]; then
+    touch "${SSH_DIR}/authorized_keys"
+fi
+chown -R hermes:hermes "${SSH_DIR}"
+chmod 700 "${SSH_DIR}"
+chmod 600 "${SSH_DIR}/authorized_keys"
+
+echo "[all-in-one] ${SSH_DIR}/authorized_keys ready for TAILSCALE_SSH=openssh"

@@ -187,35 +187,73 @@ Railway blocks `NET_ADMIN` and `/dev/net/tun`, so this image uses Tailscale **us
    ```
 3. Disable the service’s **public** Railway URL if you want tailnet-only access (the Tailscale IP/MagicDNS name still works).
 4. Optional — outbound to other tailnet nodes (homelab DB, etc.): `TAILSCALE_OUTBOUND_PROXY=1` (sets `ALL_PROXY` with `NO_PROXY` for loopback and `*.railway.internal`).
-5. Optional — **Tailscale SSH** (shell over the tailnet, no openssh on port 22): enabled by default when `TAILSCALE_AUTH_KEY` is set (`TAILSCALE_SSH=1`). Disable with `TAILSCALE_SSH=0`.
+5. Optional — **shell over the tailnet** via `TAILSCALE_SSH` (see below). Disable with `TAILSCALE_SSH=0`.
 
-**Tailscale SSH (not port 22)**
+**Tailscale shell access (`TAILSCALE_SSH`)**
 
-This uses [Tailscale SSH](https://tailscale.com/kb/1193/tailscale-ssh): `tailscaled` advertises SSH on the tailnet; your laptop’s `ssh` client talks to Tailscale, not to TCP port 22 on the container. `Connection refused` on port 22 usually means Tailscale SSH is off or your tailnet ACL has no `ssh` rule yet.
+| Value | Behavior |
+|-------|----------|
+| `1` or `tailscale` (default) | [Tailscale SSH](https://tailscale.com/kb/1193/tailscale-ssh) — identity-based, no `sshd` on port 22 |
+| `openssh` | `openssh` on loopback + `tailscale serve` — stock `ssh` with your pubkey in `/opt/data/.ssh/authorized_keys` |
+| `0` | Off |
 
-1. Redeploy with `TAILSCALE_SSH=1` (default) or enable on a running node:
-   ```bash
-   railway ssh
-   tailscale --socket=/run/tailscale/tailscaled.sock set --ssh
-   ```
-2. In the [Tailscale ACL editor](https://login.tailscale.com/admin/acls), allow SSH to this machine (adjust `dst` if you use tags on the auth key):
+### Default: Tailscale SSH
+
+`tailscaled` handles SSH on the tailnet (not a normal `sshd` on port 22). Your Mac must have the **Tailscale app running**.
+
+1. In the [Tailscale ACL editor](https://login.tailscale.com/admin/acls), allow SSH (if your auth key uses **tags**, set `dst` to that tag — `autogroup:self` will not match):
    ```json
    "ssh": [
      {
        "action": "accept",
        "src": ["autogroup:members"],
        "dst": ["autogroup:self"],
-       "users": ["hermes", "root"]
+       "users": ["autogroup:nonroot", "root"]
      }
    ]
    ```
-3. From a device on the tailnet with the Tailscale client running:
-   ```bash
-   ssh hermes@hermes-richard
-   ```
-   Use the `hermes` Unix user (same UID as the gateway/WebUI). For root-only diagnostics: `ssh root@hermes-richard` (if your ACL allows `root`).
+   Use `"action": "accept"`, not `"check"`, while debugging — **`check` often makes `ssh` hang** until you complete browser re-auth (see below).
 
-`railway ssh` remains the Railway-hosted shell; Tailscale SSH is separate and works even when the public Railway URL is disabled.
+2. Connect (pick one that works on your Mac):
+   ```bash
+   tailscale ssh hermes@hermes-richard
+   ssh hermes@hermes-richard
+   ssh hermes+password@hermes-richard   # if OpenSSH stalls on auth; password can be anything
+   ```
+
+3. If it still hangs, run `ssh -vvv hermes@hermes-richard` on your Mac and check the server:
+   ```bash
+   railway ssh
+   tailscale --socket=/run/tailscale/tailscaled.sock status
+   tailscale --socket=/run/tailscale/tailscaled.sock debug prefs | grep -i ssh
+   ```
+
+| Symptom | Likely cause |
+|---------|----------------|
+| `Connection refused` | Tailscale SSH not advertised — redeploy v0.3.4+ or `tailscale set --ssh` |
+| Hangs after connect | ACL `"action": "check"` — use `tailscale ssh …` (shows browser URL) or switch to `"accept"` |
+| Hangs at auth | Try `hermes+password@host` or use `tailscale ssh` instead of plain `ssh` |
+| Works for IP, not MagicDNS | MagicDNS / split DNS on the client |
+
+### Alternative: `TAILSCALE_SSH=openssh`
+
+Stock OpenSSH, exposed on the tailnet with `tailscale serve`. Add your public key once:
+
+```bash
+railway ssh
+mkdir -p /opt/data/.ssh && chmod 700 /opt/data/.ssh
+echo 'ssh-ed25519 AAAA... you@laptop' >> /opt/data/.ssh/authorized_keys
+chmod 600 /opt/data/.ssh/authorized_keys
+chown -R hermes:hermes /opt/data/.ssh
+```
+
+Set `TAILSCALE_SSH=openssh` and redeploy, then:
+
+```bash
+ssh hermes@hermes-richard
+```
+
+`railway ssh` remains the Railway-hosted shell; tailnet SSH is separate and works when the public Railway URL is disabled.
 
 State persists under `/opt/data/.tailscale` on the volume. Without `TAILSCALE_AUTH_KEY`, the sidecar is a no-op and local/docker-compose behavior is unchanged.
 

@@ -16,6 +16,7 @@ COPY control_plane /app/control_plane
 COPY requirements-control-plane.txt /app/requirements-control-plane.txt
 COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
 COPY docker/cont-init.d/ /etc/cont-init.d/
+COPY docker/sshd/ /etc/ssh/sshd_config.d/
 COPY docker/scripts/ /app/docker/scripts/
 
 ARG HERMES_WEBUI_VERSION=unknown
@@ -28,7 +29,7 @@ RUN curl -fsSL https://tailscale.com/install.sh | sh
 ARG MICRO_VERSION=2.0.14
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        zsh git curl ca-certificates \
+        zsh git curl ca-certificates openssh-server \
     && ARCH="$(dpkg --print-architecture)" \
     && case "$ARCH" in \
          amd64) MICRO_DIR="micro-${MICRO_VERSION}-linux64" ;; \
@@ -62,6 +63,7 @@ RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-w
     && chmod +x /etc/cont-init.d/03-all-in-one-setup \
     && chmod +x /etc/cont-init.d/04-tailscale-env \
     && chmod +x /etc/cont-init.d/05-hermes-path \
+    && chmod +x /etc/cont-init.d/06-tailscale-ssh-dir \
     && chmod +x /etc/s6-overlay/s6-rc.d/control-plane/run \
     && chmod +x /etc/s6-overlay/s6-rc.d/hermes-webui/run \
     && chmod +x /etc/s6-overlay/s6-rc.d/tailscaled/run \
