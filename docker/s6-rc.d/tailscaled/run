@@ -3,6 +3,13 @@
 # Tailscale userspace networking (no TUN / NET_ADMIN) for Railway and similar hosts.
 # Inbound: tailnet → Tailscale IP:$PORT forwards to localhost:$PORT (control plane).
 # Outbound to other tailnet nodes: optional TAILSCALE_OUTBOUND_PROXY (see cont-init 04).
+#
+# SSH (TAILSCALE_SSH) — Railway uses userspace networking; Tailscale SSH (--ssh) often
+# accepts TCP :22 but never sends an SSH banner (client hangs after "Local version string").
+# Default openssh: real sshd on loopback + `tailscale serve --tcp 22`.
+#   openssh (default) — stock `ssh user@host` + /opt/data/.ssh/authorized_keys
+#   tailscale         — `tailscale up --ssh` (can hang on userspace; not recommended here)
+#   0                 — off
 
 # No auth key: hold the dependency slot open without joining a tailnet.
 case "${TAILSCALE_AUTH_KEY:-}" in
@@ -14,6 +21,14 @@ TS_STATE_DIR="${TAILSCALE_STATE_DIR:-${DATA_DIR}/.tailscale}"
 TS_SOCKET="${TAILSCALE_SOCKET:-/run/tailscale/tailscaled.sock}"
 TS_HOSTNAME="${TAILSCALE_HOSTNAME:-${RAILWAY_SERVICE_NAME:-hermes-all-in-one}}"
 
+# openssh | tailscale | off
+TS_SSH_MODE="openssh"
+case "${TAILSCALE_SSH:-openssh}" in
+    0|false|FALSE|False|no|NO|No|off|OFF|Off) TS_SSH_MODE="off" ;;
+    tailscale|TAILSCALE|Tailscale) TS_SSH_MODE="tailscale" ;;
+    1|true|TRUE|True|yes|YES|Yes|openssh|OPENSSH|Openssh) TS_SSH_MODE="openssh" ;;
+esac
+
 mkdir -p /run/tailscale "${TS_STATE_DIR}" "${TS_STATE_DIR}/profile"
 
 # Do not route tailscaled's own control-plane traffic through ALL_PROXY (set by
@@ -22,14 +37,7 @@ unset ALL_PROXY HTTP_PROXY HTTPS_PROXY http_proxy https_proxy all_proxy
 
 export TS_LOCAL_APP_DATA="${TS_STATE_DIR}/profile"
 
-# Tailscale SSH (not openssh on :22): advertises SSH on the tailnet per ACL policy.
-# Disable with TAILSCALE_SSH=0. Requires an ssh rule in the tailnet ACL — see README.
-TS_SSH=0
-case "${TAILSCALE_SSH:-1}" in
-    1|true|TRUE|True|yes|YES|Yes) TS_SSH=1 ;;
-esac
-
-echo "[tailscaled] starting userspace tailscaled (state=${TS_STATE_DIR} ssh=${TS_SSH})" >&2
+echo "[tailscaled] starting userspace tailscaled (state=${TS_STATE_DIR} ssh=${TS_SSH_MODE})" >&2
 
 tailscaled \
     --tun=userspace-networking \
@@ -40,30 +48,46 @@ tailscaled \
 
 TPID=$!
 
-while true; do
-    if [ "${TS_SSH}" -eq 1 ]; then
-        if tailscale --socket="${TS_SOCKET}" up \
+_ts_up() {
+    if [ "${TS_SSH_MODE}" = "tailscale" ]; then
+        tailscale --socket="${TS_SOCKET}" up \
             --auth-key="${TAILSCALE_AUTH_KEY}" \
             --hostname="${TS_HOSTNAME}" \
             --accept-dns=false \
-            --ssh; then
-            break
-        fi
+            --ssh
     else
-        if tailscale --socket="${TS_SOCKET}" up \
+        tailscale --socket="${TS_SOCKET}" up \
             --auth-key="${TAILSCALE_AUTH_KEY}" \
             --hostname="${TS_HOSTNAME}" \
-            --accept-dns=false; then
-            break
-        fi
+            --accept-dns=false
     fi
+}
+
+while ! _ts_up; do
     sleep 0.5
 done
 
-# Ensure SSH stays enabled after volume reuse (node may have joined without --ssh earlier).
-if [ "${TS_SSH}" -eq 1 ]; then
+if [ "${TS_SSH_MODE}" = "tailscale" ]; then
     tailscale --socket="${TS_SOCKET}" set --ssh 2>/dev/null || true
+elif [ "${TS_SSH_MODE}" = "openssh" ]; then
+    if command -v sshd >/dev/null 2>&1; then
+        mkdir -p /run/sshd
+        ssh-keygen -A 2>/dev/null || true
+        /usr/sbin/sshd -e 2>/dev/null &
+        sleep 0.5
+        if tailscale --socket="${TS_SOCKET}" serve --bg --tcp 22 127.0.0.1:22 2>/dev/null; then
+            echo "[tailscaled] openssh on 127.0.0.1:22 via tailscale serve (add keys to ${DATA_DIR}/.ssh/authorized_keys)" >&2
+        else
+            echo "[tailscaled] warning: tailscale serve for SSH failed; check tailscale serve status" >&2
+        fi
+    else
+        echo "[tailscaled] warning: openssh-server not installed; set TAILSCALE_SSH=tailscale or rebuild image" >&2
+    fi
 fi
 
-echo "[tailscaled] joined tailnet as ${TS_HOSTNAME} (ssh=${TS_SSH})" >&2
+echo "[tailscaled] joined tailnet as ${TS_HOSTNAME} (ssh=${TS_SSH_MODE})" >&2
+if [ "${TS_SSH_MODE}" = "tailscale" ]; then
+    echo "[tailscaled] warning: Tailscale SSH often hangs on userspace (no remote SSH banner); prefer TAILSCALE_SSH=openssh" >&2
+fi
+
 wait "${TPID}"
