@@ -99,6 +99,17 @@ docker exec -it --user hermes hermes-all-in-one sh
 
 `s6` binaries live under `/command/` and are on `PATH` only inside supervised processes. For manual `s6-svc` / `s6-svstat`, use the full path, e.g. `/command/s6-svstat /run/service/gateway-default`.
 
+**TUI over SSH (`hermes --tui`)**
+
+Node 22 is baked into the image at `/usr/local/bin/node`. Some shells (notably `railway ssh`) start with a minimal `PATH` that omits `/usr/local/bin`, which makes `hermes --tui` prompt to install Node and then fail. After v0.3.3+, cont-init fixes this for new deploys. If you still see it, run:
+
+```bash
+export PATH="/usr/local/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:$PATH"
+hermes --tui
+```
+
+The browser WebUI at `/` is usually a better fit on Railway than the terminal TUI (Ink needs a real TTY). Use the TUI mainly for local `docker compose exec`.
+
 **Logs & lifecycle**
 
 ```bash

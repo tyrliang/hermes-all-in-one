@@ -61,6 +61,7 @@ RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-w
         "mcp>=1.24.0" \
     && chmod +x /etc/cont-init.d/03-all-in-one-setup \
     && chmod +x /etc/cont-init.d/04-tailscale-env \
+    && chmod +x /etc/cont-init.d/05-hermes-path \
     && chmod +x /etc/s6-overlay/s6-rc.d/control-plane/run \
     && chmod +x /etc/s6-overlay/s6-rc.d/hermes-webui/run \
     && chmod +x /etc/s6-overlay/s6-rc.d/tailscaled/run \
@@ -70,7 +71,11 @@ RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-w
     && chmod 755 /opt/data
 
 # Volume at /opt/data; agent state under /opt/data/.hermes (see cont-init migration).
-ENV HOME=/opt/data \
+# /usr/local/bin: Node 22 from the base image (TUI, npm tools). cont-init 05-hermes-path
+# also patches PATH for railway ssh shells that inherit a minimal PATH.
+ENV PATH="/usr/local/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}" \
+    HERMES_NODE=/usr/local/bin/node \
+    HOME=/opt/data \
     SHELL=/bin/zsh \
     HERMES_DATA_DIR=/opt/data \
     HERMES_HOME=/opt/data/.hermes \
