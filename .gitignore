@@ -25,3 +25,4 @@ __pycache__/
 .DS_Store
 Thumbs.db
 .hermes-data/
+docker-compose.override.yml

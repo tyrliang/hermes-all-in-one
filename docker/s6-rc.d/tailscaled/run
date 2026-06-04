@@ -1,0 +1,38 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Tailscale userspace networking (no TUN / NET_ADMIN) for Railway and similar hosts.
+# Inbound: tailnet → Tailscale IP:$PORT forwards to localhost:$PORT (control plane).
+# Outbound to other tailnet nodes: optional TAILSCALE_OUTBOUND_PROXY (see cont-init 04).
+
+# No auth key: hold the dependency slot open without joining a tailnet.
+case "${TAILSCALE_AUTH_KEY:-}" in
+    "") exec sleep infinity ;;
+esac
+
+DATA_DIR="${HERMES_DATA_DIR:-/opt/data}"
+TS_STATE_DIR="${TAILSCALE_STATE_DIR:-${DATA_DIR}/.tailscale}"
+TS_SOCKET="${TAILSCALE_SOCKET:-/run/tailscale/tailscaled.sock}"
+TS_HOSTNAME="${TAILSCALE_HOSTNAME:-${RAILWAY_SERVICE_NAME:-hermes-all-in-one}}"
+
+mkdir -p /run/tailscale "${TS_STATE_DIR}"
+
+echo "[tailscaled] starting userspace tailscaled (state=${TS_STATE_DIR})" >&2
+
+tailscaled \
+    --tun=userspace-networking \
+    --socks5-server=localhost:1055 \
+    --outbound-http-proxy-listen=localhost:1055 \
+    --state="${TS_STATE_DIR}/tailscaled.state" \
+    --socket="${TS_SOCKET}" &
+
+TPID=$!
+
+until tailscale --socket="${TS_SOCKET}" up \
+    --auth-key="${TAILSCALE_AUTH_KEY}" \
+    --hostname="${TS_HOSTNAME}" \
+    --accept-dns=false; do
+    sleep 0.5
+done
+
+echo "[tailscaled] joined tailnet as ${TS_HOSTNAME}" >&2
+wait "${TPID}"
