@@ -268,6 +268,14 @@ State persists under `/opt/data/.tailscale` on the volume. Without `TAILSCALE_AU
 
 With `TAILSCALE_OUTBOUND_PROXY=1`, expect one-time Tailscale noise at boot (`TPM`, UDP buffer size, `profile not found`, brief `connection refused` on `127.0.0.1:1055` before the userspace proxy is up). After `[tailscaled] joined tailnet` and `Switching ipn state … -> Running`, the node is healthy. Optional `TAILSCALE_NO_PROXY_EXTRA` adds comma-separated hosts to `NO_PROXY` for APIs that must not go through the tailnet proxy (public LLM endpoints, etc.).
 
+**PMTU black hole (office network: small responses work, large pages hang)**
+
+Symptoms from some client networks (corporate NAT, PPPoE, firewalls that drop ICMP fragmentation-needed): `curl -I` succeeds but `curl` (full GET) returns an empty body; `ping -s 1220` works but `ping -s 1230` drops. Tailscale’s default tunnel MTU (1280) negotiates TCP MSS around 1240, which can exceed the real path MTU (~1230).
+
+Railway blocks `NET_ADMIN`, so **iptables MSS clamp is not available**. **v0.3.9+** sets `TS_DEBUG_MTU=1200` by default when Tailscale is enabled (logs: `[tailscaled] TS_DEBUG_MTU=1200`). Override with `TAILSCALE_MTU` (e.g. `1100` for tighter paths) or `TAILSCALE_MTU=0` to use Tailscale’s default 1280. `TS_DEBUG_MTU` is a Tailscale debug knob — the only server-side fix without kernel TUN on Railway.
+
+To confirm before redeploying, temporarily lower the Tailscale interface MTU on your Mac: `sudo ifconfig utun<N> mtu 1220` (find `utun` via `ifconfig | grep -B1 "100\."`).
+
 #### 4. Configure your AI provider at `/admin`
 
 Go to `/admin` → **Providers** → pick your provider → enter your API key → Save.
