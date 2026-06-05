@@ -18,8 +18,6 @@ COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
 COPY docker/cont-init.d/ /etc/cont-init.d/
 COPY docker/sshd/ /etc/ssh/sshd_config.d/
 COPY docker/scripts/ /app/docker/scripts/
-# Base image ships /opt/hermes/hermes_cli; layer our CLI fixes (TUI PATH/npm, etc.).
-COPY vendor/hermes-agent/hermes_cli/main.py /opt/hermes/hermes_cli/main.py
 
 ARG HERMES_WEBUI_VERSION=unknown
 
@@ -79,7 +77,6 @@ RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-w
 # also patches PATH for railway ssh shells that inherit a minimal PATH.
 ENV PATH="/usr/local/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}" \
     HERMES_NODE=/usr/local/bin/node \
-    HERMES_NPM=/opt/data/.local/bin/npm \
     HOME=/opt/data \
     SHELL=/bin/zsh \
     HERMES_DATA_DIR=/opt/data \
