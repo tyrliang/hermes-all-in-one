@@ -1,103 +1,41 @@
 #!/command/with-contenv sh
 # shellcheck shell=sh
-# Ensure Node/npm and the hermes venv are on PATH for railway ssh / docker exec.
-# The base image installs Node at /usr/local/bin; Railway SSH often inherits a
-# minimal PATH (/usr/bin:/bin) that omits it, so `hermes --tui` fails with
-# "node not found" even though the binary is present.
-#
-# npm/npx are symlinks to .js files that are often mode 644. Shell `which npm`
-# still prints /usr/local/bin/npm, but Python shutil.which / os.access(X_OK)
-# reject them — set HERMES_NPM to an executable wrapper in /opt/data/.local/bin.
+# Ensure Node and the hermes venv are on PATH for railway ssh / docker exec.
+# npm wrappers live in 07-hermes-npm-wrappers (after 06-tailscale-ssh-dir) so SSH
+# setup never blocks on volume permission quirks under /opt/data/.local/bin.
 
 set -eu
 
 PATH_PREFIX="/usr/local/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin"
 current="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
 new_path="${PATH_PREFIX}:${current}"
-NPM_WRAPPER="/opt/data/.local/bin/npm"
-NPX_WRAPPER="/opt/data/.local/bin/npx"
 
 export PATH="${new_path}"
-
-mkdir -p /opt/data/.local/bin
-
-# Real node binary — symlink is fine.
-if [ -x /usr/local/bin/node ]; then
-    ln -sf /usr/local/bin/node /opt/data/.local/bin/node
-fi
-
-# Heal missing npm/npx symlinks (some base tags ship node without npm on PATH).
-if [ -x /usr/local/bin/node ] && [ ! -e /usr/local/bin/npm ]; then
-    if [ -f /usr/local/lib/node_modules/npm/bin/npm-cli.js ]; then
-        ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
-        ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
-    fi
-fi
-
-# Make upstream .js entrypoints executable (fixes Python os.access on the symlink).
-for js in /usr/local/lib/node_modules/npm/bin/npm-cli.js \
-          /usr/local/lib/node_modules/npm/bin/npx-cli.js; do
-    if [ -f "$js" ]; then
-        chmod 755 "$js" 2>/dev/null || true
-    fi
-done
-
-# Executable wrappers — Hermes uses Python shutil.which / os.access(X_OK).
-if [ -x /usr/local/bin/node ] && [ -f /usr/local/lib/node_modules/npm/bin/npm-cli.js ]; then
-    cat > "${NPM_WRAPPER}" <<'EOF'
-#!/bin/sh
-exec /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npm-cli.js "$@"
-EOF
-    chmod 755 "${NPM_WRAPPER}"
-fi
-if [ -x /usr/local/bin/node ] && [ -f /usr/local/lib/node_modules/npm/bin/npx-cli.js ]; then
-    cat > "${NPX_WRAPPER}" <<'EOF'
-#!/bin/sh
-exec /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npx-cli.js "$@"
-EOF
-    chmod 755 "${NPX_WRAPPER}"
-fi
-
-chown -R hermes:hermes /opt/data/.local/bin 2>/dev/null || true
-
-hermes_npm="${NPM_WRAPPER}"
-if [ ! -x "${hermes_npm}" ]; then
-    hermes_npm="/usr/local/bin/npm"
-fi
 
 if [ -d /run/s6/container_environment ]; then
     printf '%s' "${new_path}" > /run/s6/container_environment/PATH
     printf '%s' "/usr/local/bin/node" > /run/s6/container_environment/HERMES_NODE
-    if [ -n "${hermes_npm}" ]; then
-        printf '%s' "${hermes_npm}" > /run/s6/container_environment/HERMES_NPM
-    fi
 fi
 
 mkdir -p /etc/profile.d
-cat > /etc/profile.d/hermes-path.sh <<EOF
+cat > /etc/profile.d/hermes-path.sh <<'EOF'
 # Hermes all-in-one — Node and hermes CLI on PATH for ssh/exec shells
-export PATH="/usr/local/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:\${PATH:-}"
-export HERMES_NODE="\${HERMES_NODE:-/usr/local/bin/node}"
-export HERMES_NPM="\${HERMES_NPM:-${hermes_npm}}"
+export PATH="/usr/local/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH:-}"
+export HERMES_NODE="${HERMES_NODE:-/usr/local/bin/node}"
 EOF
 chmod 644 /etc/profile.d/hermes-path.sh
 
 if [ -d /etc/zsh ]; then
     mkdir -p /etc/zsh/zshenv.d
-    cat > /etc/zsh/zshenv.d/50-hermes-path.zsh <<EOF
+    cat > /etc/zsh/zshenv.d/50-hermes-path.zsh <<'EOF'
 # Hermes all-in-one — Node on PATH (railway ssh uses zsh with a minimal PATH)
-export PATH="/usr/local/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:\${PATH:-}"
-export HERMES_NODE="\${HERMES_NODE:-/usr/local/bin/node}"
-export HERMES_NPM="\${HERMES_NPM:-${hermes_npm}}"
+export PATH="/usr/local/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH:-}"
+export HERMES_NODE="${HERMES_NODE:-/usr/local/bin/node}"
 EOF
 fi
 
 node_ver="?"
-npm_ok="no"
 if [ -x /usr/local/bin/node ]; then
     node_ver="$(/usr/local/bin/node -v 2>/dev/null || echo '?')"
 fi
-if [ -x "${hermes_npm}" ]; then
-    npm_ok="yes (${hermes_npm})"
-fi
-echo "[all-in-one] PATH includes /usr/local/bin (Node ${node_ver}, npm=${npm_ok})"
+echo "[all-in-one] PATH includes /usr/local/bin (Node ${node_ver})"

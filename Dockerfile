@@ -66,6 +66,7 @@ RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-w
     && chmod +x /etc/cont-init.d/04-tailscale-env \
     && chmod +x /etc/cont-init.d/05-hermes-path \
     && chmod +x /etc/cont-init.d/06-tailscale-ssh-dir \
+    && chmod +x /etc/cont-init.d/07-hermes-npm-wrappers \
     && chmod +x /etc/s6-overlay/s6-rc.d/control-plane/run \
     && chmod +x /etc/s6-overlay/s6-rc.d/hermes-webui/run \
     && chmod +x /etc/s6-overlay/s6-rc.d/tailscaled/run \
@@ -79,7 +80,6 @@ RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-w
 # also patches PATH for railway ssh shells that inherit a minimal PATH.
 ENV PATH="/usr/local/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}" \
     HERMES_NODE=/usr/local/bin/node \
-    HERMES_NPM=/opt/data/.local/bin/npm \
     HOME=/opt/data \
     SHELL=/bin/zsh \
     HERMES_DATA_DIR=/opt/data \

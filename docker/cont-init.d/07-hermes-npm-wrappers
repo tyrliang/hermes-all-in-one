@@ -1,0 +1,84 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Executable npm/npx wrappers for hermes --tui (Python os.access / shutil.which).
+# Runs after 06-tailscale-ssh-dir so SSH key setup is never blocked by this script.
+
+set -eu
+
+NPM_WRAPPER="/opt/data/.local/bin/npm"
+NPX_WRAPPER="/opt/data/.local/bin/npx"
+
+# Must be a real directory (not a symlink to .ssh or similar).
+if [ -e /opt/data/.local/bin ] && [ ! -d /opt/data/.local/bin ]; then
+    echo "[all-in-one] warning: /opt/data/.local/bin is not a directory; skipping npm wrappers" >&2
+    exit 0
+fi
+
+mkdir -p /opt/data/.local/bin
+
+if [ -x /usr/local/bin/node ] && [ ! -e /opt/data/.local/bin/node ]; then
+    ln -sf /usr/local/bin/node /opt/data/.local/bin/node 2>/dev/null || true
+fi
+
+if [ -x /usr/local/bin/node ] && [ ! -e /usr/local/bin/npm ]; then
+    if [ -f /usr/local/lib/node_modules/npm/bin/npm-cli.js ]; then
+        ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
+        ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+    fi
+fi
+
+for js in /usr/local/lib/node_modules/npm/bin/npm-cli.js \
+          /usr/local/lib/node_modules/npm/bin/npx-cli.js; do
+    if [ -f "$js" ]; then
+        chmod 755 "$js" 2>/dev/null || true
+    fi
+done
+
+if [ -x /usr/local/bin/node ] && [ -f /usr/local/lib/node_modules/npm/bin/npm-cli.js ]; then
+    cat > "${NPM_WRAPPER}" <<'EOF'
+#!/bin/sh
+exec /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npm-cli.js "$@"
+EOF
+    chmod 755 "${NPM_WRAPPER}"
+fi
+if [ -x /usr/local/bin/node ] && [ -f /usr/local/lib/node_modules/npm/bin/npx-cli.js ]; then
+    cat > "${NPX_WRAPPER}" <<'EOF'
+#!/bin/sh
+exec /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npx-cli.js "$@"
+EOF
+    chmod 755 "${NPX_WRAPPER}"
+fi
+
+# Chown only the files we created — never chown -R (volume .local/bin can be huge).
+for f in "${NPM_WRAPPER}" "${NPX_WRAPPER}" /opt/data/.local/bin/node; do
+    if [ -e "$f" ]; then
+        chown hermes:hermes "$f" 2>/dev/null || true
+    fi
+done
+
+hermes_npm="${NPM_WRAPPER}"
+if [ ! -x "${hermes_npm}" ]; then
+    hermes_npm="/usr/local/bin/npm"
+fi
+
+if [ -d /run/s6/container_environment ] && [ -x "${hermes_npm}" ]; then
+    printf '%s' "${hermes_npm}" > /run/s6/container_environment/HERMES_NPM
+fi
+
+if [ -d /etc/zsh/zshenv.d ]; then
+    cat >> /etc/zsh/zshenv.d/50-hermes-path.zsh <<EOF
+
+export HERMES_NPM="\${HERMES_NPM:-${hermes_npm}}"
+EOF
+fi
+if [ -f /etc/profile.d/hermes-path.sh ]; then
+    cat >> /etc/profile.d/hermes-path.sh <<EOF
+export HERMES_NPM="\${HERMES_NPM:-${hermes_npm}}"
+EOF
+fi
+
+npm_ok="no"
+if [ -x "${hermes_npm}" ]; then
+    npm_ok="yes (${hermes_npm})"
+fi
+echo "[all-in-one] npm wrappers ready (npm=${npm_ok})"
