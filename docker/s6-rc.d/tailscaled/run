@@ -37,6 +37,18 @@ unset ALL_PROXY HTTP_PROXY HTTPS_PROXY http_proxy https_proxy all_proxy
 
 export TS_LOCAL_APP_DATA="${TS_STATE_DIR}/profile"
 
+# PMTU black-hole workaround for restrictive client paths (office NAT, PPPoE,
+# stacked VPNs). Railway has no NET_ADMIN, so iptables MSS clamp is unavailable;
+# TS_DEBUG_MTU is the server-side knob tailscaled reads at startup.
+case "${TAILSCALE_MTU:-1200}" in
+    0|false|FALSE|off|OFF|disable|DISABLE)
+        ;;
+    *)
+        export TS_DEBUG_MTU="${TAILSCALE_MTU:-1200}"
+        echo "[tailscaled] TS_DEBUG_MTU=${TS_DEBUG_MTU} (PMTU workaround; TAILSCALE_MTU=0 to disable)" >&2
+        ;;
+esac
+
 echo "[tailscaled] starting userspace tailscaled (state=${TS_STATE_DIR} ssh=${TS_SSH_MODE})" >&2
 
 tailscaled \
