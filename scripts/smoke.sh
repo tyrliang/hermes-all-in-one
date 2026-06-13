@@ -7,14 +7,16 @@ CONTAINER_NAME="hermes-control-plane-smoke"
 HOST_PORT="${SMOKE_PORT:-18787}"
 CONTAINER_PORT="${SMOKE_CONTAINER_PORT:-18999}"
 DATA_DIR="${SMOKE_DATA_DIR:-${ROOT_DIR}/.tmp-smoke-data}"
+HOST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/hermes-smoke.XXXXXX")"
 SMOKE_PASSWORD="${SMOKE_PASSWORD:-smoke-test-password}"
 WEBUI_PASSWORD="${SMOKE_WEBUI_PASSWORD:-${SMOKE_PASSWORD}}"
 ADMIN_PASSWORD="${SMOKE_ADMIN_PASSWORD:-${SMOKE_PASSWORD}}"
-COOKIE_JAR="${DATA_DIR}/admin-cookies.txt"
+COOKIE_JAR="${HOST_TMP}/admin-cookies.txt"
 BASE_URL="http://127.0.0.1:${HOST_PORT}"
 
 cleanup() {
   docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+  rm -rf "${HOST_TMP:-}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -189,7 +191,7 @@ fi
 echo "[smoke] logging into /admin"
 login_ok=0
 login_status=""
-login_http_file="${DATA_DIR}/login-http.txt"
+login_http_file="${HOST_TMP}/login-http.txt"
 touch "${COOKIE_JAR}"
 for ((i=1; i<=10; i++)); do
   : > "${COOKIE_JAR}"
