@@ -188,20 +188,36 @@ fi
 
 echo "[smoke] logging into /admin"
 login_ok=0
-for ((i=1; i<=5; i++)); do
-  if curl --silent --show-error --fail \
+login_status=""
+set +e
+for ((i=1; i<=10; i++)); do
+  login_status="$(curl --silent --show-error \
     -c "${COOKIE_JAR}" \
     --data-urlencode "password=${ADMIN_PASSWORD}" \
     -X POST "${BASE_URL}/admin/login" \
-    -o /dev/null; then
+    -o /dev/null \
+    -w '%{http_code}')"
+  curl_rc=$?
+  if [[ "$curl_rc" -eq 0 && "$login_status" =~ ^(302|303)$ ]]; then
     login_ok=1
     break
   fi
+  echo "[smoke] admin login attempt ${i}/10: curl=${curl_rc} http=${login_status:-unknown}" >&2
   sleep 1
 done
+set -e
 if [[ "$login_ok" != "1" ]]; then
-  echo "[smoke] admin login failed after retries" >&2
-  docker exec "${CONTAINER_NAME}" /bin/sh -lc 'printenv HERMES_ADMIN_PASSWORD HERMES_WEBUI_PASSWORD | sed "s/./*/g"' >&2 || true
+  echo "[smoke] admin login failed after retries (last http=${login_status:-unknown})" >&2
+  docker exec "${CONTAINER_NAME}" /bin/sh -lc '
+    . /app/docker/scripts/import-docker-env.sh
+    import_docker_env HERMES_ADMIN_PASSWORD HERMES_WEBUI_PASSWORD
+    printf "shell admin_len=%s webui_len=%s\n" \
+      "${#HERMES_ADMIN_PASSWORD}" "${#HERMES_WEBUI_PASSWORD}"
+    for pid in $(pgrep -f "uvicorn control_plane.server" 2>/dev/null || true); do
+      printf "uvicorn pid=%s\n" "$pid"
+      tr "\0" "\n" < "/proc/${pid}/environ" 2>/dev/null | grep -E "^HERMES_(ADMIN|WEBUI)_PASSWORD=" || true
+    done
+  ' >&2 || true
   exit 1
 fi
 

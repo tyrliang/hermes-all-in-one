@@ -17,6 +17,11 @@ export HERMES_WORKSPACE_DIR="${HERMES_WORKSPACE_DIR:-${HERMES_DATA_DIR}/workspac
 export HERMES_CONFIG_PATH="${HERMES_CONFIG_PATH:-${HERMES_HOME}/config.yaml}"
 export CONTROL_PLANE_HOST="${CONTROL_PLANE_HOST:-0.0.0.0}"
 export CONTROL_PLANE_RUNTIME=s6
+
+# shellcheck source=/app/docker/scripts/import-docker-env.sh
+. /app/docker/scripts/import-docker-env.sh
+import_docker_env HERMES_WEBUI_PASSWORD HERMES_ADMIN_PASSWORD PORT
+
 export HERMES_WEBUI_PASSWORD="${HERMES_WEBUI_PASSWORD:-}"
 export HERMES_ADMIN_PASSWORD="${HERMES_ADMIN_PASSWORD:-${HERMES_WEBUI_PASSWORD:-}}"
 
