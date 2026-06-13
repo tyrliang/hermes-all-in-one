@@ -189,16 +189,18 @@ fi
 echo "[smoke] logging into /admin"
 login_ok=0
 login_status=""
+login_http_file="${DATA_DIR}/login-http.txt"
+touch "${COOKIE_JAR}"
 for ((i=1; i<=10; i++)); do
-  login_status="$(
-    curl -q --silent \
-      -c "${COOKIE_JAR}" \
-      --data-urlencode "password=${ADMIN_PASSWORD}" \
-      -X POST "${BASE_URL}/admin/login" \
-      -o /dev/null \
-      -w '%{http_code}' 2>/dev/null \
-      || true
-  )"
+  : > "${COOKIE_JAR}"
+  curl -q --silent \
+    -c "${COOKIE_JAR}" \
+    --data-urlencode "password=${ADMIN_PASSWORD}" \
+    -X POST "${BASE_URL}/admin/login" \
+    -o /dev/null \
+    -w '%{http_code}' > "${login_http_file}" 2>/dev/null \
+    || true
+  login_status="$(tr -d '\r\n' < "${login_http_file}")"
   if [[ "$login_status" =~ ^(302|303)$ ]] && grep -qF 'hermes_admin_session' "${COOKIE_JAR}" 2>/dev/null; then
     login_ok=1
     break
