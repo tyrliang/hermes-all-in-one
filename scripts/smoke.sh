@@ -90,17 +90,18 @@ cleanup
 
 cd "${ROOT_DIR}"
 
-semver=""
-if [[ -f "${ROOT_DIR}/VERSION" ]]; then
-  semver="$(grep -Ev '^\s*(#|$)' "${ROOT_DIR}/VERSION" | head -1 | tr -d ' \t\r\n')"
-  semver="${semver#v}"
-fi
+# shellcheck source=scripts/version-lib.sh
+. "${ROOT_DIR}/scripts/version-lib.sh"
+read_version_file "$ROOT_DIR" || true
 
 if [[ "${SMOKE_SKIP_BUILD:-0}" != "1" ]]; then
   echo "[smoke] building image ${IMAGE_TAG}"
   build_args=()
-  if [[ -n "$semver" ]]; then
-    build_args+=(--build-arg "HERMES_WEBUI_VERSION=v${semver}")
+  if [[ -n "${PACKAGE_VERSION:-}" ]]; then
+    build_args+=(--build-arg "HERMES_WEBUI_VERSION=v${PACKAGE_VERSION}")
+  fi
+  if [[ -n "${HERMES_BASE:-}" ]]; then
+    build_args+=(--build-arg "HERMES_IMAGE=nousresearch/hermes-agent:${HERMES_BASE}")
   fi
   docker build "${build_args[@]}" -t "${IMAGE_TAG}" .
 else
@@ -176,8 +177,8 @@ docker exec "${CONTAINER_NAME}" /bin/sh -lc '
 '
 echo "[smoke] bootstrap dirs, agent mount, shell tools, internal WebUI OK"
 
-if [[ -n "$semver" && "${SMOKE_SKIP_BUILD:-0}" != "1" ]]; then
-  expected_webui_version="v${semver}"
+if [[ -n "${PACKAGE_VERSION:-}" && "${SMOKE_SKIP_BUILD:-0}" != "1" ]]; then
+  expected_webui_version="v${PACKAGE_VERSION}"
   actual_webui_version="$(docker exec "${CONTAINER_NAME}" /opt/hermes/.venv/bin/python -c \
     "import importlib.util; spec=importlib.util.spec_from_file_location('v','/app/vendor/hermes-webui/api/_version.py'); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print(m.__version__)")"
   assert_eq "$actual_webui_version" "$expected_webui_version" "WebUI version should match VERSION file"

@@ -78,7 +78,7 @@ docker run -d --name hermes-all-in-one \
   hermes-all-in-one
 ```
 
-Pre-built images are published to GitHub Container Registry on each release (`ghcr.io/<owner>/hermes-all-in-one` — see `.github/workflows/docker.yml`).
+Pre-built images are published to GitHub Container Registry on version tags (`ghcr.io/<owner>/hermes-all-in-one:v0.x.z` — see `.github/workflows/release.yml`). `VERSION` line 1 is your package semver; `hermes-base=` records the pinned Hermes Agent tag.
 
 ### Container shell & useful commands
 
