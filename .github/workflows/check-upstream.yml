@@ -1,0 +1,93 @@
+name: Check Hermes upstream
+
+# When a newer Hermes Agent tag appears on Docker Hub, open a PR to bump y.0 and pin hermes-base.
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Compare upstream Hermes tag
+        id: decide
+        run: |
+          set -euo pipefail
+          chmod +x scripts/latest-hermes-tag.sh scripts/read-version.sh scripts/bump-hermes.sh
+          latest="$(./scripts/latest-hermes-tag.sh)"
+          eval "$(./scripts/read-version.sh | sed 's/^/export /')"
+          needs="$(python3 - <<PY
+          import re
+
+          def key(tag: str) -> tuple[int, ...]:
+              match = re.match(r"^v?(\\d+)\\.(\\d+)\\.(\\d+)(?:\\.(\\d+))?$", tag or "")
+              if not match:
+                  return (0, 0, 0, 0)
+              return tuple(int(part or 0) for part in match.groups())
+
+          latest = "${latest}"
+          current = "${hermes_base}"
+          print("true" if (not current or key(latest) > key(current)) else "false")
+          PY
+          )"
+          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
+          echo "current=${hermes_base}" >> "$GITHUB_OUTPUT"
+          echo "needs_bump=${needs}" >> "$GITHUB_OUTPUT"
+
+      - name: No newer Hermes tag
+        if: steps.decide.outputs.needs_bump != 'true'
+        run: |
+          echo "Up to date: hermes-base=${{ steps.decide.outputs.current }} (latest ${{ steps.decide.outputs.latest }})."
+
+      - name: Open bump PR
+        if: steps.decide.outputs.needs_bump == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LATEST: ${{ steps.decide.outputs.latest }}
+          CURRENT: ${{ steps.decide.outputs.current }}
+        run: |
+          set -euo pipefail
+          branch="chore/bump-hermes-${LATEST}"
+          git checkout -b "$branch"
+          ./scripts/bump-hermes.sh "$LATEST"
+          new_version="$(grep -Ev '^\s*(#|$)' VERSION | head -1 | tr -d ' \t\r\n')"
+          git add VERSION Dockerfile
+          git commit -m "$(cat <<EOF
+          chore(release): bump to Hermes ${LATEST}
+
+          Adopt upstream Hermes Agent ${LATEST} (was ${CURRENT:-unset}).
+          Package version ${new_version}; minor bumped and patch reset per policy.
+          EOF
+          )"
+          git push -u origin "$branch"
+          gh pr create \
+            --title "chore(release): adopt Hermes ${LATEST}" \
+            --body "$(cat <<EOF
+          ## Summary
+          - Bumps \`hermes-base\` to **${LATEST}**
+          - Pins \`Dockerfile\` \`HERMES_IMAGE\`
+          - Package version → **${new_version}** (y+1, z=0)
+
+          ## Test plan
+          - [ ] CI smoke passes on this PR
+          - [ ] Optionally run \`scripts/sync-upstreams.sh\` for WebUI vendor updates
+          - [ ] After merge: \`git tag v${new_version}\` && \`git push origin v${new_version}\` to publish
+          EOF
+          )" \
+            --base main \
+            --head "$branch"

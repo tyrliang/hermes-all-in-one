@@ -4,7 +4,7 @@
 # Build:  docker build --build-arg HERMES_IMAGE=nousresearch/hermes-agent:latest .
 # Pin:    HERMES_IMAGE=nousresearch/hermes-agent:<tag>
 
-ARG HERMES_IMAGE=nousresearch/hermes-agent:latest
+ARG HERMES_IMAGE=nousresearch/hermes-agent:v2026.6.5
 FROM ${HERMES_IMAGE}
 
 USER root
