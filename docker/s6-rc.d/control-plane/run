@@ -22,6 +22,18 @@ export CONTROL_PLANE_RUNTIME=s6
 . /app/docker/scripts/import-docker-env.sh
 import_docker_env HERMES_WEBUI_PASSWORD HERMES_ADMIN_PASSWORD PORT
 
+read_runtime_env() {
+  file="$1"
+  var="$2"
+  eval "current=\${${var}-}"
+  if [ -z "${current}" ] && [ -f "${file}" ]; then
+    export "${var}=$(cat "${file}")"
+  fi
+}
+
+read_runtime_env /run/hermes-runtime-env/HERMES_WEBUI_PASSWORD HERMES_WEBUI_PASSWORD
+read_runtime_env /run/hermes-runtime-env/HERMES_ADMIN_PASSWORD HERMES_ADMIN_PASSWORD
+
 export HERMES_WEBUI_PASSWORD="${HERMES_WEBUI_PASSWORD:-}"
 export HERMES_ADMIN_PASSWORD="${HERMES_ADMIN_PASSWORD:-${HERMES_WEBUI_PASSWORD:-}}"
 

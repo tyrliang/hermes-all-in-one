@@ -30,7 +30,23 @@ ADMIN_USERNAME = os.getenv("HERMES_ADMIN_USERNAME", "admin")
 
 def admin_password() -> str:
     """Read at call time so s6-supervised services see docker -e values."""
-    return os.getenv("HERMES_ADMIN_PASSWORD", os.getenv("HERMES_WEBUI_PASSWORD", "")).strip()
+    explicit = os.getenv("HERMES_ADMIN_PASSWORD", "").strip()
+    if explicit:
+        return explicit
+    webui = os.getenv("HERMES_WEBUI_PASSWORD", "").strip()
+    if webui:
+        return webui
+    runtime_dir = Path("/run/hermes-runtime-env")
+    for name in ("HERMES_ADMIN_PASSWORD", "HERMES_WEBUI_PASSWORD"):
+        path = runtime_dir / name
+        if path.is_file():
+            try:
+                value = path.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if value:
+                return value
+    return ""
 
 
 ADMIN_PASSWORD = admin_password()

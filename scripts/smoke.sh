@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE_TAG="${SMOKE_IMAGE_TAG:-hermes-control-plane-smoke:local}"
@@ -104,7 +104,7 @@ if [[ "${SMOKE_SKIP_BUILD:-0}" != "1" ]]; then
   if [[ -n "${HERMES_BASE:-}" ]]; then
     build_args+=(--build-arg "HERMES_IMAGE=nousresearch/hermes-agent:${HERMES_BASE}")
   fi
-  docker build "${build_args[@]}" -t "${IMAGE_TAG}" .
+  docker build "${build_args[@]}" -t "${IMAGE_TAG}" . || exit 1
 else
   echo "[smoke] skipping build (SMOKE_SKIP_BUILD=1)"
 fi
@@ -112,10 +112,10 @@ fi
 echo "[smoke] starting container with PORT=${CONTAINER_PORT}"
 smoke_run_container
 
-wait_for_health "${BASE_URL}/health"
+wait_for_health "${BASE_URL}/health" || exit 1
 
 echo "[smoke] checking /health payload"
-health_json="$(curl --silent --show-error --fail "${BASE_URL}/health")"
+health_json="$(curl --silent --show-error --fail "${BASE_URL}/health")" || exit 1
 python3 - <<'PY' "$health_json"
 import json, sys
 payload = json.loads(sys.argv[1])
@@ -191,12 +191,12 @@ login_ok=0
 login_status=""
 for ((i=1; i<=10; i++)); do
   login_status="$(
-    curl -q --silent --show-error \
+    curl -q --silent \
       -c "${COOKIE_JAR}" \
       --data-urlencode "password=${ADMIN_PASSWORD}" \
       -X POST "${BASE_URL}/admin/login" \
       -o /dev/null \
-      -w '%{http_code}' \
+      -w '%{http_code}' 2>/dev/null \
       || true
   )"
   if [[ "$login_status" =~ ^(302|303)$ ]]; then
@@ -225,7 +225,7 @@ if [[ "$login_ok" != "1" ]]; then
   exit 1
 fi
 
-status_json="$(curl --silent --show-error --fail -b "${COOKIE_JAR}" "${BASE_URL}/admin/api/status")"
+status_json="$(curl --silent --show-error --fail -b "${COOKIE_JAR}" "${BASE_URL}/admin/api/status")" || exit 1
 python3 - <<'PY' "$status_json"
 import json, sys
 payload = json.loads(sys.argv[1])
@@ -246,9 +246,9 @@ print("[smoke] admin status paths and supervisors OK")
 PY
 
 echo "[smoke] checking read-only admin APIs"
-channels_json="$(curl --silent --show-error --fail -b "${COOKIE_JAR}" "${BASE_URL}/admin/api/channels")"
-pending_json="$(curl --silent --show-error --fail -b "${COOKIE_JAR}" "${BASE_URL}/admin/api/pairing/pending")"
-approved_json="$(curl --silent --show-error --fail -b "${COOKIE_JAR}" "${BASE_URL}/admin/api/pairing/approved")"
+channels_json="$(curl --silent --show-error --fail -b "${COOKIE_JAR}" "${BASE_URL}/admin/api/channels")" || exit 1
+pending_json="$(curl --silent --show-error --fail -b "${COOKIE_JAR}" "${BASE_URL}/admin/api/pairing/pending")" || exit 1
+approved_json="$(curl --silent --show-error --fail -b "${COOKIE_JAR}" "${BASE_URL}/admin/api/pairing/approved")" || exit 1
 python3 - <<'PY' "$channels_json" "$pending_json" "$approved_json"
 import json, sys
 channels, pending, approved = map(json.loads, sys.argv[1:])
@@ -262,10 +262,10 @@ print("[smoke] admin read-only APIs OK")
 PY
 
 echo "[smoke] exercising control-plane actions"
-curl --silent --show-error --fail -b "${COOKIE_JAR}" -X POST "${BASE_URL}/admin/api/webui/restart" -o /dev/null >/dev/null
-wait_for_health "${BASE_URL}/health"
-curl --silent --show-error --fail -b "${COOKIE_JAR}" -X POST "${BASE_URL}/admin/api/gateway/restart" -o /dev/null >/dev/null
-wait_for_health "${BASE_URL}/health"
+curl --silent --show-error --fail -b "${COOKIE_JAR}" -X POST "${BASE_URL}/admin/api/webui/restart" -o /dev/null >/dev/null || exit 1
+wait_for_health "${BASE_URL}/health" || exit 1
+curl --silent --show-error --fail -b "${COOKIE_JAR}" -X POST "${BASE_URL}/admin/api/gateway/restart" -o /dev/null >/dev/null || exit 1
+wait_for_health "${BASE_URL}/health" || exit 1
 
 signing_before="$(docker exec "${CONTAINER_NAME}" /bin/sh -lc 'test -f /opt/data/.admin_signing_key && sha256sum /opt/data/.admin_signing_key | awk "{print \$1}"')"
 if [[ -z "$signing_before" ]]; then
@@ -278,7 +278,7 @@ docker rm -f "${CONTAINER_NAME}" >/dev/null
 
 smoke_run_container
 
-wait_for_health "${BASE_URL}/health"
+wait_for_health "${BASE_URL}/health" || exit 1
 signing_after="$(docker exec "${CONTAINER_NAME}" /bin/sh -lc 'test -f /opt/data/.admin_signing_key && sha256sum /opt/data/.admin_signing_key | awk "{print \$1}"')"
 assert_eq "$signing_after" "$signing_before" "Admin signing key should persist across restart"
 

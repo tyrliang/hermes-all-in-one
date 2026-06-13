@@ -29,6 +29,18 @@ import_docker_env \
   TAILSCALE_SSH \
   TAILSCALE_SSH_AUTHORIZED_KEYS
 
+RUNTIME_ENV_DIR="/run/hermes-runtime-env"
+mkdir -p "${RUNTIME_ENV_DIR}"
+chmod 700 "${RUNTIME_ENV_DIR}"
+
+for var in HERMES_ADMIN_PASSWORD HERMES_WEBUI_PASSWORD; do
+  eval "val=\${${var}-}"
+  if [ -n "${val}" ]; then
+    printf '%s' "${val}" > "${RUNTIME_ENV_DIR}/${var}"
+    chmod 400 "${RUNTIME_ENV_DIR}/${var}"
+  fi
+done
+
 for var in \
   PORT \
   HERMES_ADMIN_PASSWORD \
