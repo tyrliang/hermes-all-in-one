@@ -189,25 +189,29 @@ fi
 echo "[smoke] logging into /admin"
 login_ok=0
 login_status=""
-set +e
 for ((i=1; i<=10; i++)); do
-  login_status="$(curl --silent --show-error \
-    -c "${COOKIE_JAR}" \
-    --data-urlencode "password=${ADMIN_PASSWORD}" \
-    -X POST "${BASE_URL}/admin/login" \
-    -o /dev/null \
-    -w '%{http_code}')"
-  curl_rc=$?
-  if [[ "$curl_rc" -eq 0 && "$login_status" =~ ^(302|303)$ ]]; then
+  login_status="$(
+    curl -q --silent --show-error \
+      -c "${COOKIE_JAR}" \
+      --data-urlencode "password=${ADMIN_PASSWORD}" \
+      -X POST "${BASE_URL}/admin/login" \
+      -o /dev/null \
+      -w '%{http_code}' \
+      || true
+  )"
+  if [[ "$login_status" =~ ^(302|303)$ ]]; then
     login_ok=1
     break
   fi
-  echo "[smoke] admin login attempt ${i}/10: curl=${curl_rc} http=${login_status:-unknown}" >&2
+  echo "[smoke] admin login attempt ${i}/10: http=${login_status:-unknown}" >&2
   sleep 1
 done
-set -e
 if [[ "$login_ok" != "1" ]]; then
   echo "[smoke] admin login failed after retries (last http=${login_status:-unknown})" >&2
+  echo "[smoke] login response body:" >&2
+  curl -q --silent -i \
+    --data-urlencode "password=${ADMIN_PASSWORD}" \
+    -X POST "${BASE_URL}/admin/login" 2>&1 | head -20 >&2 || true
   docker exec "${CONTAINER_NAME}" /bin/sh -lc '
     . /app/docker/scripts/import-docker-env.sh
     import_docker_env HERMES_ADMIN_PASSWORD HERMES_WEBUI_PASSWORD

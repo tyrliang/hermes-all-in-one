@@ -28,4 +28,5 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Runtime smoke (build + health + admin + restart)
+        shell: bash --noprofile --norc {0}
         run: ./scripts/smoke.sh
