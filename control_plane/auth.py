@@ -11,9 +11,9 @@ from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from control_plane.config import (
     ADMIN_COOKIE_NAME,
-    ADMIN_PASSWORD,
     ADMIN_SESSION_TTL,
     DATA_DIR,
+    admin_password,
 )
 
 _SESSIONS: dict[str, float] = {}
@@ -43,13 +43,13 @@ def _signing_key() -> bytes:
 
 
 def admin_auth_enabled() -> bool:
-    return bool(ADMIN_PASSWORD)
+    return bool(admin_password())
 
 
 def verify_admin_password(password: str) -> bool:
     if not admin_auth_enabled():
         return True
-    return hmac.compare_digest(password or "", ADMIN_PASSWORD)
+    return hmac.compare_digest(password or "", admin_password())
 
 
 def _prune_sessions() -> None:

@@ -7,8 +7,9 @@ CONTAINER_NAME="hermes-control-plane-smoke"
 HOST_PORT="${SMOKE_PORT:-18787}"
 CONTAINER_PORT="${SMOKE_CONTAINER_PORT:-18999}"
 DATA_DIR="${SMOKE_DATA_DIR:-${ROOT_DIR}/.tmp-smoke-data}"
-WEBUI_PASSWORD="${SMOKE_WEBUI_PASSWORD:-smoke-webui-password}"
-ADMIN_PASSWORD="${SMOKE_ADMIN_PASSWORD:-smoke-admin-password}"
+SMOKE_PASSWORD="${SMOKE_PASSWORD:-smoke-test-password}"
+WEBUI_PASSWORD="${SMOKE_WEBUI_PASSWORD:-${SMOKE_PASSWORD}}"
+ADMIN_PASSWORD="${SMOKE_ADMIN_PASSWORD:-${SMOKE_PASSWORD}}"
 COOKIE_JAR="${DATA_DIR}/admin-cookies.txt"
 BASE_URL="http://127.0.0.1:${HOST_PORT}"
 
@@ -186,11 +187,23 @@ if [[ -n "${PACKAGE_VERSION:-}" && "${SMOKE_SKIP_BUILD:-0}" != "1" ]]; then
 fi
 
 echo "[smoke] logging into /admin"
-curl --silent --show-error --fail \
-  -c "${COOKIE_JAR}" \
-  -d "password=${ADMIN_PASSWORD}" \
-  -X POST "${BASE_URL}/admin/login" \
-  -o /dev/null >/dev/null
+login_ok=0
+for ((i=1; i<=5; i++)); do
+  if curl --silent --show-error --fail \
+    -c "${COOKIE_JAR}" \
+    --data-urlencode "password=${ADMIN_PASSWORD}" \
+    -X POST "${BASE_URL}/admin/login" \
+    -o /dev/null; then
+    login_ok=1
+    break
+  fi
+  sleep 1
+done
+if [[ "$login_ok" != "1" ]]; then
+  echo "[smoke] admin login failed after retries" >&2
+  docker exec "${CONTAINER_NAME}" /bin/sh -lc 'printenv HERMES_ADMIN_PASSWORD HERMES_WEBUI_PASSWORD | sed "s/./*/g"' >&2 || true
+  exit 1
+fi
 
 status_json="$(curl --silent --show-error --fail -b "${COOKIE_JAR}" "${BASE_URL}/admin/api/status")"
 python3 - <<'PY' "$status_json"

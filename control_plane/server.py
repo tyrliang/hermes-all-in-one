@@ -24,7 +24,6 @@ from control_plane.auth import (
     verify_admin_password,
 )
 from control_plane.config import (
-    ADMIN_PASSWORD,
     CHANNEL_ENV_KEYS,
     HERMES_CONFIG_PATH,
     HERMES_ENV_PATH,
@@ -169,10 +168,7 @@ async def admin_login_page(request: Request) -> HTMLResponse:
 
 
 async def admin_login(request: Request) -> Response:
-    from urllib.parse import parse_qs
-
-    raw = (await request.body()).decode("utf-8", errors="ignore")
-    form = {key: values[-1] for key, values in parse_qs(raw, keep_blank_values=True).items()}
+    form = await request.form()
     password = str(form.get("password") or "")
     if not verify_admin_password(password):
         return HTMLResponse("Invalid password", status_code=401)
@@ -209,7 +205,7 @@ async def admin_index(request: Request) -> Response:
             "provider_catalog": provider_catalog(),
             "unsupported_provider_note": UNSUPPORTED_PROVIDER_NOTE,
             "admin_auth_enabled": admin_auth_enabled(),
-            "has_separate_admin_password": bool(ADMIN_PASSWORD),
+            "has_separate_admin_password": bool(os.getenv("HERMES_ADMIN_PASSWORD", "").strip()),
         },
     )
 

@@ -26,7 +26,14 @@ INTERNAL_WEBUI_PORT = int(os.getenv("CONTROL_PLANE_INTERNAL_WEBUI_PORT", "8788")
 INTERNAL_WEBUI_BASE = f"http://{INTERNAL_WEBUI_HOST}:{INTERNAL_WEBUI_PORT}"
 GATEWAY_AUTOSTART = os.getenv("HERMES_GATEWAY_AUTOSTART", "auto").strip().lower() or "auto"
 ADMIN_USERNAME = os.getenv("HERMES_ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD = os.getenv("HERMES_ADMIN_PASSWORD", os.getenv("HERMES_WEBUI_PASSWORD", "")).strip()
+
+
+def admin_password() -> str:
+    """Read at call time so s6-supervised services see docker -e values."""
+    return os.getenv("HERMES_ADMIN_PASSWORD", os.getenv("HERMES_WEBUI_PASSWORD", "")).strip()
+
+
+ADMIN_PASSWORD = admin_password()
 ADMIN_SESSION_TTL = int(os.getenv("HERMES_ADMIN_SESSION_TTL", str(24 * 60 * 60)))
 ADMIN_COOKIE_NAME = "hermes_admin_session"
 STATUS_CACHE_TTL = float(os.getenv("CONTROL_PLANE_STATUS_CACHE_TTL", "2.0"))
