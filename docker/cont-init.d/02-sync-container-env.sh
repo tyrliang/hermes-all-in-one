@@ -37,9 +37,11 @@ for var in HERMES_ADMIN_PASSWORD HERMES_WEBUI_PASSWORD; do
   eval "val=\${${var}-}"
   if [ -n "${val}" ]; then
     printf '%s' "${val}" > "${RUNTIME_ENV_DIR}/${var}"
-    chmod 400 "${RUNTIME_ENV_DIR}/${var}"
+    chmod 440 "${RUNTIME_ENV_DIR}/${var}"
+    chown root:hermes "${RUNTIME_ENV_DIR}/${var}" 2>/dev/null || chmod 444 "${RUNTIME_ENV_DIR}/${var}"
   fi
 done
+chown root:hermes "${RUNTIME_ENV_DIR}" 2>/dev/null || true
 
 for var in \
   PORT \

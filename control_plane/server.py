@@ -180,7 +180,7 @@ async def admin_login(request: Request) -> Response:
         samesite="lax",
         max_age=24 * 60 * 60,
         secure=request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "") == "https",
-        path="/admin",
+        path="/",
     )
     return response
 

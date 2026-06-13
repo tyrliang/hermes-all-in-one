@@ -105,12 +105,12 @@ def set_admin_cookie(response: Response, cookie_value: str) -> None:
         samesite="lax",
         max_age=ADMIN_SESSION_TTL,
         secure=request_is_secure(response.headers.get("x-forwarded-proto")),
-        path="/admin",
+        path="/",
     )
 
 
 def clear_admin_cookie(response: Response) -> None:
-    response.delete_cookie(ADMIN_COOKIE_NAME, path="/admin")
+    response.delete_cookie(ADMIN_COOKIE_NAME, path="/")
 
 
 def request_is_secure(proto_header: str | None) -> bool:

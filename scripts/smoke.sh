@@ -199,9 +199,12 @@ for ((i=1; i<=10; i++)); do
       -w '%{http_code}' 2>/dev/null \
       || true
   )"
-  if [[ "$login_status" =~ ^(302|303)$ ]]; then
+  if [[ "$login_status" =~ ^(302|303)$ ]] && grep -qF 'hermes_admin_session' "${COOKIE_JAR}" 2>/dev/null; then
     login_ok=1
     break
+  fi
+  if [[ "$login_status" =~ ^(302|303)$ ]]; then
+    echo "[smoke] admin login returned ${login_status} but session cookie missing from jar" >&2
   fi
   echo "[smoke] admin login attempt ${i}/10: http=${login_status:-unknown}" >&2
   sleep 1
