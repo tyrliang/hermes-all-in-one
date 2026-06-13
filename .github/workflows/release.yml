@@ -27,7 +27,6 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Verify release tag matches VERSION
-        if: github.event_name == 'push'
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"

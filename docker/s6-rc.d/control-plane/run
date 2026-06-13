@@ -18,39 +18,6 @@ export HERMES_CONFIG_PATH="${HERMES_CONFIG_PATH:-${HERMES_HOME}/config.yaml}"
 export CONTROL_PLANE_HOST="${CONTROL_PLANE_HOST:-0.0.0.0}"
 export CONTROL_PLANE_RUNTIME=s6
 
-# shellcheck source=/app/docker/scripts/import-docker-env.sh
-. /app/docker/scripts/import-docker-env.sh
-import_docker_env HERMES_WEBUI_PASSWORD HERMES_ADMIN_PASSWORD PORT
-
-read_runtime_env() {
-  file="$1"
-  var="$2"
-  eval "current=\${${var}-}"
-  if [ -z "${current}" ] && [ -f "${file}" ]; then
-    export "${var}=$(cat "${file}")"
-  fi
-}
-
-read_runtime_env /run/hermes-runtime-env/HERMES_WEBUI_PASSWORD HERMES_WEBUI_PASSWORD
-read_runtime_env /run/hermes-runtime-env/HERMES_ADMIN_PASSWORD HERMES_ADMIN_PASSWORD
-
-export HERMES_WEBUI_PASSWORD="${HERMES_WEBUI_PASSWORD:-}"
-export HERMES_ADMIN_PASSWORD="${HERMES_ADMIN_PASSWORD:-${HERMES_WEBUI_PASSWORD:-}}"
-
-exec env \
-  HOME="${HOME}" \
-  HERMES_DATA_DIR="${HERMES_DATA_DIR}" \
-  HERMES_HOME="${HERMES_HOME}" \
-  HERMES_CONFIG_PATH="${HERMES_CONFIG_PATH}" \
-  HERMES_WEBUI_STATE_DIR="${HERMES_WEBUI_STATE_DIR}" \
-  HERMES_WORKSPACE_DIR="${HERMES_WORKSPACE_DIR}" \
-  HERMES_WEBUI_AGENT_DIR="${HERMES_WEBUI_AGENT_DIR}" \
-  HERMES_WEBUI_PASSWORD="${HERMES_WEBUI_PASSWORD}" \
-  HERMES_ADMIN_PASSWORD="${HERMES_ADMIN_PASSWORD}" \
-  CONTROL_PLANE_HOST="${CONTROL_PLANE_HOST}" \
-  CONTROL_PLANE_RUNTIME="${CONTROL_PLANE_RUNTIME}" \
-  PORT="${PORT:-8787}" \
-  PYTHONPATH="${PYTHONPATH}" \
-  s6-setuidgid hermes python -m uvicorn control_plane.server:app \
+exec s6-setuidgid hermes python -m uvicorn control_plane.server:app \
     --host "${CONTROL_PLANE_HOST}" \
     --port "${PORT:-8787}"

@@ -2,13 +2,12 @@ name: ci
 
 # PR / branch CI: build verification + runtime smoke. Publishing is tag-gated in release.yml.
 
+# pull_request covers PR branches; push:main covers post-merge. Tags publish via release.yml.
 on:
   pull_request:
   push:
     branches:
-      - "**"
-    tags-ignore:
-      - "**"
+      - main
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -28,5 +27,4 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Runtime smoke (build + health + admin + restart)
-        shell: bash --noprofile --norc {0}
         run: ./scripts/smoke.sh

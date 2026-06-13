@@ -11,9 +11,9 @@ from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from control_plane.config import (
     ADMIN_COOKIE_NAME,
+    ADMIN_PASSWORD,
     ADMIN_SESSION_TTL,
     DATA_DIR,
-    admin_password,
 )
 
 _SESSIONS: dict[str, float] = {}
@@ -43,13 +43,13 @@ def _signing_key() -> bytes:
 
 
 def admin_auth_enabled() -> bool:
-    return bool(admin_password())
+    return bool(ADMIN_PASSWORD)
 
 
 def verify_admin_password(password: str) -> bool:
     if not admin_auth_enabled():
         return True
-    return hmac.compare_digest(password or "", admin_password())
+    return hmac.compare_digest(password or "", ADMIN_PASSWORD)
 
 
 def _prune_sessions() -> None:
@@ -105,12 +105,12 @@ def set_admin_cookie(response: Response, cookie_value: str) -> None:
         samesite="lax",
         max_age=ADMIN_SESSION_TTL,
         secure=request_is_secure(response.headers.get("x-forwarded-proto")),
-        path="/",
+        path="/admin",
     )
 
 
 def clear_admin_cookie(response: Response) -> None:
-    response.delete_cookie(ADMIN_COOKIE_NAME, path="/")
+    response.delete_cookie(ADMIN_COOKIE_NAME, path="/admin")
 
 
 def request_is_secure(proto_header: str | None) -> bool:

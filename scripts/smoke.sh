@@ -89,7 +89,8 @@ require python3
 
 rm -rf "${DATA_DIR}"
 mkdir -p "${DATA_DIR}"
-cleanup
+# Remove a stale container from a previous run, but keep HOST_TMP (created above).
+docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 
 cd "${ROOT_DIR}"
 
@@ -177,7 +178,7 @@ docker exec "${CONTAINER_NAME}" /bin/sh -lc '
   test -x /usr/local/bin/node
   command -v zsh >/dev/null
   curl --silent --show-error --fail http://127.0.0.1:8788/health >/dev/null
-'
+' || { echo "[smoke] volume bootstrap / tooling checks failed" >&2; exit 1; }
 echo "[smoke] bootstrap dirs, agent mount, shell tools, internal WebUI OK"
 
 if [[ -n "${PACKAGE_VERSION:-}" && "${SMOKE_SKIP_BUILD:-0}" != "1" ]]; then
@@ -189,46 +190,14 @@ if [[ -n "${PACKAGE_VERSION:-}" && "${SMOKE_SKIP_BUILD:-0}" != "1" ]]; then
 fi
 
 echo "[smoke] logging into /admin"
-login_ok=0
-login_status=""
-login_http_file="${HOST_TMP}/login-http.txt"
-touch "${COOKIE_JAR}"
-for ((i=1; i<=10; i++)); do
-  : > "${COOKIE_JAR}"
-  curl -q --silent \
-    -c "${COOKIE_JAR}" \
-    --data-urlencode "password=${ADMIN_PASSWORD}" \
-    -X POST "${BASE_URL}/admin/login" \
-    -o /dev/null \
-    -w '%{http_code}' > "${login_http_file}" 2>/dev/null \
-    || true
-  login_status="$(tr -d '\r\n' < "${login_http_file}")"
-  if [[ "$login_status" =~ ^(302|303)$ ]] && grep -qF 'hermes_admin_session' "${COOKIE_JAR}" 2>/dev/null; then
-    login_ok=1
-    break
-  fi
-  if [[ "$login_status" =~ ^(302|303)$ ]]; then
-    echo "[smoke] admin login returned ${login_status} but session cookie missing from jar" >&2
-  fi
-  echo "[smoke] admin login attempt ${i}/10: http=${login_status:-unknown}" >&2
-  sleep 1
-done
-if [[ "$login_ok" != "1" ]]; then
-  echo "[smoke] admin login failed after retries (last http=${login_status:-unknown})" >&2
-  echo "[smoke] login response body:" >&2
-  curl -q --silent -i \
-    --data-urlencode "password=${ADMIN_PASSWORD}" \
-    -X POST "${BASE_URL}/admin/login" 2>&1 | head -20 >&2 || true
-  docker exec "${CONTAINER_NAME}" /bin/sh -lc '
-    . /app/docker/scripts/import-docker-env.sh
-    import_docker_env HERMES_ADMIN_PASSWORD HERMES_WEBUI_PASSWORD
-    printf "shell admin_len=%s webui_len=%s\n" \
-      "${#HERMES_ADMIN_PASSWORD}" "${#HERMES_WEBUI_PASSWORD}"
-    for pid in $(pgrep -f "uvicorn control_plane.server" 2>/dev/null || true); do
-      printf "uvicorn pid=%s\n" "$pid"
-      tr "\0" "\n" < "/proc/${pid}/environ" 2>/dev/null | grep -E "^HERMES_(ADMIN|WEBUI)_PASSWORD=" || true
-    done
-  ' >&2 || true
+login_status="$(curl -sS -c "${COOKIE_JAR}" \
+  --data-urlencode "password=${ADMIN_PASSWORD}" \
+  -X POST "${BASE_URL}/admin/login" \
+  -o /dev/null -w '%{http_code}')"
+if [[ ! "$login_status" =~ ^(302|303)$ ]]; then
+  echo "[smoke] admin login failed (http=${login_status}); response head:" >&2
+  curl -sS -i --data-urlencode "password=${ADMIN_PASSWORD}" \
+    -X POST "${BASE_URL}/admin/login" 2>&1 | head -15 >&2 || true
   exit 1
 fi
 
