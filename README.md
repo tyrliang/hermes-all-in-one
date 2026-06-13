@@ -78,7 +78,7 @@ docker run -d --name hermes-all-in-one \
   hermes-all-in-one
 ```
 
-Pre-built images are published to GitHub Container Registry on version tags (`ghcr.io/<owner>/hermes-all-in-one:v0.x.z` — see `.github/workflows/release.yml`). `VERSION` line 1 is your package semver; `hermes-base=` records the pinned Hermes Agent tag.
+Pre-built images are on GHCR (`ghcr.io/<owner>/hermes-all-in-one:v0.x.z`). See [Releases & versioning](#releases--versioning) for how tags relate to the upstream Hermes Agent base.
 
 ### Container shell & useful commands
 
@@ -774,6 +774,82 @@ Keep `HERMES_GATEWAY_AUTOSTART=off`, deploy once, and use the WebUI exclusively 
 
 ---
 
+## Releases & versioning
+
+This repo uses **two version fields**: your all-in-one release semver (`x.y.z`) and the upstream Hermes Agent Docker tag baked into the image.
+
+### `VERSION` file
+
+```text
+0.3.9
+hermes-base=v2026.6.5
+```
+
+| Line | Field | Meaning |
+|------|--------|---------|
+| 1 | Package semver | GHCR + git tag: `v0.3.9` |
+| 2 | `hermes-base` | Pinned `nousresearch/hermes-agent` tag in the Dockerfile |
+
+**Bump rules**
+
+| Change | Version bump | Example |
+|--------|----------------|---------|
+| Adopt a new Hermes Agent release | **y** + 1, **z** → 0 | `0.3.9` → `0.4.0` on Hermes `v2026.7.1` |
+| All-in-one-only fix (control plane, WebUI vendor, docker glue) | **z** + 1 | `0.4.0` → `0.4.1` (same `hermes-base`) |
+| Breaking packaging change (volume layout, env contract) | **x** + 1 (manual) | Rare |
+
+The agent runtime comes from the **base image** (`HERMES_IMAGE`); vendored WebUI under `vendor/hermes-webui` is copied in at build time.
+
+### Maintainer scripts
+
+```bash
+./scripts/bump-hermes.sh v2026.6.5   # new Hermes base → y+1, z=0, pin Dockerfile
+./scripts/bump-patch.sh              # your layer only → z+1
+./scripts/set-version.sh 0.4.1 v2026.6.5   # explicit set
+./scripts/smoke.sh                   # build + runtime smoke (CI runs this too)
+./scripts/sync-upstreams.sh          # refresh vendor/hermes-agent + vendor/hermes-webui
+```
+
+### Release flow
+
+**1. New Hermes Agent version** (or merge the daily `check-upstream` PR):
+
+```bash
+./scripts/bump-hermes.sh v2026.7.1
+./scripts/sync-upstreams.sh          # optional: refresh vendored WebUI
+./scripts/smoke.sh
+git add VERSION Dockerfile
+git commit -m "chore(release): 0.4.0 on hermes v2026.7.1"
+git push origin main
+git tag v0.4.0
+git push origin v0.4.0               # triggers release.yml → GHCR + GitHub Release
+```
+
+**2. All-in-one patch** (same Hermes base):
+
+```bash
+./scripts/bump-patch.sh              # e.g. 0.4.0 → 0.4.1
+./scripts/smoke.sh
+git commit -am "fix: …"
+git tag v0.4.1
+git push origin main --tags
+```
+
+Pushing to `main` alone does **not** publish an image — only a matching **`v*.*.*` git tag** does.
+
+### CI & automation
+
+| Workflow | When | What |
+|----------|------|------|
+| [`ci.yml`](.github/workflows/ci.yml) | PR + branch push | `./scripts/smoke.sh` |
+| [`release.yml`](.github/workflows/release.yml) | Tag push `v*.*.*` | Smoke → multi-arch build → GHCR `vX.Y.Z` + `latest` → GitHub Release |
+| [`check-upstream.yml`](.github/workflows/check-upstream.yml) | Daily | Opens a PR when Docker Hub has a newer Hermes tag than `hermes-base` |
+| [`sync-upstreams.yml`](.github/workflows/sync-upstreams.yml) | Daily | Subtree sync for `vendor/` |
+
+Release notes should mention both versions, e.g. **hermes-all-in-one v0.4.0** built on **Hermes Agent v2026.6.5**.
+
+---
+
 ## Architecture Overview
 
 ```
@@ -798,7 +874,14 @@ The control plane is a thin Starlette wrapper — not a framework, not a product
 2. Expose `/admin` for initial setup
 3. Start/stop/restart the gateway via official `hermes gateway` + s6 (not raw subprocesses)
 
-Build with an optional pin: `docker build --build-arg HERMES_IMAGE=nousresearch/hermes-agent:<tag> .`
+Build with an optional pin (defaults match `VERSION` / `hermes-base`):
+
+```bash
+docker build \
+  --build-arg HERMES_IMAGE=nousresearch/hermes-agent:v2026.6.5 \
+  --build-arg HERMES_WEBUI_VERSION=v0.3.9 \
+  .
+```
 
 ---
 
