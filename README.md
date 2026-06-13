@@ -848,6 +848,35 @@ Pushing to `main` alone does **not** publish an image — only a matching **`v*.
 
 Release notes should mention both versions, e.g. **hermes-all-in-one v0.4.0** built on **Hermes Agent v2026.6.5**.
 
+### Cursor release skill
+
+This repo ships a [Cursor Agent Skill](.cursor/skills/hermes-all-in-one-release/SKILL.md) for maintainers. It captures the full release playbook — version rules, ad-hoc commands, checklists, and when to rely on daily automation vs manual steps.
+
+**Location:** `.cursor/skills/hermes-all-in-one-release/` (`SKILL.md` + `examples.md`)
+
+**How to use it in Cursor**
+
+1. Open this repo in Cursor (project skills load from `.cursor/skills/`).
+2. In Agent chat, ask in plain language — the skill is picked up from context when you mention releases, for example:
+   - *“Release a patch for the Tailscale fix”*
+   - *“Bump to the latest Hermes and walk me through tagging”*
+   - *“Run the release pipeline after merging the upstream PR”*
+3. The agent follows the skill: runs `bump-patch.sh` or `bump-hermes.sh`, `./scripts/smoke.sh`, and the correct `git tag` / push steps.
+
+**Typical ad-hoc path (most common)** — layer-only change, same `hermes-base`; daily `check-upstream` handles Hermes detection for you:
+
+```bash
+./scripts/bump-patch.sh
+./scripts/smoke.sh
+git commit -am "fix: …"
+git tag v$(head -1 VERSION)
+git push origin main --tags
+```
+
+For Hermes bumps, prefer merging the auto-opened `check-upstream` PR, then tag. See the skill’s workflow **C** for that path and **A** for layer patches.
+
+**Reference without Cursor:** the skill mirrors this README section; [`examples.md`](.cursor/skills/hermes-all-in-one-release/examples.md) has copy-paste scenarios.
+
 ---
 
 ## Architecture Overview
