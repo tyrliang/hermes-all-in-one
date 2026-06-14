@@ -24,7 +24,7 @@ from api.config import (
     update_active_run,
 )
 from api.helpers import _redact_text, redact_session_data
-from api.models import get_session
+from api.models import get_session, merge_session_messages_append_only
 from api.run_journal import RunJournalWriter
 
 logger = logging.getLogger(__name__)
@@ -142,6 +142,28 @@ def _gateway_stream_usage(payload: dict) -> dict:
     }
 
 
+def _gateway_tool_progress_event(payload: dict) -> tuple[str, dict] | None:
+    """Translate Hermes Gateway tool-progress SSE payloads to WebUI events."""
+    if not isinstance(payload, dict):
+        return None
+    name = str(payload.get("tool") or payload.get("name") or payload.get("function_name") or "").strip()
+    if not name or name.startswith("_"):
+        return None
+    status = str(payload.get("status") or "running").strip().lower()
+    tid = payload.get("toolCallId") or payload.get("tool_call_id") or payload.get("id")
+    is_complete = status in {"completed", "complete", "success", "error", "failed"}
+    event_payload = {
+        "event_type": "tool.completed" if is_complete else "tool.started",
+        "name": name,
+        "preview": payload.get("label") or payload.get("preview"),
+        "args": payload.get("args") if isinstance(payload.get("args"), dict) else {},
+        "is_error": status in {"error", "failed"},
+    }
+    if tid:
+        event_payload["tid"] = str(tid)
+    return ("tool_complete" if is_complete else "tool"), event_payload
+
+
 def _stream_writeback_is_current(session: Any, stream_id: str) -> bool:
     return bool(stream_id and getattr(session, "active_stream_id", None) == stream_id)
 
@@ -202,6 +224,7 @@ def _run_gateway_chat_streaming(
     def put_gateway_event(event, data):
         if cancel_event.is_set() and event not in ("cancel", "error", "apperror"):
             return
+        event_id = None
         if run_journal is not None:
             try:
                 journaled = run_journal.append_sse_event(event, data)
@@ -210,8 +233,14 @@ def _run_gateway_chat_streaming(
                     STREAM_LAST_EVENT_ID[stream_id] = event_id
             except Exception:
                 logger.debug("Failed to append gateway event %s for stream %s", event, stream_id, exc_info=True)
+        if event_id and hasattr(q, "note_last_event_id"):
+            try:
+                q.note_last_event_id(event_id)
+            except Exception:
+                logger.debug("Failed to note gateway event_id %s for stream %s", event_id, stream_id, exc_info=True)
         try:
-            q.put_nowait((event, data))
+            queue_item = (event, data, event_id) if event_id and hasattr(q, "subscribe_with_snapshot") else (event, data)
+            q.put_nowait(queue_item)
         except Exception:
             logger.debug("Failed to put gateway event to queue")
 
@@ -227,11 +256,33 @@ def _run_gateway_chat_streaming(
             from api.streaming import (
                 _load_webui_prefill_context,
                 _prefill_messages_with_webui_context,
+                _normalize_prefill_messages_before_user_turn,
                 _public_prefill_context_status,
+                _webui_ephemeral_system_prompt,
             )
 
             prefill_context = _load_webui_prefill_context(cfg)
+            # #3324: the WebUI session/delivery context (connected platforms,
+            # home channels, delivery hints, session framing) is now carried in
+            # the ephemeral system prompt rather than a prefill `user` message.
+            # The gateway-backed path must build the SAME system prompt so that
+            # context is not silently dropped on Gateway-routed WebUI chats.
+            _gateway_system_prompt = _webui_ephemeral_system_prompt(
+                None,
+                surface_context={
+                    "source": "webui",
+                    "session_id": session_id,
+                    "profile": getattr(s, "profile", None),
+                    "workspace": s.workspace if s is not None else str(workspace),
+                },
+                config_data=cfg,
+            )
             prefill_messages = _prefill_messages_with_webui_context(prefill_context, cfg)
+            prefill_messages = _normalize_prefill_messages_before_user_turn(prefill_messages)
+            prefill_messages = [
+                {"role": "system", "content": _gateway_system_prompt},
+                *prefill_messages,
+            ]
             put_gateway_event("context_status", {
                 "session_id": session_id,
                 "prefill": _public_prefill_context_status(prefill_context),
@@ -276,13 +327,20 @@ def _run_gateway_chat_streaming(
         )
         update_active_run(stream_id, phase="gateway-request")
         last_payload = {}
+        sse_event = "message"
         with urllib.request.urlopen(req, timeout=600) as resp:
             for raw_line in resp:
                 if cancel_event.is_set():
                     put_gateway_event("cancel", {"message": "Cancelled by user"})
                     return
                 line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line or not line.startswith("data:"):
+                if not line:
+                    sse_event = "message"
+                    continue
+                if line.startswith("event:"):
+                    sse_event = line[6:].strip() or "message"
+                    continue
+                if not line.startswith("data:"):
                     continue
                 data = line[5:].strip()
                 if data == "[DONE]":
@@ -290,6 +348,32 @@ def _run_gateway_chat_streaming(
                 try:
                     payload = json.loads(data)
                 except json.JSONDecodeError:
+                    continue
+                if sse_event == "hermes.tool.progress":
+                    translated = _gateway_tool_progress_event(payload)
+                    if translated:
+                        event_name, event_payload = translated
+                        if stream_id in STREAM_LIVE_TOOL_CALLS:
+                            if event_name == "tool":
+                                STREAM_LIVE_TOOL_CALLS[stream_id].append({
+                                    "name": event_payload.get("name"),
+                                    "args": event_payload.get("args") or {},
+                                    "done": False,
+                                    **({"tid": event_payload.get("tid")} if event_payload.get("tid") else {}),
+                                })
+                            else:
+                                for shared_tc in reversed(STREAM_LIVE_TOOL_CALLS[stream_id]):
+                                    if shared_tc.get("done"):
+                                        continue
+                                    if (
+                                        event_payload.get("tid") and shared_tc.get("tid") == event_payload.get("tid")
+                                    ) or shared_tc.get("name") == event_payload.get("name"):
+                                        shared_tc["done"] = True
+                                        shared_tc["is_error"] = bool(event_payload.get("is_error"))
+                                        break
+                        put_gateway_event(event_name, event_payload)
+                        update_active_run(stream_id, phase="gateway-tool", latest_tool=event_payload.get("name"))
+                    sse_event = "message"
                     continue
                 last_payload = payload
                 delta = _gateway_sse_delta(payload)
@@ -325,16 +409,41 @@ def _run_gateway_chat_streaming(
             assistant_msg = {"role": "assistant", "content": assistant_text, "timestamp": assistant_ts}
             previous_context = list(getattr(s, "context_messages", None) or getattr(s, "messages", None) or [])
             s.context_messages = previous_context + [user_msg, assistant_msg]
-            display = list(getattr(s, "messages", None) or [])
-            # Avoid duplicating the eager-save checkpointed user message.
-            if display:
-                latest = display[-1]
-                if isinstance(latest, dict) and latest.get("role") == "user":
-                    latest_text = " ".join(str(latest.get("content") or "").split())
-                    msg_norm = " ".join(str(msg_text or "").split())
-                    if latest_text == msg_norm:
-                        display = display[:-1]
-            s.messages = display + [user_msg, assistant_msg]
+            try:
+                from api.streaming import _is_context_compression_marker
+
+                display_context = [
+                    msg
+                    for msg in previous_context
+                    if not _is_context_compression_marker(msg)
+                ]
+            except Exception:
+                logger.debug("Failed to filter gateway display context markers", exc_info=True)
+                display_context = previous_context
+            display = merge_session_messages_append_only(
+                list(getattr(s, "messages", None) or []),
+                display_context,
+            )
+            try:
+                from api.streaming import _merge_display_messages_after_agent_result
+
+                s.messages = _merge_display_messages_after_agent_result(
+                    display,
+                    previous_context,
+                    s.context_messages,
+                    str(msg_text or ""),
+                )
+            except Exception:
+                logger.debug("Failed to merge gateway display transcript", exc_info=True)
+                # Avoid duplicating the eager-save checkpointed user message.
+                if display:
+                    latest = display[-1]
+                    if isinstance(latest, dict) and latest.get("role") == "user":
+                        latest_text = " ".join(str(latest.get("content") or "").split())
+                        msg_norm = " ".join(str(msg_text or "").split())
+                        if latest_text == msg_norm:
+                            display = display[:-1]
+                s.messages = display + [user_msg, assistant_msg]
             s.active_stream_id = None
             s.pending_user_message = None
             s.pending_attachments = None
