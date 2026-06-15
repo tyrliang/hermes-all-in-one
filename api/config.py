@@ -21,6 +21,8 @@ import sys
 import threading
 import time
 import traceback
+import urllib.error
+import urllib.request
 import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -2185,7 +2187,15 @@ def resolve_model_provider(model_id: str) -> tuple:
         # If prefix does NOT match config provider, the user picked a cross-provider model
         # from the OpenRouter dropdown (e.g. config=anthropic but picked openai/gpt-5.4-mini).
         # In this case always route through openrouter with the full provider/model string.
-        if prefix in _PROVIDER_MODELS and prefix != config_provider:
+        # Exception (#4210): a custom provider (bare ``custom`` or named ``custom:<slug>``)
+        # is a vendor-routing proxy, not a first-party provider — its model ids commonly
+        # contain a known-provider prefix that the proxy uses for upstream routing, not
+        # an OpenRouter dropdown selection. Keep the request on the custom provider; the
+        # base_url-set sibling of this exception lives earlier in the ``config_base_url``
+        # branch (#3872).
+        _cp_lower_cross = (config_provider or "").strip().lower()
+        _is_custom_cross = _cp_lower_cross == "custom" or _cp_lower_cross.startswith("custom:")
+        if prefix in _PROVIDER_MODELS and prefix != config_provider and not _is_custom_cross:
             return model_id, "openrouter", None
 
     return model_id, config_provider, config_base_url
@@ -2482,6 +2492,49 @@ def _candidate_supports_reasoning(candidate: str) -> bool:
     return False
 
 
+def _nested_route_reasoning_denied(model: str) -> bool:
+    """Hard deny for nested Gemini gateway routes that must never show a reasoning toggle."""
+    lower = str(model or "").strip().lower()
+    if not lower:
+        return False
+    for prefix in ("vertex/gemini-", "gemini_cli/gemini-"):
+        if lower.startswith(prefix):
+            tail = lower[len(prefix) :]
+            if tail.startswith("embedding") or "image" in tail or "imagine" in tail:
+                return True
+    return False
+
+
+def _nested_gateway_route_reasoning(model: str) -> bool:
+    """Recognize nested ``vertex/gemini-`` and ``gemini_cli/gemini-`` routes on custom providers.
+
+    The slash-prefix heuristic list includes ``google/gemini-2`` but not gateway-prefixed
+    Gemini ids, so capable models behind custom aggregators stayed hidden.
+    """
+    lower = str(model or "").strip().lower()
+    if not lower:
+        return False
+    for prefix in ("vertex/gemini-", "gemini_cli/gemini-"):
+        if lower.startswith(prefix):
+            tail = lower[len(prefix) :]
+            if tail.startswith("embedding") or "image" in tail or "imagine" in tail:
+                return False
+            # Gemini thinking/reasoning controls are documented for the 2.5
+            # series and 3-era models only — 1.5 (and earlier) have no thinking
+            # support, so a reasoning selector on e.g. ``vertex/gemini-1.5-pro``
+            # would let a user pick an effort that the route then rejects.
+            # Version-gate the allow to the reasoning-capable families.
+            if (
+                tail == "2.5"
+                or tail.startswith(("2.5-", "2.5.", "3-", "3."))
+                or "thinking" in tail
+                or "reasoning" in tail
+            ):
+                return True
+            return False
+    return False
+
+
 def _filter_reasoning_efforts_for_provider(
     efforts: list[str],
     model_id: str,
@@ -2535,6 +2588,8 @@ def _heuristic_reasoning_efforts(model_id: str, provider_id: str) -> list[str]:
     )
     if any(model.startswith(prefix) for prefix in prefixes):
         return list(VALID_REASONING_EFFORTS)
+    if _nested_gateway_route_reasoning(model):
+        return list(VALID_REASONING_EFFORTS)
     # Named custom providers often rewrite model ids with dots, underscores, or
     # extra vendor namespaces. Normalize those shapes before applying family-level
     # reasoning heuristics so "deepseek.v3.2", "deepseek_v4_flash", and
@@ -2578,6 +2633,184 @@ def _models_dev_reasoning_efforts(model_id: str, provider_id: str) -> list[str] 
     return None
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """urllib redirect handler that refuses to follow any redirect.
+
+    Used by the LM Studio reasoning probe so a 3xx from the probe URL can never
+    forward the ``Authorization`` header (the configured LM Studio key) to a
+    redirected, possibly attacker-controlled host. ``redirect_request``
+    returning ``None`` makes urllib raise the original 3xx as an ``HTTPError``,
+    which the probe swallows. (#3837 security review)
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _get_lmstudio_reasoning_probe_api_key() -> str | None:
+    """Resolve the LM Studio key for reasoning probes with WebUI precedence."""
+    config_data = cfg
+    model_cfg = config_data.get("model") or {}
+    if isinstance(model_cfg, dict):
+        active_provider = str(model_cfg.get("provider") or "").strip().lower()
+        model_key = str(model_cfg.get("api_key") or "").strip()
+        if active_provider == "lmstudio" and model_key:
+            return model_key
+
+    providers_cfg = config_data.get("providers") or {}
+    if isinstance(providers_cfg, dict):
+        lmstudio_cfg = providers_cfg.get("lmstudio") or {}
+        if isinstance(lmstudio_cfg, dict):
+            config_key = str(lmstudio_cfg.get("api_key") or "").strip()
+            if config_key:
+                return config_key
+
+    env_key = str(os.getenv("LM_API_KEY") or "").strip()
+    if env_key:
+        return env_key
+
+    legacy_env_key = str(os.getenv("LMSTUDIO_API_KEY") or "").strip()
+    if legacy_env_key:
+        return legacy_env_key
+
+    return None
+
+
+def _lmstudio_reasoning_probe_options_fallback(
+    model: str,
+    base_url: str | None,
+    *,
+    api_key: str | None = None,
+    timeout: float = 5.0,
+) -> list[str]:
+    """Query LM Studio reasoning options without relying on hermes_cli."""
+    server_root = str(base_url or "").strip().rstrip("/")
+    if server_root.endswith("/v1"):
+        server_root = server_root[:-3].rstrip("/")
+    if not server_root or not model:
+        return []
+
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "hermes-webui-reasoning-probe",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    request = urllib.request.Request(
+        server_root + "/api/v1/models",
+        headers=headers,
+        method="GET",
+    )
+    # SECURITY: never follow redirects on this probe. urllib re-sends request
+    # headers (including Authorization: Bearer <lmstudio key>) to the redirect
+    # target, so a 3xx from the probe URL could exfiltrate the configured
+    # LM Studio credential to an attacker-controlled host. A no-redirect opener
+    # turns any 3xx into an HTTPError we swallow below. (#3837 security review)
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    try:
+        with opener.open(request, timeout=timeout) as response:  # nosec B310
+            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as exc:
+        logger.debug(
+            "LM Studio reasoning probe at %s failed with HTTP %s",
+            server_root,
+            exc.code,
+        )
+        return []
+    except Exception as exc:
+        logger.debug("LM Studio reasoning probe at %s failed: %s", server_root, exc)
+        return []
+
+    raw_models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(raw_models, list):
+        logger.debug(
+            "LM Studio reasoning probe at %s returned malformed payload",
+            server_root,
+        )
+        return []
+
+    for raw in raw_models:
+        if not isinstance(raw, dict):
+            continue
+        if raw.get("key") != model and raw.get("id") != model:
+            continue
+        caps = raw.get("capabilities")
+        reasoning = caps.get("reasoning") if isinstance(caps, dict) else None
+        opts = reasoning.get("allowed_options") if isinstance(reasoning, dict) else None
+        if isinstance(opts, list):
+            return [str(opt).strip().lower() for opt in opts if isinstance(opt, str)]
+        return []
+    return []
+
+
+def _lmstudio_model_reasoning_options(
+    model: str,
+    base_url: str | None,
+    *,
+    api_key: str | None = None,
+    timeout: float = 5.0,
+) -> list[str]:
+    """Prefer hermes_cli, but keep WebUI reasoning probes working without it.
+
+    SECURITY: when an ``api_key`` is being sent, always use the built-in
+    no-redirect fallback probe rather than ``hermes_cli``. The bundled CLI probe
+    uses a plain ``urllib.request.urlopen`` that follows redirects and re-sends
+    the ``Authorization`` header to the redirect target, which could leak the
+    configured LM Studio credential to another host. We can only guarantee
+    redirect safety for code we control, so credentialed probes go through
+    ``_lmstudio_reasoning_probe_options_fallback`` (no-redirect opener). Keyless
+    probes have no credential to leak, so they may use the richer CLI path.
+    (#3837 security review)
+    """
+    if api_key:
+        return _lmstudio_reasoning_probe_options_fallback(
+            model,
+            base_url,
+            api_key=api_key,
+            timeout=timeout,
+        )
+
+    try:
+        from hermes_cli.models import (
+            lmstudio_model_reasoning_options as _cli_lmstudio_model_reasoning_options,
+        )
+    except Exception:
+        return _lmstudio_reasoning_probe_options_fallback(
+            model,
+            base_url,
+            api_key=api_key,
+            timeout=timeout,
+        )
+
+    try:
+        return _cli_lmstudio_model_reasoning_options(
+            model,
+            base_url,
+            api_key=api_key,
+            timeout=timeout,
+        )
+    except (TypeError, AttributeError):
+        logger.warning(
+            "hermes_cli.lmstudio_model_reasoning_options has an unexpected signature; "
+            "falling back to the built-in LM Studio reasoning probe",
+            exc_info=True,
+        )
+        return _lmstudio_reasoning_probe_options_fallback(
+            model,
+            base_url,
+            api_key=api_key,
+            timeout=timeout,
+        )
+    except Exception:
+        return _lmstudio_reasoning_probe_options_fallback(
+            model,
+            base_url,
+            api_key=api_key,
+            timeout=timeout,
+        )
+
+
 def resolve_model_reasoning_efforts(
     model_id: str | None = None,
     provider_id: str | None = None,
@@ -2602,34 +2835,50 @@ def resolve_model_reasoning_efforts(
 
     hinted_model = _strip_provider_hint_for_reasoning(model)
 
-    try:
-        from hermes_cli.models import (
-            github_model_reasoning_efforts,
-            lmstudio_model_reasoning_options,
-        )
-    except Exception:
-        if provider in {"copilot", "github-copilot"}:
-            return _heuristic_reasoning_efforts(hinted_model, provider)
-    else:
-        if provider in {"copilot", "github-copilot"}:
-            return _filter_reasoning_efforts_for_provider(
-                github_model_reasoning_efforts(hinted_model), hinted_model, provider
-            )
+    if _nested_route_reasoning_denied(hinted_model):
+        return []
 
-        if provider == "lmstudio":
-            probe_base = resolved_base_url or _get_provider_base_url(provider)
-            opts = lmstudio_model_reasoning_options(hinted_model, probe_base)
-            normalized = [str(opt).strip().lower() for opt in opts if str(opt).strip()]
-            if not normalized or set(normalized).issubset({"off"}):
-                return []
-            level_opts = [opt for opt in normalized if opt in VALID_REASONING_EFFORTS]
-            if level_opts:
-                return _filter_reasoning_efforts_for_provider(
-                    level_opts, hinted_model, provider
-                )
-            if set(normalized).issubset({"off", "on"}):
-                return []
+    if provider in {"copilot", "github-copilot"}:
+        try:
+            from hermes_cli.models import github_model_reasoning_efforts
+        except Exception:
+            return _heuristic_reasoning_efforts(hinted_model, provider)
+        return _filter_reasoning_efforts_for_provider(
+            github_model_reasoning_efforts(hinted_model), hinted_model, provider
+        )
+
+    if provider == "lmstudio":
+        configured_base = _get_provider_base_url(provider)
+        probe_base = resolved_base_url or configured_base
+        # SECURITY: only forward the configured LM Studio credential when the
+        # probe target is the configured LM Studio endpoint. /api/reasoning
+        # accepts a caller-supplied base_url, so a request could otherwise point
+        # the probe at an arbitrary host and harvest the stored key. When the
+        # caller supplies a base_url that does not normalize to the configured
+        # one, probe it WITHOUT a key. (#3837 security review)
+        probe_key: str | None = None
+        if not resolved_base_url or (
+            configured_base
+            and _normalize_base_url_for_match(probe_base)
+            == _normalize_base_url_for_match(configured_base)
+        ):
+            probe_key = _get_lmstudio_reasoning_probe_api_key()
+        opts = _lmstudio_model_reasoning_options(
+            hinted_model,
+            probe_base,
+            api_key=probe_key,
+        )
+        normalized = [str(opt).strip().lower() for opt in opts if str(opt).strip()]
+        if not normalized or set(normalized).issubset({"off"}):
             return []
+        level_opts = [opt for opt in normalized if opt in VALID_REASONING_EFFORTS]
+        if level_opts:
+            return _filter_reasoning_efforts_for_provider(
+                level_opts, hinted_model, provider
+            )
+        if set(normalized).issubset({"off", "on"}):
+            return []
+        return []
 
     # _models_dev_reasoning_efforts already applies the provider/model filter
     # internally, so it is returned as-is here (filtering again would be
@@ -3109,12 +3358,23 @@ def _configured_model_badges_from_static_catalog(
 
     def _norm_static_model_id(model_id: str) -> str:
         s = str(model_id or "").strip().lower()
+        stripped_at_provider = False
         if s.startswith("@") and ":" in s:
-            parts = s.split(":")
-            s = parts[-1] or s
-        if "://" not in s and "/" in s:
-            stripped = s.split("/", 1)[1]
-            s = stripped or s
+            colon_idx = s.index(":", 1)
+            candidate = s[colon_idx + 1:]
+            stripped_at_provider = bool(candidate)
+            s = candidate or s
+        if "://" not in s:
+            if (
+                not stripped_at_provider
+                and "/" in s
+                and ":" in s
+                and s.index(":") < s.index("/")
+            ):
+                s = s[s.index("/") + 1 :] or s
+            if "/" in s:
+                stripped = s.split("/", 1)[1]
+                s = stripped or s
         return s.replace("-", ".")
 
     norm_lookup: dict[str, list[str]] = {}
@@ -4332,16 +4592,28 @@ def get_available_models(*, prefer_cache: bool = False) -> dict:
 
         def _norm_model_id(model_id: str) -> str:
             s = str(model_id or "").strip().lower()
+            stripped_at_provider = False
             # Strip @provider: prefix (e.g., @custom:jingdong:GLM-5 -> GLM-5).
             # Defensive: if the last segment is empty (trailing colon, malformed
             # config), keep the original to avoid collapsing distinct IDs to ''.
             if s.startswith("@") and ":" in s:
-                parts = s.split(":")
-                s = parts[-1] or s
+                # Strip @provider: prefix, preserving remaining hierarchy including
+                # colon-suffixed model IDs like provider/model:free (#3959).
+                colon_idx = s.index(":", 1)
+                candidate = s[colon_idx + 1:]
+                stripped_at_provider = bool(candidate)
+                s = candidate or s
             # Skip slash-based stripping for URI-scheme IDs (e.g.
             # gpt://folder/model/latest) whose slashes are path separators,
             # not provider delimiters (#3429).
             if "://" not in s:
+                if (
+                    not stripped_at_provider
+                    and "/" in s
+                    and ":" in s
+                    and s.index(":") < s.index("/")
+                ):
+                    s = s[s.index("/") + 1 :] or s
                 # Strip only the first slash-segment (provider prefix), preserving
                 # any remaining vendor hierarchy.  Using parts[-1] here previously
                 # discarded ALL segments except the last, collapsing distinct
@@ -6266,6 +6538,7 @@ _SETTINGS_DEFAULTS = {
     "show_thinking": True,  # show/hide thinking/reasoning blocks in chat view
     "simplified_tool_calling": True,  # legacy compatibility; Worklog renderer remains enabled
     "terminal_auto_expand_on_output": False,  # auto-expand terminal panel when output arrives while collapsed
+    "workspace_todos_tab": False,  # show a Todos tab in the workspace panel (right side)
     "api_redact_enabled": True,  # redact sensitive data (API keys, secrets) from API responses
     "dashboard_plugins": {},  # plugin_name -> bool, opt-in per plugin (default off per PF-10b)
     "sidebar_density": "compact",  # compact | detailed
@@ -6431,6 +6704,7 @@ _SETTINGS_BOOL_KEYS = {
     "notifications_enabled",
     "show_thinking",
     "terminal_auto_expand_on_output",
+    "workspace_todos_tab",
     "api_redact_enabled",
     "session_jump_buttons",
     "session_endless_scroll",
