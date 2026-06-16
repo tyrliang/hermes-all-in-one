@@ -2,20 +2,16 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 
-import { Button } from '@/components/ui/button'
+import { BrailleSpinner } from '@/components/ui/braille-spinner'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Switch } from '@/components/ui/switch'
 import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions } from '@/hermes'
-import { useI18n } from '@/i18n'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import {
   $visibleModels,
   collapseModelFamilies,
   effectiveVisibleKeys,
-  emptyProviderSentinelKey,
-  isProviderSentinel,
   modelVisibilityKey,
   setVisibleModels
 } from '@/store/model-visibility'
@@ -36,8 +32,6 @@ export function ModelVisibilityDialog({
   open,
   sessionId
 }: ModelVisibilityDialogProps) {
-  const { t } = useI18n()
-  const copy = t.modelVisibility
   const [search, setSearch] = useState('')
   const stored = useStore($visibleModels)
 
@@ -63,19 +57,10 @@ export function ModelVisibilityDialog({
   const toggle = (provider: ModelOptionProvider, model: string) => {
     const next = new Set(effectiveVisibleKeys($visibleModels.get(), providers))
     const key = modelVisibilityKey(provider.slug, model)
-    const sentinel = emptyProviderSentinelKey(provider.slug)
 
     if (next.has(key)) {
       next.delete(key)
-
-      // Check if this was the last real model for this provider.
-      const remainingForProvider = [...next].some(k => k.startsWith(`${provider.slug}::`) && !isProviderSentinel(k))
-
-      if (!remainingForProvider) {
-        next.add(sentinel)
-      }
     } else {
-      next.delete(sentinel)
       next.add(key)
     }
 
@@ -91,7 +76,7 @@ export function ModelVisibilityDialog({
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className="max-w-xs gap-0 overflow-hidden p-0">
         <DialogHeader className="px-3 pb-1 pt-3">
-          <DialogTitle className="text-[0.8125rem]">{copy.title}</DialogTitle>
+          <DialogTitle className="text-[0.8125rem]">Models</DialogTitle>
         </DialogHeader>
 
         <div className="px-3 py-1.5">
@@ -99,7 +84,7 @@ export function ModelVisibilityDialog({
             autoFocus
             className="h-5 w-full bg-transparent text-xs text-foreground placeholder:text-(--ui-text-tertiary) focus:outline-none"
             onChange={event => setSearch(event.target.value)}
-            placeholder={copy.search}
+            placeholder="Search models"
             type="text"
             value={search}
           />
@@ -108,7 +93,7 @@ export function ModelVisibilityDialog({
         <div className="max-h-[55vh] overflow-y-auto pb-1">
           {providers.length === 0 ? (
             <div className="px-3 py-5 text-center text-xs text-muted-foreground">
-              {modelOptions.isPending ? <GlyphSpinner className="mx-auto text-sm" /> : copy.noAuthenticatedProviders}
+              {modelOptions.isPending ? <BrailleSpinner className="mx-auto text-sm" /> : 'No authenticated providers.'}
             </div>
           ) : (
             providers.map(provider => {
@@ -147,18 +132,16 @@ export function ModelVisibilityDialog({
         </div>
 
         <div className="px-3 py-2">
-          <Button
-            className="-ml-2 text-(--ui-text-tertiary)"
+          <button
+            className="text-xs text-(--ui-text-tertiary) transition-colors hover:text-foreground"
             onClick={() => {
               onOpenChange(false)
               onOpenProviders()
             }}
-            size="xs"
             type="button"
-            variant="text"
           >
-            {copy.addProvider}
-          </Button>
+            Add provider…
+          </button>
         </div>
       </DialogContent>
     </Dialog>

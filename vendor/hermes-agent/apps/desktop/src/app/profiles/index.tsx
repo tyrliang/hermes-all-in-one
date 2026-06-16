@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import {
   Dialog,
   DialogContent,
@@ -12,7 +13,6 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import {
   createProfile,
@@ -30,8 +30,10 @@ import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
-import { OverlayMain, OverlayNewButton, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
+import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
+import { titlebarHeaderBaseClass } from '../shell/titlebar'
+import type { SetTitlebarToolGroup } from '../shell/titlebar-controls'
 
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
@@ -39,20 +41,30 @@ function isValidProfileName(name: string): boolean {
   return PROFILE_NAME_RE.test(name.trim())
 }
 
-interface ProfilesViewProps {
+interface ProfilesViewProps extends React.ComponentProps<'section'> {
   onClose: () => void
+  setStatusbarItemGroup?: SetStatusbarItemGroup
+  setTitlebarToolGroup?: SetTitlebarToolGroup
 }
 
-export function ProfilesView({ onClose }: ProfilesViewProps) {
+export function ProfilesView({
+  onClose,
+  setStatusbarItemGroup: _setStatusbarItemGroup,
+  setTitlebarToolGroup,
+  ...props
+}: ProfilesViewProps) {
   const { t } = useI18n()
   const p = t.profiles
   const [profiles, setProfiles] = useState<null | ProfileInfo[]>(null)
+  const [refreshing, setRefreshing] = useState(false)
   const [selectedName, setSelectedName] = useState<null | string>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<null | ProfileInfo>(null)
   const [deleting, setDeleting] = useState(false)
 
   const refresh = useCallback(async () => {
+    setRefreshing(true)
+
     try {
       const { profiles: list } = await getProfiles()
       setProfiles(list)
@@ -65,6 +77,8 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
       })
     } catch (err) {
       notifyError(err, p.failedLoad)
+    } finally {
+      setRefreshing(false)
     }
   }, [p])
 
@@ -73,6 +87,24 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  useEffect(() => {
+    if (!setTitlebarToolGroup) {
+      return
+    }
+
+    setTitlebarToolGroup('profiles', [
+      {
+        disabled: refreshing,
+        icon: <Codicon name="refresh" spinning={refreshing} />,
+        id: 'refresh-profiles',
+        label: refreshing ? p.refreshing : p.refresh,
+        onSelect: () => void refresh()
+      }
+    ])
+
+    return () => setTitlebarToolGroup('profiles', [])
+  }, [p, refresh, refreshing, setTitlebarToolGroup])
 
   const selected = useMemo(() => {
     if (!profiles) {
@@ -83,14 +115,14 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
   }, [profiles, selectedName])
 
   const handleCreate = useCallback(
-    async (name: string, cloneFrom: null | string) => {
+    async (name: string, cloneFromDefault: boolean) => {
       const trimmed = name.trim()
 
       if (!isValidProfileName(trimmed)) {
         throw new Error(p.nameHint)
       }
 
-      await createProfile({ name: trimmed, clone_from: cloneFrom })
+      await createProfile({ name: trimmed, clone_from_default: cloneFromDefault })
       notify({ kind: 'success', title: p.created, message: trimmed })
       setSelectedName(trimmed)
       await refresh()
@@ -140,50 +172,67 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
 
   return (
     <OverlayView closeLabel={p.close} onClose={onClose}>
-      {!profiles ? (
-        <PageLoader label={p.loading} />
-      ) : (
-        <OverlaySplitLayout>
-          <OverlaySidebar>
-            <OverlayNewButton label={p.newProfile} onClick={() => setCreateOpen(true)} />
-            {profiles.map(profile => (
-              <ProfileRow
-                active={selected?.name === profile.name}
-                key={profile.name}
-                onSelect={() => setSelectedName(profile.name)}
-                profile={profile}
-              />
-            ))}
-            {profiles.length === 0 && (
-              <p className="px-2 py-4 text-center text-xs text-muted-foreground">{p.noProfiles}</p>
-            )}
-          </OverlaySidebar>
+      <section {...props} className="flex h-full min-w-0 flex-col overflow-hidden rounded-b-[0.9375rem] bg-background">
+        <header className={titlebarHeaderBaseClass}>
+          <h2 className="pointer-events-auto text-base font-semibold leading-none tracking-tight">{p.title}</h2>
+          <span className="pointer-events-auto text-xs text-muted-foreground">
+            {profiles ? p.count(profiles.length) : ''}
+          </span>
+        </header>
 
-          <OverlayMain className="px-0">
-            {selected ? (
-              <ProfileDetail
-                key={selected.name}
-                onDelete={() => setPendingDelete(selected)}
-                onRename={newName => handleRename(selected.name, newName)}
-                profile={selected}
-              />
-            ) : (
-              <div className="grid h-full place-items-center px-6 py-12 text-center text-sm text-muted-foreground">
-                <div>
-                  <Users className="mx-auto size-6 text-muted-foreground/60" />
-                  <p className="mt-3">{p.selectPrompt}</p>
+        <div className="min-h-0 flex-1 overflow-hidden rounded-b-[1.0625rem] border border-border/50 bg-background/85">
+          {!profiles ? (
+            <PageLoader label={p.loading} />
+          ) : (
+            <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[16rem_minmax(0,1fr)]">
+              <aside className="flex min-h-0 flex-col overflow-hidden border-b border-border/50 lg:border-b-0 lg:border-r">
+                <div className="border-b border-border/40 p-2">
+                  <Button className="w-full" onClick={() => setCreateOpen(true)} size="sm">
+                    <Codicon name="add" />
+                    {p.newProfile}
+                  </Button>
                 </div>
-              </div>
-            )}
-          </OverlayMain>
-        </OverlaySplitLayout>
-      )}
+                <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
+                  {profiles.map(profile => (
+                    <li key={profile.name}>
+                      <ProfileRow
+                        active={selected?.name === profile.name}
+                        onSelect={() => setSelectedName(profile.name)}
+                        profile={profile}
+                      />
+                    </li>
+                  ))}
+                  {profiles.length === 0 && (
+                    <li className="px-2 py-4 text-center text-xs text-muted-foreground">{p.noProfiles}</li>
+                  )}
+                </ul>
+              </aside>
 
-      <CreateProfileDialog
+              <main className="min-h-0 overflow-hidden">
+                {selected ? (
+                  <ProfileDetail
+                    key={selected.name}
+                    onDelete={() => setPendingDelete(selected)}
+                    onRename={newName => handleRename(selected.name, newName)}
+                    profile={selected}
+                  />
+                ) : (
+                  <div className="grid h-full place-items-center px-6 py-12 text-center text-sm text-muted-foreground">
+                    <div>
+                      <Users className="mx-auto size-6 text-muted-foreground/60" />
+                      <p className="mt-3">{p.selectPrompt}</p>
+                    </div>
+                  </div>
+                )}
+              </main>
+            </div>
+          )}
+        </div>
+
+        <CreateProfileDialog
           onClose={() => setCreateOpen(false)}
-          onCreate={async (name, cloneFrom) => handleCreate(name, cloneFrom)}
+          onCreate={async (name, cloneFromDefault) => handleCreate(name, cloneFromDefault)}
           open={createOpen}
-          profiles={profiles ?? []}
         />
 
         <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
@@ -212,6 +261,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+      </section>
     </OverlayView>
   )
 }
@@ -223,7 +273,7 @@ function ProfileRow({ active, onSelect, profile }: { active: boolean; onSelect: 
   return (
     <button
       className={cn(
-        'flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors',
+        'flex w-full flex-col items-start gap-1 rounded-lg px-2.5 py-2 text-left transition-colors',
         active ? 'bg-accent text-foreground' : 'text-foreground/85 hover:bg-accent/60'
       )}
       onClick={onSelect}
@@ -318,7 +368,7 @@ function ProfileDetail({
               </div>
             </div>
 
-            <dl className="grid gap-2 text-xs sm:grid-cols-2">
+            <dl className="grid gap-2 rounded-lg border border-border/40 bg-background/70 px-3 py-3 text-xs sm:grid-cols-2">
               <DetailRow label={p.modelLabel}>
                 {profile.model ? (
                   <>
@@ -425,7 +475,9 @@ function SoulEditor({ profileName }: { profileName: string }) {
       </div>
 
       {loading ? (
-        <PageLoader className="min-h-44" label={p.loadingSoul} />
+        <div className="grid h-44 place-items-center rounded-md border border-border/40 bg-background/60 text-xs text-muted-foreground">
+          {p.loadingSoul}
+        </div>
       ) : (
         <Textarea
           className="min-h-72 font-mono text-xs leading-5"
@@ -455,18 +507,16 @@ function SoulEditor({ profileName }: { profileName: string }) {
 function CreateProfileDialog({
   onClose,
   onCreate,
-  open,
-  profiles
+  open
 }: {
   onClose: () => void
-  onCreate: (name: string, cloneFrom: null | string) => Promise<void>
+  onCreate: (name: string, cloneFromDefault: boolean) => Promise<void>
   open: boolean
-  profiles: ProfileInfo[]
 }) {
   const { t } = useI18n()
   const p = t.profiles
   const [name, setName] = useState('')
-  const [cloneFrom, setCloneFrom] = useState<null | string>('default')
+  const [cloneFromDefault, setCloneFromDefault] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
@@ -476,7 +526,7 @@ function CreateProfileDialog({
     }
 
     setName('')
-    setCloneFrom('default')
+    setCloneFromDefault(true)
     setError(null)
     setSaving(false)
   }, [open])
@@ -497,7 +547,7 @@ function CreateProfileDialog({
     setError(null)
 
     try {
-      await onCreate(trimmed, cloneFrom)
+      await onCreate(trimmed, cloneFromDefault)
       onClose()
     } catch (err) {
       setError(err instanceof Error ? err.message : p.failedCreate)
@@ -532,25 +582,18 @@ function CreateProfileDialog({
             </p>
           </div>
 
-          <div className="grid gap-1.5">
-            <label className="text-xs font-medium" htmlFor="new-profile-clone-from">
-              {p.cloneFrom}
-            </label>
-            <Select onValueChange={value => setCloneFrom(value === '__none__' ? null : value)} value={cloneFrom ?? '__none__'}>
-              <SelectTrigger className="h-9 rounded-md" id="new-profile-clone-from">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__none__">{p.cloneFromNone}</SelectItem>
-                {profiles.map(profile => (
-                  <SelectItem key={profile.name} value={profile.name}>
-                    {profile.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">{p.cloneFromDesc}</p>
-          </div>
+          <label className="flex cursor-pointer items-center gap-2 rounded-md border border-border/40 bg-background/50 px-3 py-2 text-sm">
+            <input
+              checked={cloneFromDefault}
+              className="size-4 accent-primary"
+              onChange={event => setCloneFromDefault(event.target.checked)}
+              type="checkbox"
+            />
+            <span>
+              <span className="font-medium">{p.cloneFromDefault}</span>
+              <span className="ml-2 text-xs text-muted-foreground">{p.cloneFromDefaultDesc}</span>
+            </span>
+          </label>
 
           {error && (
             <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
