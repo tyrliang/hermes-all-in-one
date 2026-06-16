@@ -255,6 +255,25 @@ function _markSessionCompletionUnread(sid, messageCount = 0) {
   _saveSessionCompletionUnread();
 }
 
+function _markSessionCompletionUnreadIfBackground(sid, messageCount = null) {
+  if (!sid) return false;
+  let count = Number.isFinite(messageCount) ? Number(messageCount) : NaN;
+  if (!Number.isFinite(count)) {
+    const snapshot = _sessionListSnapshotById.get(sid)
+      || (_allSessions || []).find(s => s && s.session_id === sid)
+      || null;
+    count = Number(snapshot && snapshot.message_count) || 0;
+  }
+  if (_isSessionActivelyViewedForList(sid)) {
+    _setSessionViewedCount(sid, count);
+    if (typeof renderSessionListFromCache === 'function') renderSessionListFromCache();
+    return false;
+  }
+  _markSessionCompletionUnread(sid, count);
+  if (typeof renderSessionListFromCache === 'function') renderSessionListFromCache();
+  return true;
+}
+
 function _clearSessionCompletionUnread(sid) {
   if (!sid) return;
   const unread = _getSessionCompletionUnread();
@@ -1418,7 +1437,7 @@ function _isCliSession(session) {
     || session.source_label
     || ''
   ).toLowerCase();
-  if (raw === 'cli') return true;
+  if (raw === 'cli' || raw === 'tui') return true;
   // If messaging-like, don't classify as legacy CLI even when is_cli_session is true.
   if (_isMessagingSession(session)) return false;
   return session.is_cli_session === true;
@@ -3741,6 +3760,12 @@ function _scheduleSessionEventsRefresh(reason){
   }, 300);
 }
 
+function _sessionEventTargetsActiveSession(payload){
+  const eventSessionId = payload && typeof payload.session_id === 'string' ? payload.session_id : '';
+  if(!eventSessionId) return false;
+  return !!(S.session && S.session.session_id && S.session.session_id === eventSessionId);
+}
+
 // ── #4151: focus-aware close for the two GLOBAL sidebar SSE streams ──────────
 // Each WebUI window holds up to three persistent SSE connections (session-events
 // + gateway + the per-session stream). #3992/#3996 close them on the Page
@@ -3838,17 +3863,19 @@ function ensureSessionEventsSSE(){
     };
     _sessionEventsSSE.addEventListener('sessions_changed', (ev) => {
       const activeProfile = S.activeProfile || 'default';
+      let eventTargetsActiveSession = false;
       try {
         const payload = typeof ev?.data === 'string' ? JSON.parse(ev.data) : {};
         const eventProfile = payload && typeof payload.profile === 'string' ? payload.profile : '';
         if (!_sessionEventProfilesMatch(eventProfile, activeProfile)) {
           return;
         }
+        eventTargetsActiveSession = _sessionEventTargetsActiveSession(payload);
       } catch (_err) {
         // Non-JSON payload (or transient malformed event). Keep legacy behavior:
         // refresh once event was seen.
       }
-      _scheduleSessionEventsRefresh('event');
+      _scheduleSessionEventsRefresh(eventTargetsActiveSession?'event-active-session':'event');
     });
     _sessionEventsSSE.onerror = () => {
       _sessionEventsNeedsRefreshOnOpen = true;
@@ -3913,6 +3940,7 @@ async function probeGatewaySSEStatus(){
     if(resp.ok && data.watcher_running){
       stopGatewayPollFallback();
       _gatewaySSEWarningShown = false;
+      if(!_gatewaySSE && typeof EventSource!=='undefined' && !(document&&document.hidden)) startGatewaySSE();
       return;
     }
     if(resp.status === 503 || data.watcher_running === false){

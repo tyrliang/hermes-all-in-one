@@ -43,17 +43,28 @@ from api.session_events import (
 logger = logging.getLogger(__name__)
 
 
-def _publish_session_list_changed(reason: str, *, profile: str | None = None) -> None:
-    """Publish profile-scoped session changes while tolerating legacy test doubles."""
-    if not profile:
+def _publish_session_list_changed(
+    reason: str,
+    *,
+    profile: str | None = None,
+    session_id: str | None = None,
+) -> None:
+    """Publish scoped session changes while tolerating legacy test doubles."""
+    if not profile and not session_id:
         publish_session_list_changed(reason)
         return
     try:
-        publish_session_list_changed(reason, profile=profile)
+        publish_session_list_changed(reason, profile=profile, session_id=session_id)
     except TypeError:
         # Some focused tests monkeypatch the route-level publisher with the
-        # historical one-argument shape. Preserve the old signal instead of
+        # historical one-argument or profile-only shape. Preserve the old signal instead of
         # turning unrelated session mutations into 500s.
+        if profile:
+            try:
+                publish_session_list_changed(reason, profile=profile)
+                return
+            except TypeError:
+                pass
         publish_session_list_changed(reason)
 
 
@@ -126,7 +137,11 @@ def _persist_generated_session_title(
             while len(SESSIONS) > SESSIONS_MAX:
                 SESSIONS.popitem(last=False)
     _sync_session_title_to_insights(session)
-    _publish_session_list_changed(event_reason, profile=getattr(session, "profile", None))
+    _publish_session_list_changed(
+        event_reason,
+        profile=getattr(session, "profile", None),
+        session_id=sid,
+    )
     if original_session is not session:
         original_session.title = session.title
         original_session.llm_title_generated = session.llm_title_generated
@@ -234,6 +249,95 @@ _CLIENT_EVENT_ALLOWED_FIELDS = {
 }
 
 
+def _normalize_cron_job_ids(job_ids) -> list[str]:
+    seen = set()
+    normalized = []
+    for job_id in job_ids or []:
+        jid = str(job_id or "").strip()
+        if not jid or jid in seen:
+            continue
+        seen.add(jid)
+        normalized.append(jid)
+    return normalized
+
+
+def _latest_cron_session_info_for_jobs(
+    job_ids, completed_job_ids=None
+) -> dict[str, dict[str, int | str | None]]:
+    """Return newest persisted cron session info keyed by completed cron job id."""
+    normalized = _normalize_cron_job_ids(job_ids)
+    requested = _normalize_cron_job_ids(completed_job_ids if completed_job_ids is not None else job_ids)
+    if not requested:
+        return {}
+    if not normalized:
+        return {jid: {"session_id": "", "message_count": None} for jid in requested}
+    db_path = _active_state_db_path()
+    if not db_path or not Path(db_path).exists():
+        return {jid: {"session_id": "", "message_count": None} for jid in requested}
+    try:
+        with closing(sqlite3.connect(str(db_path))) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info(sessions)")
+            session_cols = {row[1] for row in cur.fetchall()}
+            if "id" not in session_cols or "source" not in session_cols:
+                return {jid: {"session_id": "", "message_count": None} for jid in requested}
+            select_message_count = (
+                "s.message_count AS message_count"
+                if "message_count" in session_cols
+                else "NULL AS message_count"
+            )
+            if "started_at" in session_cols:
+                query = f"""
+                    SELECT s.id,
+                           {select_message_count}
+                    FROM sessions s
+                    WHERE LOWER(COALESCE(s.source, '')) = 'cron'
+                    ORDER BY COALESCE(s.started_at, 0) DESC, s.id DESC  -- newest start, not last activity
+                """
+            else:
+                query = f"""
+                    SELECT s.id,
+                           {select_message_count}
+                    FROM sessions s
+                    WHERE LOWER(COALESCE(s.source, '')) = 'cron'
+                    ORDER BY s.id DESC
+                """
+            cur.execute(query)
+            results = {
+                jid: {"session_id": "", "message_count": None} for jid in requested
+            }
+            requested_ids = set(requested)
+            prefixes = {jid: f"cron_{jid}_" for jid in normalized}
+            for row in cur.fetchall():
+                sid = str(row["id"] or "")
+                if not sid:
+                    continue
+                matches = [
+                    jid
+                    for jid in normalized
+                    if sid.startswith(prefixes[jid])
+                ]
+                if matches:
+                    jid = max(matches, key=len)
+                    if jid not in requested_ids or results[jid]["session_id"]:
+                        continue
+                    results[jid] = {
+                        "session_id": sid,
+                        "message_count": (
+                            int(row["message_count"])
+                            if row["message_count"] is not None
+                            else None
+                        ),
+                    }
+                if all(info["session_id"] for info in results.values()):
+                    break
+            return results
+    except sqlite3.Error:
+        return {jid: {"session_id": "", "message_count": None} for jid in requested}
+
+
+
 def _session_field(session, field, default=None):
     if isinstance(session, dict):
         return session.get(field, default)
@@ -320,7 +424,11 @@ def _visible_pinned_lineage_ids(session_rows) -> set[str]:
 # (mcp_server.py) can import it without duplicating the visibility model.
 # Re-exported here so existing `_profiles_match(...)` call sites in this
 # module keep resolving without per-call-site refactors.
-from api.profiles import _profiles_match  # noqa: F401, E402  (re-export)
+from api.profiles import (  # noqa: F401, E402  (re-export)
+    _profiles_match,
+    get_active_profile_name,
+    get_active_profile_name as _get_active_profile_name,
+)
 
 
 def _all_profiles_query_flag(parsed_url) -> bool:
@@ -332,6 +440,22 @@ def _all_profiles_query_flag(parsed_url) -> bool:
     qs = parse_qs(parsed_url.query)
     raw = qs.get('all_profiles', [''])[0].strip().lower()
     return raw in ('1', 'true', 'yes', 'on')
+
+
+def _session_visible_to_active_profile(session_profile, handler=None) -> bool:
+    """Return whether a detail-load session belongs to the active profile.
+
+    Real request handlers must enforce the same profile boundary as
+    /api/sessions, even when the request has no hermes_profile cookie and the
+    process-level active profile is the default/root profile. Direct unit-callers
+    without a request handler keep the historical metadata-load behavior.
+    """
+    if handler is None:
+        return True
+    active_profile = _get_active_profile_name()
+    if not isinstance(session_profile, str):
+        session_profile = None
+    return _profiles_match(session_profile, active_profile)
 
 
 def _active_skills_dir() -> Path:
@@ -1158,6 +1282,10 @@ _PROVIDER_ALIASES = {
     "gpt": "openai",
     "gemini": "google",
     "openai-codex": "openai",
+    "openai-api": "openai",
+    "google-gemini": "google",
+    "google-ai-studio": "google",
+    "claude-code": "anthropic",
 }
 
 # OpenAI-compatible /v1/models endpoints for live model discovery.
@@ -1351,14 +1479,18 @@ def _session_list_cache_path_stamp(path: Path | None) -> tuple[int, int]:
         return (0, 0)
 
 
-def _session_list_cache_source_stamp(key: tuple) -> tuple[tuple[int, int], tuple[int, int], tuple[int, int]]:
+def _session_list_cache_source_stamp(key: tuple) -> tuple[tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int]]:
     _cache_profile, _cache_all_profiles, cache_show_cli_sessions, *_rest = key
     if not cache_show_cli_sessions:
-        return ((0, 0), (0, 0), (0, 0))
+        return ((0, 0), (0, 0), (0, 0), (0, 0), (0, 0))
     try:
         state_db_path = Path(_active_state_db_path())
     except Exception:
         state_db_path = None
+    try:
+        state_db_wal_path = state_db_path.with_name(f"{state_db_path.name}-wal") if state_db_path is not None else None
+    except Exception:
+        state_db_wal_path = None
     try:
         gateway_metadata_path = _gateway_session_metadata_path()
     except Exception:
@@ -1367,10 +1499,16 @@ def _session_list_cache_source_stamp(key: tuple) -> tuple[tuple[int, int], tuple
         session_index_path = SESSION_DIR / "_index.json"
     except Exception:
         session_index_path = None
+    try:
+        settings_file = SETTINGS_FILE
+    except Exception:
+        settings_file = None
     return (
         _session_list_cache_path_stamp(state_db_path),
+        _session_list_cache_path_stamp(state_db_wal_path),
         _session_list_cache_path_stamp(gateway_metadata_path),
         _session_list_cache_path_stamp(session_index_path),
+        _session_list_cache_path_stamp(settings_file),
     )
 
 
@@ -1743,6 +1881,7 @@ from api.config import (
     CUSTOM_MODELS_ENDPOINT_TIMEOUT_SECONDS,
     load_settings,
     save_settings,
+    SETTINGS_FILE,
     set_hermes_default_model,
     model_with_provider_context,
     get_reasoning_status,
@@ -2773,6 +2912,13 @@ def _handle_client_event_log(handler, body: dict) -> bool:
     return j(handler, {"ok": True, "event": payload.get("event")}) or True
 
 
+def _starts_token(raw: str, prefix: str) -> bool:
+    if not raw.startswith(prefix):
+        return False
+    rest = raw[len(prefix):]
+    return rest == "" or rest[0] in ":/"
+
+
 def _normalize_provider_id(value: str | None) -> str:
     raw = str(value or "").strip().lower()
     if not raw:
@@ -2789,7 +2935,7 @@ def _normalize_provider_id(value: str | None) -> str:
         ("openrouter", "openrouter"),
         ("custom", "custom"),
     ):
-        if raw.startswith(prefix):
+        if _starts_token(raw, prefix):
             return normalized
     # Unknown prefix — return empty so callers treat it as "no match" and pass
     # the model through unchanged rather than incorrectly stripping it.
@@ -3344,11 +3490,12 @@ def _resolve_compatible_session_model_state(
         model_provider_from_name = _normalize_provider_id(model_prefix) if "/" in model else ""
 
         model_family = ""
-        model_lower = model.lower()
-        for bare_prefix in ("gpt", "claude", "gemini"):
-            if model_lower.startswith(bare_prefix):
-                model_family = _normalize_provider_id(bare_prefix)
-                break
+        if "/" not in model:
+            model_lower = model.lower()
+            for bare_prefix in ("gpt", "claude", "gemini"):
+                if model_lower.startswith(bare_prefix):
+                    model_family = _normalize_provider_id(bare_prefix)
+                    break
 
         if model_family and model_family != _profile_provider_normalized:
             if explicit_model_pick:
@@ -6725,6 +6872,9 @@ def handle_get(handler, parsed) -> bool:
         try:
             _t1 = _time.monotonic()
             s = get_session(sid, metadata_only=(not load_messages))
+            _session_profile = getattr(s, 'profile', None) or None
+            if not _session_visible_to_active_profile(_session_profile, handler):
+                return bad(handler, "Session not found", 404)
             original_stream_id = getattr(s, "active_stream_id", None)
             _clear_stale_stream_state(s)
             cli_meta = _lookup_cli_session_metadata(sid) if _session_requires_cli_metadata_lookup(s) else {}
@@ -6732,7 +6882,6 @@ def handle_get(handler, parsed) -> bool:
             cli_messages = []
             state_db_messages = []
             metadata_summary = None
-            _session_profile = getattr(s, 'profile', None) or None
             if is_messaging_session:
                 cli_messages = get_cli_session_messages(sid)
             elif load_messages:
@@ -7020,6 +7169,9 @@ def handle_get(handler, parsed) -> bool:
             if _was_webui_session:
                 return bad(handler, "Session not found", 404)
             cli_meta = _lookup_cli_session_metadata(sid)
+            _session_profile = (cli_meta or {}).get("profile") or None
+            if not _session_visible_to_active_profile(_session_profile, handler):
+                return bad(handler, "Session not found", 404)
             msgs = get_cli_session_messages(sid)
             if msgs:
                 sess = {
@@ -7812,8 +7964,27 @@ def handle_get(handler, parsed) -> bool:
     return False  # 404
 
 
-# ── GET route helpers
+# ── POST auth helpers
 
+def _require_passkey_registration_auth(handler) -> tuple[bool, str, int]:
+    """Require auth, or the existing local-only first-run bootstrap gate.
+
+    Registering additional passkeys is an auth-factor enrollment action and
+    requires a valid WebUI session.  The first passkey can still bootstrap a
+    passkey-only instance, but only through the same local/private-network
+    onboarding gate used for first password setup.
+    """
+    from api.auth import is_auth_enabled, parse_cookie, verify_session
+
+    auth_enabled = is_auth_enabled()
+    if not auth_enabled:
+        if _onboarding_gate_allows(handler, auth_enabled):
+            return True, "", 200
+        return False, "Authentication required", 401
+    cookie_val = parse_cookie(handler)
+    if not cookie_val or not verify_session(cookie_val):
+        return False, "Authentication required", 401
+    return True, "", 200
 
 def handle_post(handler, parsed) -> bool:
     """Handle all POST routes. Returns True if handled, False for 404."""
@@ -8005,7 +8176,11 @@ def handle_post(handler, parsed) -> bool:
             worktree_info=worktree_info,
         )
         if worktree_info:
-            publish_session_list_changed("session_new", profile=getattr(s, "profile", None))
+            publish_session_list_changed(
+                "session_new",
+                profile=getattr(s, "profile", None),
+                session_id=getattr(s, "session_id", None),
+            )
         return j(handler, {"session": s.compact() | {"messages": s.messages}})
 
     if parsed.path == "/api/session/duplicate":
@@ -8087,7 +8262,11 @@ def handle_post(handler, parsed) -> bool:
             # Without this explicit save, the duplicate is in-memory only — if the user
             # refreshes before sending a turn, the duplicate vanishes.
             copied_session.save()
-            publish_session_list_changed("session_duplicate", profile=getattr(copied_session, "profile", None))
+            publish_session_list_changed(
+                "session_duplicate",
+                profile=getattr(copied_session, "profile", None),
+                session_id=getattr(copied_session, "session_id", None),
+            )
 
             return j(handler, {"session": copied_session.compact() | {"messages": copied_session.messages}})
         except Exception as e:
@@ -8095,7 +8274,8 @@ def handle_post(handler, parsed) -> bool:
 
     if parsed.path == "/api/default-model":
         try:
-            return j(handler, set_hermes_default_model(body.get("model")))
+            advanced = body.get("advanced") if isinstance(body, dict) else None
+            return j(handler, set_hermes_default_model(body.get("model"), advanced=advanced))
         except ValueError as e:
             return bad(handler, str(e))
         except RuntimeError as e:
@@ -8107,15 +8287,16 @@ def handle_post(handler, parsed) -> bool:
         task = str(body.get("task") or "").strip()
         provider = str(body.get("provider") or "auto").strip()
         model = str(body.get("model") or "").strip()
+        advanced = body.get("advanced") if isinstance(body, dict) else None
         if scope == "auxiliary":
             from api.config import set_auxiliary_model
             try:
-                return j(handler, set_auxiliary_model(task, provider, model))
+                return j(handler, set_auxiliary_model(task, provider, model, advanced=advanced))
             except Exception as exc:
                 return bad(handler, str(exc), status=400)
         if scope == "main":
             try:
-                return j(handler, set_hermes_default_model(model))
+                return j(handler, set_hermes_default_model(model, advanced=advanced))
             except ValueError as exc:
                 return bad(handler, str(exc), status=400)
         return bad(handler, f"unknown scope: {scope}", status=400)
@@ -8222,7 +8403,11 @@ def handle_post(handler, parsed) -> bool:
             apply_session_title_rename(s, body["title"])
             s.save()
         _sync_session_title_to_insights(s)
-        publish_session_list_changed("session_rename", profile=getattr(s, "profile", None))
+        publish_session_list_changed(
+            "session_rename",
+            profile=getattr(s, "profile", None),
+            session_id=getattr(s, "session_id", body["session_id"]),
+        )
         return j(handler, {"session": s.compact()})
 
 
@@ -8718,7 +8903,11 @@ def handle_post(handler, parsed) -> bool:
         # Persist only if there are messages (matches new_session pattern)
         if forked_messages:
             branch.save()
-            publish_session_list_changed("session_branch", profile=getattr(branch, "profile", None))
+            publish_session_list_changed(
+                "session_branch",
+                profile=getattr(branch, "profile", None),
+                session_id=getattr(branch, "session_id", None),
+            )
 
         return j(handler, {
             "session_id": branch.session_id,
@@ -9029,6 +9218,11 @@ def handle_post(handler, parsed) -> bool:
             # the old profile's cached model list (#1200 — profile-switch model bug).
             from api.config import invalidate_models_cache
             invalidate_models_cache()
+            try:
+                from api.gateway_watcher import restart_watcher_for_profile
+                restart_watcher_for_profile(name)
+            except Exception as exc:
+                logger.warning("Failed to restart gateway watcher for profile %s: %s", name, exc)
             return j(handler, result, extra_headers={
                 'Set-Cookie': build_profile_cookie(name, handler),
             })
@@ -9310,7 +9504,11 @@ def handle_post(handler, parsed) -> bool:
             with _get_session_agent_lock(body["session_id"]):
                 s.pinned = pin_requested
                 s.save()
-        publish_session_list_changed("session_pin", profile=getattr(s, "profile", None))
+        publish_session_list_changed(
+            "session_pin",
+            profile=getattr(s, "profile", None),
+            session_id=getattr(s, "session_id", body["session_id"]),
+        )
         return j(handler, {"ok": True, "session": s.compact()})
 
     # ── Session archive (POST) ──
@@ -9387,7 +9585,11 @@ def handle_post(handler, parsed) -> bool:
         with _get_session_agent_lock(sid):
             s.archived = bool(body.get("archived", True))
             s.save(touch_updated_at=False)
-        publish_session_list_changed("session_archive", profile=getattr(s, "profile", None))
+        publish_session_list_changed(
+            "session_archive",
+            profile=getattr(s, "profile", None),
+            session_id=getattr(s, "session_id", sid),
+        )
         return j(handler, {"ok": True, "session": s.compact(), **_worktree_retained_payload(s)})
 
     # ── Session move to project (POST) ──
@@ -9441,7 +9643,11 @@ def handle_post(handler, parsed) -> bool:
             s.save()
         finally:
             _move_lock.release()
-        publish_session_list_changed("session_move", profile=getattr(s, "profile", None))
+        publish_session_list_changed(
+            "session_move",
+            profile=getattr(s, "profile", None),
+            session_id=getattr(s, "session_id", body["session_id"]),
+        )
         return j(handler, {"ok": True, "session": s.compact()})
 
     # ── Project CRUD (POST) ──
@@ -9785,6 +9991,9 @@ def handle_post(handler, parsed) -> bool:
 
         if not _passkey_feature_flag_enabled():
             return j(handler, {"error": "Passkey support is disabled."}, status=404)
+        ok, error, status = _require_passkey_registration_auth(handler)
+        if not ok:
+            return j(handler, {"error": error}, status=status)
         try:
             return j(handler, {"ok": True, "publicKey": registration_options(handler)})
         except PasskeyRateLimitError as e:
@@ -9798,6 +10007,9 @@ def handle_post(handler, parsed) -> bool:
 
         if not _passkey_feature_flag_enabled():
             return j(handler, {"error": "Passkey support is disabled."}, status=404)
+        ok, error, status = _require_passkey_registration_auth(handler)
+        if not ok:
+            return j(handler, {"error": error}, status=status)
         try:
             result = finish_registration(body, handler)
             result["credentials"] = registered_credentials()
@@ -10036,6 +10248,9 @@ def _handle_session_export(handler, parsed):
     try:
         s = get_session(sid)
     except KeyError:
+        return bad(handler, "Session not found", 404)
+    active_profile = get_active_profile_name()
+    if not _profiles_match(getattr(s, "profile", None), active_profile):
         return bad(handler, "Session not found", 404)
     safe = redact_session_data(s.__dict__)
     payload = json.dumps(safe, ensure_ascii=False, indent=2)
@@ -12269,14 +12484,11 @@ def _handle_live_models(handler, parsed):
         if not ids:
             return _finish({"provider": provider, "models": [], "count": 0})
 
-        # For Nous Portal, apply the same featured-set cap that
-        # /api/models uses so background enrichment via _fetchLiveModels()
-        # doesn't undo the dropdown trim — otherwise a 397-model catalog
-        # would still flood the picker after the initial render finished
-        # the cap. The full list is returned via the main /api/models
-        # endpoint's extra_models field for /model autocomplete; the live
-        # endpoint is purely a dropdown-enrichment surface, so it should
-        # match the dropdown's visibility budget. (#1567)
+        # Match the same dropdown visibility budget that /api/models uses so
+        # background enrichment via _fetchLiveModels() does not re-append an
+        # uncapped catalog after the initial picker render. The full catalog
+        # still comes from /api/models via extra_models for search/show-all;
+        # this endpoint is only a dropdown-enrichment surface. (#1567, #3691)
         if provider == "nous":
             try:
                 from api.config import _build_nous_featured_set
@@ -12285,6 +12497,10 @@ def _handle_live_models(handler, parsed):
                 ids = _featured
             except Exception:
                 logger.debug("Failed to apply Nous featured-set cap for /api/models/live")
+        else:
+            from api.config import _MODEL_PICKER_OVERFLOW_THRESHOLD, _MODEL_PICKER_VISIBLE_TARGET
+            if len(ids) > _MODEL_PICKER_OVERFLOW_THRESHOLD:
+                ids = ids[:_MODEL_PICKER_VISIBLE_TARGET]
 
         # Normalise to {id, label} — provider_model_ids() returns plain string IDs.
         # For ollama-cloud use the shared Ollama formatter (handles `:variant` suffix).
@@ -12553,6 +12769,7 @@ def _handle_cron_recent(handler, parsed):
         jobs = list_jobs(include_disabled=True)
         completions = []
         for job in jobs:
+            job_id = str(job.get("id", "") or "")
             last_run = job.get("last_run_at")
             if not last_run:
                 continue
@@ -12568,13 +12785,22 @@ def _handle_cron_recent(handler, parsed):
             if ts > since:
                 completions.append(
                     {
-                        "job_id": job.get("id", ""),
+                        "job_id": job_id,
                         "name": job.get("name", "Unknown"),
                         "status": job.get("last_status", "unknown"),
                         "completed_at": ts,
                         "toast_notifications": job.get("toast_notifications") is not False,
                     }
                 )
+        latest_session_info = _latest_cron_session_info_for_jobs(
+            [job.get("id", "") for job in jobs],
+            [c["job_id"] for c in completions],
+        )
+        for completion in completions:
+            info = latest_session_info.get(str(completion.get("job_id", "") or ""), {})
+            completion["session_id"] = str(info.get("session_id", "") or "")
+            if info.get("message_count") is not None:
+                completion["message_count"] = int(info["message_count"])
         return j(handler, {"completions": completions, "since": since})
     except ImportError:
         return j(handler, {"completions": [], "since": since})
@@ -12623,15 +12849,37 @@ def _project_context_git_root(start: Path) -> Path | None:
 
 
 def _project_context_candidates(workspace: Path) -> list[Path]:
-    """Mirror the agent's first-match project context file priority."""
+    """Mirror the agent's first-match project context file priority.
+
+    #4164: in a non-git workspace the agent's ``_find_hermes_md`` walks all
+    the way up to filesystem root because its ``stop_at = git_root`` is
+    ``None`` — so a workspace at ``/tmp/x/project/subdir`` could surface
+    ``/tmp/x/HERMES.md`` (a file *outside* the user's workspace) in the
+    Project Context tab.
+
+    The WebUI tab is a read-only mirror of what the agent injects, so the
+    safest bound that does not over-promise is: when there is no git root,
+    treat the workspace itself as the stop boundary. The cwd is still
+    scanned (preserving the in-workspace AGENTS.md / HERMES.md behavior),
+    but we no longer walk into the user's home directory or ``/tmp``.
+
+    The agent-side walk in ``agent/prompt_builder._find_hermes_md`` should
+    be bounded the same way for full parity; until that ships the WebUI
+    will under-report context files that live *above* a non-git workspace,
+    which is strictly less surprising than over-reporting them.
+    """
     cwd = workspace.resolve()
     candidates: list[Path] = []
-    stop_at = _project_context_git_root(cwd)
+    git_root = _project_context_git_root(cwd)
+    # When inside a git tree, walk up to the git root as before. When not,
+    # bound the walk at the workspace itself so we never surface files
+    # above the user's workspace.
+    stop_at = git_root if git_root is not None else cwd
 
     for directory in [cwd, *cwd.parents]:
         for name in _PROJECT_CONTEXT_HERMES_NAMES:
             candidates.append(directory / name)
-        if stop_at and directory == stop_at:
+        if directory == stop_at:
             break
 
     for name in _PROJECT_CONTEXT_CWD_NAMES:
@@ -13241,7 +13489,11 @@ def _start_chat_stream_for_session(
                     "_status": 409,
                 }
     if was_hidden_empty_session:
-        publish_session_list_changed("session_new", profile=getattr(s, "profile", None))
+        publish_session_list_changed(
+            "session_new",
+            profile=getattr(s, "profile", None),
+            session_id=getattr(s, "session_id", None),
+        )
     diag.stage("turn_journal_submitted") if diag else None
     journal_event = {}
     try:
@@ -14723,6 +14975,13 @@ def _handle_file_delete(handler, body):
     try:
         ws_root = Path(s.workspace)
         target = safe_resolve(ws_root, body["path"])
+        # Reject a symlinked entry BEFORE the follow-based exists() check: a
+        # dangling symlink resolves to a missing target, so an exists()-first
+        # order would misclassify it as 404 "File not found" and leave it
+        # permanently undeletable. is_symlink() is a no-follow lstat on the
+        # lexically-requested path, so it catches both live and dangling links.
+        if (ws_root / body["path"]).is_symlink():
+            return bad(handler, "Cannot delete a symlinked entry")
         if not target.exists():
             return bad(handler, "File not found", 404)
         if target.is_dir():
@@ -14748,6 +15007,8 @@ def _handle_file_save(handler, body):
     try:
         ws_root = Path(s.workspace)
         target = safe_resolve(ws_root, body["path"])
+        if (ws_root / body["path"]).is_symlink():
+            return bad(handler, "Cannot save to a symlinked entry")
         if not target.exists():
             return bad(handler, "File not found", 404)
         if target.is_dir():
@@ -14803,6 +15064,11 @@ def _handle_file_rename(handler, body):
         ws_root = Path(s.workspace)
         ws_root_resolved = ws_root.resolve()
         source = safe_resolve(ws_root, body["path"])
+        # Reject a symlinked entry BEFORE the follow-based exists() check (see
+        # _handle_file_delete): a dangling symlink would otherwise 404 and stay
+        # unrenameable. is_symlink() is a no-follow lstat on the requested path.
+        if (ws_root / body["path"]).is_symlink():
+            return bad(handler, "Cannot rename a symlinked entry")
         if not source.exists():
             return bad(handler, "File not found", 404)
         new_name = body["new_name"].strip()
@@ -14838,15 +15104,18 @@ def _handle_file_move(handler, body):
         # returning a confusing 400 for a move that actually happened.
         ws_root_resolved = ws_root.resolve()
         source = safe_resolve(ws_root, body["path"])
-        if not source.exists():
-            return bad(handler, "File not found", 404)
-        # Reject a symlinked SOURCE entry. safe_resolve() follows the final
-        # symlink, so source.name/source.parent would point at the link's
-        # TARGET, not the dragged entry — moving link.txt would silently move
-        # dir/real.txt and leave link.txt dangling. Detect the symlink on the
-        # lexically-requested final component (lstat, no-follow) and refuse.
+        # Reject a symlinked SOURCE entry BEFORE the follow-based exists() check.
+        # safe_resolve() follows the final symlink, so source.name/source.parent
+        # would point at the link's TARGET, not the dragged entry — moving
+        # link.txt would silently move dir/real.txt and leave link.txt dangling.
+        # Detect the symlink on the lexically-requested final component (lstat,
+        # no-follow) and refuse; running this before exists() also means a
+        # dangling symlink is rejected (400) rather than misclassified as 404
+        # (matches the delete/rename ordering).
         if (ws_root / body["path"]).is_symlink():
             return bad(handler, "Cannot move a symlinked entry")
+        if not source.exists():
+            return bad(handler, "File not found", 404)
         dest_dir_raw = (body.get("dest_dir") or ".").strip()
         if not dest_dir_raw:
             dest_dir_raw = "."
@@ -16516,6 +16785,8 @@ def _handle_skill_save(handler, body):
         return bad(handler, "Invalid skill path")
     skill_dir.mkdir(parents=True, exist_ok=True)
     skill_file = skill_dir / "SKILL.md"
+    if skill_file.is_symlink():
+        return bad(handler, "Cannot save to a symlinked skill file")
     skill_file.write_text(body["content"], encoding="utf-8")
     return j(handler, {"ok": True, "name": skill_name, "path": str(skill_file)})
 
