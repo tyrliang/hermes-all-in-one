@@ -10,4 +10,5 @@ read_version_file "$ROOT_DIR"
 
 echo "semver=${PACKAGE_VERSION}"
 echo "hermes_base=${HERMES_BASE}"
+echo "agent_base=${AGENT_BASE:-}"
 echo "webui_base=${WEBUI_BASE:-}"

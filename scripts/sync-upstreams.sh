@@ -60,10 +60,15 @@ ensure_remote "$WEBUI_REMOTE_NAME" "$WEBUI_REMOTE_URL"
 WEBUI_PULL_REF="${WEBUI_BASE:-$WEBUI_REMOTE_REF}"
 echo "[sync] hermes-webui pull ref: ${WEBUI_PULL_REF} (pinned via webui-base=${WEBUI_BASE:-unset})"
 
-run git fetch "$AGENT_REMOTE_NAME" "$AGENT_REMOTE_REF"
+# hermes-agent is pinned to agent-base in VERSION (a tag). Falls back to the
+# branch head when unset.
+AGENT_PULL_REF="${AGENT_BASE:-$AGENT_REMOTE_REF}"
+echo "[sync] hermes-agent pull ref: ${AGENT_PULL_REF} (pinned via agent-base=${AGENT_BASE:-unset})"
+
+run git fetch "$AGENT_REMOTE_NAME" "$AGENT_PULL_REF"
 # Fetch the pinned webui ref explicitly — it is usually a tag, not the branch.
 run git fetch "$WEBUI_REMOTE_NAME" "$WEBUI_PULL_REF"
-run git subtree pull --prefix="$AGENT_PREFIX" "$AGENT_REMOTE_NAME" "$AGENT_REMOTE_REF" --squash
+run git subtree pull --prefix="$AGENT_PREFIX" "$AGENT_REMOTE_NAME" "$AGENT_PULL_REF" --squash
 run git subtree pull --prefix="$WEBUI_PREFIX" "$WEBUI_REMOTE_NAME" "$WEBUI_PULL_REF" --squash
 
 echo
