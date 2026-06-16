@@ -26,6 +26,12 @@ read_version_file() {
   if [[ -n "$HERMES_BASE" && "$HERMES_BASE" != v* ]]; then
     HERMES_BASE="v${HERMES_BASE}"
   fi
+
+  # Pinned upstream ref (tag or commit sha) for the vendored hermes-webui
+  # subtree. Empty when unset — sync falls back to tracking the branch head.
+  # Not normalised to a 'v' prefix: it may be a bare commit sha.
+  # shellcheck disable=SC2034  # consumed by scripts that source this lib
+  WEBUI_BASE="$(grep -E '^webui-base=' "$file" | head -1 | cut -d= -f2- | tr -d ' \t\r\n' || true)"
 }
 
 write_version_file() {
@@ -47,10 +53,20 @@ write_version_file() {
     hermes_base="v${hermes_base}"
   fi
 
+  # Preserve the existing webui-base pin — version bumps must not silently
+  # drop it (mirrors the hermes-base preservation contract).
+  local webui_base=""
+  if [[ -f "$file" ]]; then
+    webui_base="$(grep -E '^webui-base=' "$file" | head -1 | cut -d= -f2- | tr -d ' \t\r\n' || true)"
+  fi
+
   {
     printf '%s\n' "$pkg"
     if [[ -n "$hermes_base" ]]; then
       printf 'hermes-base=%s\n' "$hermes_base"
+    fi
+    if [[ -n "$webui_base" ]]; then
+      printf 'webui-base=%s\n' "$webui_base"
     fi
   } >"$file"
 }
@@ -74,6 +90,28 @@ updated, count = re.subn(r"^ARG HERMES_IMAGE=.*", new_line, text, count=1, flags
 if count != 1:
     raise SystemExit(f"could not update HERMES_IMAGE in {dockerfile}")
 dockerfile.write_text(updated)
+PY
+}
+
+pin_webui_base() {
+  # Set (or insert) the webui-base pin in the VERSION file. Tag or sha.
+  local ref="$1"
+  local file="${2:-${VERSION_FILE}}"
+
+  python3 - "$ref" "$file" <<'PY'
+import pathlib
+import re
+import sys
+
+ref, file = sys.argv[1], pathlib.Path(sys.argv[2])
+text = file.read_text()
+if re.search(r"(?m)^webui-base=.*$", text):
+    text = re.sub(r"(?m)^webui-base=.*$", f"webui-base={ref}", text, count=1)
+else:
+    if not text.endswith("\n"):
+        text += "\n"
+    text += f"webui-base={ref}\n"
+file.write_text(text)
 PY
 }
 

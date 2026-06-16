@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
+# shellcheck source=scripts/version-lib.sh
+. "${ROOT_DIR}/scripts/version-lib.sh"
+read_version_file "$ROOT_DIR" || true
+
 AGENT_REMOTE_NAME="hermes-agent-upstream"
 AGENT_REMOTE_URL="https://github.com/NousResearch/hermes-agent.git"
 AGENT_REMOTE_REF="main"
@@ -50,10 +54,17 @@ ensure_clean_tree
 ensure_remote "$AGENT_REMOTE_NAME" "$AGENT_REMOTE_URL"
 ensure_remote "$WEBUI_REMOTE_NAME" "$WEBUI_REMOTE_URL"
 
+# hermes-webui is pinned to webui-base in VERSION (a tag or commit sha) so the
+# subtree merge is deterministic and reviewable; bumping the pin is a deliberate
+# act, not a nightly drift. Falls back to the branch head when unset.
+WEBUI_PULL_REF="${WEBUI_BASE:-$WEBUI_REMOTE_REF}"
+echo "[sync] hermes-webui pull ref: ${WEBUI_PULL_REF} (pinned via webui-base=${WEBUI_BASE:-unset})"
+
 run git fetch "$AGENT_REMOTE_NAME" "$AGENT_REMOTE_REF"
-run git fetch "$WEBUI_REMOTE_NAME" "$WEBUI_REMOTE_REF"
+# Fetch the pinned webui ref explicitly — it is usually a tag, not the branch.
+run git fetch "$WEBUI_REMOTE_NAME" "$WEBUI_PULL_REF"
 run git subtree pull --prefix="$AGENT_PREFIX" "$AGENT_REMOTE_NAME" "$AGENT_REMOTE_REF" --squash
-run git subtree pull --prefix="$WEBUI_PREFIX" "$WEBUI_REMOTE_NAME" "$WEBUI_REMOTE_REF" --squash
+run git subtree pull --prefix="$WEBUI_PREFIX" "$WEBUI_REMOTE_NAME" "$WEBUI_PULL_REF" --squash
 
 echo
 echo "[sync] patching vendor model lists from hermes-agent..."
@@ -62,6 +73,19 @@ if ! git diff --quiet vendor/hermes-webui/api/config.py; then
   git add vendor/hermes-webui/api/config.py
   git commit -m "chore(sync): patch webui model list from hermes-agent"
 fi
+
+# Guard: a botched subtree merge (unresolved conflict markers) or a bad model
+# patch must never be handed off. Fail loudly so the operator/CI stops here.
+# Match only the opening/closing markers (git always writes them with a
+# trailing space + label). A bare '=======' is skipped — it legitimately
+# appears as a section underline in some vendored files.
+if git grep -nE '^(<<<<<<<|>>>>>>>) ' -- vendor/ >/dev/null 2>&1; then
+  echo "[sync] conflict markers found in vendor/:" >&2
+  git grep -nE '^(<<<<<<<|>>>>>>>) ' -- vendor/ >&2 || true
+  fail "unresolved conflict markers in vendor/ after sync"
+fi
+run python3 -m compileall -q "$AGENT_PREFIX" "$WEBUI_PREFIX" \
+  || fail "vendored python does not byte-compile after sync"
 
 echo "[sync] upstream refresh complete"
 echo "[sync] next steps:"
