@@ -27,6 +27,10 @@ read_version_file() {
     HERMES_BASE="v${HERMES_BASE}"
   fi
 
+  # Pinned upstream tag for the vendored hermes-agent subtree.
+  # shellcheck disable=SC2034  # consumed by scripts that source this lib
+  AGENT_BASE="$(grep -E '^agent-base=' "$file" | head -1 | cut -d= -f2- | tr -d ' \t\r\n' || true)"
+
   # Pinned upstream ref (tag or commit sha) for the vendored hermes-webui
   # subtree. Empty when unset — sync falls back to tracking the branch head.
   # Not normalised to a 'v' prefix: it may be a bare commit sha.
@@ -53,10 +57,12 @@ write_version_file() {
     hermes_base="v${hermes_base}"
   fi
 
-  # Preserve the existing webui-base pin — version bumps must not silently
-  # drop it (mirrors the hermes-base preservation contract).
+  # Preserve the existing agent-base and webui-base pins — version bumps must
+  # not silently drop them (mirrors the hermes-base preservation contract).
+  local agent_base=""
   local webui_base=""
   if [[ -f "$file" ]]; then
+    agent_base="$(grep -E '^agent-base=' "$file" | head -1 | cut -d= -f2- | tr -d ' \t\r\n' || true)"
     webui_base="$(grep -E '^webui-base=' "$file" | head -1 | cut -d= -f2- | tr -d ' \t\r\n' || true)"
   fi
 
@@ -64,6 +70,9 @@ write_version_file() {
     printf '%s\n' "$pkg"
     if [[ -n "$hermes_base" ]]; then
       printf 'hermes-base=%s\n' "$hermes_base"
+    fi
+    if [[ -n "$agent_base" ]]; then
+      printf 'agent-base=%s\n' "$agent_base"
     fi
     if [[ -n "$webui_base" ]]; then
       printf 'webui-base=%s\n' "$webui_base"
@@ -90,6 +99,32 @@ updated, count = re.subn(r"^ARG HERMES_IMAGE=.*", new_line, text, count=1, flags
 if count != 1:
     raise SystemExit(f"could not update HERMES_IMAGE in {dockerfile}")
 dockerfile.write_text(updated)
+PY
+}
+
+pin_agent_base() {
+  # Set (or insert) the agent-base pin in the VERSION file. Tag.
+  local ref="$1"
+  local file="${2:-${VERSION_FILE}}"
+
+  python3 - "$ref" "$file" <<'PY'
+import pathlib
+import re
+import sys
+
+ref, file = sys.argv[1], pathlib.Path(sys.argv[2])
+text = file.read_text()
+if re.search(r"(?m)^agent-base=.*$", text):
+    text = re.sub(r"(?m)^agent-base=.*$", f"agent-base={ref}", text, count=1)
+else:
+    # Insert after hermes-base= line if present, else after first line
+    if re.search(r"(?m)^hermes-base=.*$", text):
+        text = re.sub(r"(?m)^(hermes-base=.*)", r"\1\nagent-base=" + ref, text, count=1)
+    else:
+        lines = text.splitlines(keepends=True)
+        lines.insert(1, f"agent-base={ref}\n")
+        text = "".join(lines)
+file.write_text(text)
 PY
 }
 
