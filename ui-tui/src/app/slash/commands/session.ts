@@ -72,25 +72,10 @@ export const sessionCommands: SlashCommand[] = [
         return patchOverlayState({ modelPicker: true })
       }
 
-      const switchModel = (confirmExpensiveModel = false) => ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { confirm_expensive_model: confirmExpensiveModel, key: 'model', session_id: ctx.sid, value: modelValueForConfigSet(arg) })
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: ctx.sid, value: modelValueForConfigSet(arg) })
         .then(
           ctx.guarded<ConfigSetResponse>(r => {
-            if (r.confirm_required) {
-              patchOverlayState({
-                confirm: {
-                  cancelLabel: 'Cancel',
-                  confirmLabel: 'Switch anyway',
-                  danger: true,
-                  detail: r.confirm_message || r.warning || 'This model has unusually high known pricing.',
-                  onConfirm: () => switchModel(true),
-                  title: 'Expensive model selection'
-                }
-              })
-
-              return
-            }
-
             if (!r.value) {
               return ctx.transcript.sys('error: invalid response: model switch')
             }
@@ -104,8 +89,6 @@ export const sessionCommands: SlashCommand[] = [
             }))
           })
         )
-
-      switchModel()
     }
   },
 
@@ -535,7 +518,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'session usage + Nous credits',
+    help: 'session usage (live counts — worker sees zeros)',
     name: 'usage',
     run: (_arg, ctx) => {
       ctx.gateway.rpc<SessionUsageResponse>('session.usage', { session_id: ctx.sid }).then(r => {
@@ -549,19 +532,8 @@ export const sessionCommands: SlashCommand[] = [
           })
         }
 
-        // Nous credits block is agent-independent (a portal fetch), so it shows
-        // even with zero API calls or on a resumed session. Render it whenever
-        // present, before the token panel.
-        const creditsLines = r?.credits_lines ?? []
-        if (creditsLines.length) {
-          ctx.transcript.panel('Nous credits', [{ text: creditsLines.join('\n') }])
-        }
-
         if (!r?.calls) {
-          if (!creditsLines.length) {
-            ctx.transcript.sys('no API calls yet')
-          }
-          return
+          return ctx.transcript.sys('no API calls yet')
         }
 
         const f = (v: number | undefined) => (v ?? 0).toLocaleString()
