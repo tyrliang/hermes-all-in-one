@@ -36,7 +36,24 @@ wait_for_health() {
     sleep 1
   done
   echo "[smoke] timed out waiting for health: ${url}" >&2
+  dump_diagnostics
   return 1
+}
+
+# Dump container state on failure so CI shows *why* startup hung instead of
+# just a bare timeout (health checks happen before any logs are captured).
+dump_diagnostics() {
+  echo "[smoke] ---- diagnostics: docker ps ----" >&2
+  docker ps -a --filter "name=${CONTAINER_NAME}" >&2 2>&1 || true
+  echo "[smoke] ---- diagnostics: container logs (tail) ----" >&2
+  docker logs --tail 200 "${CONTAINER_NAME}" >&2 2>&1 || true
+  echo "[smoke] ---- diagnostics: s6 service states ----" >&2
+  docker exec "${CONTAINER_NAME}" /bin/sh -lc '
+    for svc in control-plane hermes-webui; do
+      echo "== ${svc} =="
+      /command/s6-svstat "/run/service/${svc}" 2>&1 || true
+    done
+  ' >&2 2>&1 || true
 }
 
 assert_eq() {
