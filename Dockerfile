@@ -60,6 +60,9 @@ RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-w
         -r /app/vendor/hermes-webui/requirements.txt \
         -r /app/requirements-control-plane.txt \
         "mcp>=1.24.0" \
+        "fastapi==0.133.1" \
+        "aiofiles>=24.1" \
+    && chown -R hermes:hermes /opt/hermes/.venv \
     && chmod +x /etc/cont-init.d/03-all-in-one-setup \
     && chmod +x /etc/cont-init.d/04-tailscale-env \
     && chmod +x /etc/cont-init.d/05-hermes-path \
