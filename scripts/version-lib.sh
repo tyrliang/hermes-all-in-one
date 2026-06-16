@@ -93,6 +93,28 @@ dockerfile.write_text(updated)
 PY
 }
 
+pin_webui_base() {
+  # Set (or insert) the webui-base pin in the VERSION file. Tag or sha.
+  local ref="$1"
+  local file="${2:-${VERSION_FILE}}"
+
+  python3 - "$ref" "$file" <<'PY'
+import pathlib
+import re
+import sys
+
+ref, file = sys.argv[1], pathlib.Path(sys.argv[2])
+text = file.read_text()
+if re.search(r"(?m)^webui-base=.*$", text):
+    text = re.sub(r"(?m)^webui-base=.*$", f"webui-base={ref}", text, count=1)
+else:
+    if not text.endswith("\n"):
+        text += "\n"
+    text += f"webui-base={ref}\n"
+file.write_text(text)
+PY
+}
+
 bump_minor_reset_patch() {
   local current="$1"
   local x y z

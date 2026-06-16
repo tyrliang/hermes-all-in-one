@@ -61,9 +61,8 @@ WEBUI_PULL_REF="${WEBUI_BASE:-$WEBUI_REMOTE_REF}"
 echo "[sync] hermes-webui pull ref: ${WEBUI_PULL_REF} (pinned via webui-base=${WEBUI_BASE:-unset})"
 
 run git fetch "$AGENT_REMOTE_NAME" "$AGENT_REMOTE_REF"
-# Fetch the branch so the pinned ref's objects are present even when it is not
-# the branch tip.
-run git fetch "$WEBUI_REMOTE_NAME" "$WEBUI_REMOTE_REF"
+# Fetch the pinned webui ref explicitly — it is usually a tag, not the branch.
+run git fetch "$WEBUI_REMOTE_NAME" "$WEBUI_PULL_REF"
 run git subtree pull --prefix="$AGENT_PREFIX" "$AGENT_REMOTE_NAME" "$AGENT_REMOTE_REF" --squash
 run git subtree pull --prefix="$WEBUI_PREFIX" "$WEBUI_REMOTE_NAME" "$WEBUI_PULL_REF" --squash
 
