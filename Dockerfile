@@ -55,11 +55,19 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# fastapi + uvicorn[standard] are the `hermes dashboard` deps: keep them in sync
+# with the tool.dashboard pins in vendor/hermes-agent/tools/lazy_deps.py.
+# uvicorn[standard] (not plain uvicorn) is required — it pulls in `websockets`,
+# which the dashboard's /api/pty and /api/ws WebSocket endpoints depend on.
+# chown the venv to hermes so the non-root user can run lazy installs at runtime.
 RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-webui/api/_version.py \
     && uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir \
         -r /app/vendor/hermes-webui/requirements.txt \
         -r /app/requirements-control-plane.txt \
         "mcp>=1.24.0" \
+        "fastapi==0.133.1" \
+        "uvicorn[standard]==0.41.0" \
+    && chown -R hermes:hermes /opt/hermes/.venv \
     && chmod +x /etc/cont-init.d/03-all-in-one-setup \
     && chmod +x /etc/cont-init.d/04-tailscale-env \
     && chmod +x /etc/cont-init.d/05-hermes-path \
