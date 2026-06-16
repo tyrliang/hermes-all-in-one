@@ -861,12 +861,7 @@ _FALLBACK_MODELS = [
     # Mistral
     {"provider": "Mistral",   "id": "mistralai/mistral-large-latest",     "label": "Mistral Large"},
     # MiniMax
-<<<<<<< HEAD
-    {"provider": "MiniMax", "id": "minimax/minimax-m3", "label": "Minimax M3"},
-    {"provider": "MiniMax", "id": "minimax/minimax-m2.7", "label": "Minimax M2.7"},
-=======
     {"provider": "MiniMax",   "id": "minimax/MiniMax-M3",               "label": "MiniMax M3"},
->>>>>>> 0a76fdb39e168202b67904ac51b61021c6222da4
     {"provider": "MiniMax",   "id": "minimax/MiniMax-M2.7",             "label": "MiniMax M2.7"},
     {"provider": "MiniMax",   "id": "minimax/MiniMax-M2.7-highspeed",   "label": "MiniMax M2.7 Highspeed"},
     # Z.AI / GLM
@@ -1298,9 +1293,6 @@ _PROVIDER_MODELS = {
         {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5"},
     ],
     "openai": [
-        {"id": "The '<model>' model is not supported when using Codex with
-    # a ChatGPT account.", "label": "The '<model>' model is not supported when using codex with
-    # a chatgpt account."},
         {"id": "gpt-5.3-codex-spark", "label": "GPT 5.3 Codex Spark"},
         {"id": "openai", "label": "Openai"},
         {"id": "gpt-5.3-codex", "label": "GPT 5.3 Codex"},
@@ -1316,9 +1308,6 @@ _PROVIDER_MODELS = {
         {"id": "gpt-5.4",      "label": "GPT-5.4"},
     ],
     "openai-codex": [
-        {"id": "The '<model>' model is not supported when using Codex with
-    # a ChatGPT account.", "label": "The '<model>' model is not supported when using codex with
-    # a chatgpt account."},
         {"id": "gpt-5.3-codex-spark", "label": "GPT 5.3 Codex Spark"},
         {"id": "openai", "label": "Openai"},
         {"id": "gpt-5.5", "label": "GPT-5.5"},
