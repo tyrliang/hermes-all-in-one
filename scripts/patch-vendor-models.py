@@ -39,6 +39,17 @@ PROVIDER_MAP: dict[str, str] = {
 # model-id slugs to skip entirely (free/experimental noise)
 SKIP_SUFFIXES = (":free", ":nitro", ":extended", "-preview-free")
 
+# A real model id/slug: alnum start, then alnum plus . _ : / - only. This is the
+# guard that stops garbage from being written into config.py — the regexes that
+# scrape the upstream sources use ``[^"]+`` which happily spans newlines and
+# prose (an upstream error string once landed verbatim as a "model id" and broke
+# the file). Anything with whitespace, quotes, '#', etc. is rejected here.
+_SAFE_MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$")
+
+
+def _is_safe_id(model_id: str) -> bool:
+    return bool(_SAFE_MODEL_ID.match(model_id))
+
 
 def _label(model_id: str) -> str:
     """Best-effort human label from a model slug."""
@@ -82,7 +93,11 @@ def _load_openrouter_models() -> list[tuple[str, str]]:
         print("[patch] Warning: could not parse OPENROUTER_MODELS — skipping fallback sync")
         return []
     pairs = re.findall(r'\(\s*"([^"]+)"\s*,\s*"([^"]*)"\s*\)', m.group(1))
-    return pairs
+    safe = [(mid, desc) for mid, desc in pairs if _is_safe_id(mid)]
+    if len(safe) != len(pairs):
+        rejected = [mid for mid, _ in pairs if not _is_safe_id(mid)]
+        print(f"[patch] Warning: dropped {len(rejected)} malformed OpenRouter id(s): {rejected!r}")
+    return safe
 
 
 def _load_codex_models() -> list[str]:
@@ -94,7 +109,12 @@ def _load_codex_models() -> list[str]:
     if not m:
         print("[patch] Warning: could not parse DEFAULT_CODEX_MODELS — skipping codex sync")
         return []
-    return re.findall(r'"([^"]+)"', m.group(1))
+    raw = re.findall(r'"([^"]+)"', m.group(1))
+    safe = [mid for mid in raw if _is_safe_id(mid)]
+    if len(safe) != len(raw):
+        rejected = [mid for mid in raw if not _is_safe_id(mid)]
+        print(f"[patch] Warning: dropped {len(rejected)} malformed Codex id(s): {rejected!r}")
+    return safe
 
 
 def _patch_fallback_models(text: str, openrouter: list[tuple[str, str]]) -> str:
@@ -180,6 +200,16 @@ def main() -> None:
     if text == original:
         print("[patch] webui config already up to date.")
         return
+
+    # Never write a file we just broke. Parse the result and bail (leaving the
+    # original intact) if anything we inserted is not valid Python.
+    try:
+        compile(text, str(WEBUI_CONFIG), "exec")
+    except SyntaxError as exc:
+        sys.exit(
+            f"[patch] refusing to write {WEBUI_CONFIG.relative_to(ROOT)}: "
+            f"result does not parse ({exc})"
+        )
 
     WEBUI_CONFIG.write_text(text, encoding="utf-8")
     print(f"[patch] Updated {WEBUI_CONFIG.relative_to(ROOT)}")

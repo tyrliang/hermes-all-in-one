@@ -1,5 +1,15 @@
 name: Sync Upstreams
 
+# Refresh the vendored subtrees from upstream and open a PR — never push to
+# main directly. A bad subtree merge or model patch is caught by the inline
+# guard below (and again by ci.yml on the PR) before it can reach main.
+#
+# NOTE: PRs opened with the default GITHUB_TOKEN do not trigger other workflows
+# (GitHub's recursion guard), so ci.yml won't run on the sync PR automatically.
+# Set a repo secret SYNC_PAT (a PAT with repo scope) to have CI run on the PR;
+# without it the inline guard still blocks broken syncs, but you'll need to push
+# the branch (or close/reopen the PR) to kick off smoke.
+
 on:
   schedule:
     - cron: "0 3 * * *"
@@ -7,6 +17,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   sync:
@@ -17,10 +28,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Read pinned refs from VERSION
+        id: version
+        run: ./scripts/read-version.sh >> "$GITHUB_OUTPUT"
 
       - name: Add remotes
         run: |
@@ -32,13 +51,21 @@ jobs:
           git fetch hermes-agent-upstream main
           git fetch hermes-webui-upstream master
 
-      - name: Sync hermes-agent
+      # No `|| true`: a subtree merge conflict must fail the job loudly. The
+      # old `|| true` is exactly what let unresolved conflict markers land on
+      # main and crash the webui on import.
+      - name: Sync hermes-agent (tracking main)
         run: |
-          git subtree pull --prefix=vendor/hermes-agent hermes-agent-upstream main --squash -m "chore(sync): update vendor/hermes-agent from upstream" || true
+          git subtree pull --prefix=vendor/hermes-agent hermes-agent-upstream main --squash \
+            -m "chore(sync): update vendor/hermes-agent from upstream"
 
-      - name: Sync hermes-webui
+      - name: Sync hermes-webui (pinned to webui-base)
         run: |
-          git subtree pull --prefix=vendor/hermes-webui hermes-webui-upstream master --squash -m "chore(sync): update vendor/hermes-webui from upstream" || true
+          ref="${{ steps.version.outputs.webui_base }}"
+          ref="${ref:-master}"
+          echo "Pulling vendor/hermes-webui at: ${ref}"
+          git subtree pull --prefix=vendor/hermes-webui hermes-webui-upstream "${ref}" --squash \
+            -m "chore(sync): update vendor/hermes-webui from upstream (${ref})"
 
       - name: Patch vendor model lists
         run: |
@@ -48,9 +75,32 @@ jobs:
             git commit -m "chore(sync): patch webui model list from hermes-agent"
           fi
 
-      - name: Push if changed
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Guard — no conflict markers, vendored webui parses
         run: |
-          git diff --quiet HEAD~1 HEAD 2>/dev/null && echo "Nothing to push." && exit 0
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main
+          if git grep -nE '^(<<<<<<<|>>>>>>>) ' -- vendor/; then
+            echo "::error::unresolved conflict markers in vendor/ after sync"
+            exit 1
+          fi
+          python -m compileall -q vendor/hermes-webui
+
+      - name: Open / update sync PR
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          branch="automation/sync-upstreams"
+          if git diff --quiet origin/main --; then
+            echo "No changes vs main — nothing to sync."
+            exit 0
+          fi
+          git push -f origin "HEAD:${branch}"
+          if [ "$(gh pr view "$branch" --json state -q .state 2>/dev/null || true)" = "OPEN" ]; then
+            echo "Sync PR already open; branch updated."
+          else
+            gh pr create --base main --head "$branch" \
+              --title "chore(sync): upstream vendor refresh" \
+              --body "Automated upstream vendor refresh. **Review before merge** — gated by ci.yml (smoke + vendor-syntax).
+
+          - hermes-agent: tracking \`main\`
+          - hermes-webui: pinned ref \`${{ steps.version.outputs.webui_base || 'master' }}\` (bump \`webui-base\` in VERSION to advance)"
+          fi
