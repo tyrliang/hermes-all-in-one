@@ -88,7 +88,7 @@ RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-w
     && chmod +x /app/docker/scripts/gateway_autostart.py \
     && mkdir -p /etc/profile.d \
     && cp /app/docker/profile.d/force-real-home.sh /etc/profile.d/ \
-    && chmod +x /etc/profile.d/force-real-home.sh
+    && chmod +x /etc/profile.d/force-real-home.sh \
     && mkdir -p /opt/data \
     && chown hermes:hermes /opt/data \
     && chmod 755 /opt/data
