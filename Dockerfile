@@ -19,6 +19,7 @@ COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
 COPY docker/cont-init.d/ /etc/cont-init.d/
 COPY docker/sshd/ /etc/ssh/sshd_config.d/
 COPY docker/scripts/ /app/docker/scripts/
+COPY docker/profile.d/ /app/docker/profile.d/
 
 ARG HERMES_WEBUI_VERSION=unknown
 
