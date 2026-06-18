@@ -33,8 +33,17 @@ Log in with `HERMES_ADMIN_PASSWORD` (or `HERMES_WEBUI_PASSWORD` if admin passwor
 
 Everything shares one Hermes identity — the same memory, skills, config, and SOUL file — whether you're talking on Telegram or in the browser.
 
----
+### Terminal Home Isolation
 
+This image forces `TERMINAL_HOME_MODE=real` at the s6 container environment level (see `docker/cont-init.d/05-hermes-path`). 
+
+**Why:** The upstream `nousresearch/hermes-agent` image defaults to an isolated fake home at `${HERMES_HOME}/home` (`/opt/data/.hermes/home`) for subprocesses. This causes Python (`pip`/`uv`), npm, and other tools to scatter packages across multiple locations, leading to duplication and loss of state on rebuilds.
+
+By setting the mode to `real`, all supervised services and their children consistently use the persistent user home (`/opt/data`). This eliminates package sprawl while still keeping Hermes state under `/opt/data/.hermes`.
+
+The setting is also exported in generated profile scripts so interactive shells (`docker exec`, Railway SSH) behave the same way.
+
+---
 ## Screenshots
 
 **Admin Control Plane** — `/admin`
