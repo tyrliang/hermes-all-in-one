@@ -2,7 +2,11 @@
 # shellcheck shell=sh
 # Public Starlette control plane — proxies to loopback WebUI and serves /admin.
 
-export HOME="${HOME:-${HERMES_DATA_DIR:-/opt/data}}"
+if [ "${TERMINAL_HOME_MODE:-}" = "real" ]; then
+    export HOME="/opt/data"
+else
+    export HOME="${HOME:-${HERMES_DATA_DIR:-/opt/data}/.hermes/home}"
+fi
 export HERMES_DATA_DIR="${HERMES_DATA_DIR:-/opt/data}"
 export HERMES_HOME="${HERMES_HOME:-${HERMES_DATA_DIR}/.hermes}"
 cd "$HOME"
