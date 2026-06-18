@@ -4,6 +4,11 @@
 # The base image installs Node at /usr/local/bin; Railway SSH often inherits a
 # minimal PATH (/usr/bin:/bin) that omits it, so `hermes --tui` fails with
 # "node not found" even though the binary is present.
+#
+# Also force TERMINAL_HOME_MODE=real so that get_subprocess_home() consistently
+# returns the real user home (/opt/data) instead of the isolated profile home.
+# This eliminates the package sprawl caused by tools writing into
+# /opt/data/.hermes/home/.local, .cache, etc.
 
 set -eu
 
@@ -16,6 +21,10 @@ export PATH="${new_path}"
 if [ -d /run/s6/container_environment ]; then
     printf '%s' "${new_path}" > /run/s6/container_environment/PATH
     printf '%s' "/usr/local/bin/node" > /run/s6/container_environment/HERMES_NODE
+    # Force real $HOME for all supervised services and their children.
+    # This makes get_subprocess_home() return the real user home (/opt/data)
+    # instead of the isolated ${HERMES_HOME}/home, eliminating package sprawl.
+    printf '%s' "real" > /run/s6/container_environment/TERMINAL_HOME_MODE
 fi
 
 mkdir -p /etc/profile.d
@@ -23,6 +32,7 @@ cat > /etc/profile.d/hermes-path.sh <<'EOF'
 # Hermes all-in-one — Node and hermes CLI on PATH for ssh/exec shells
 export PATH="/usr/local/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH:-}"
 export HERMES_NODE="${HERMES_NODE:-/usr/local/bin/node}"
+export TERMINAL_HOME_MODE="${TERMINAL_HOME_MODE:-real}"
 EOF
 chmod 644 /etc/profile.d/hermes-path.sh
 
@@ -32,6 +42,7 @@ if [ -d /etc/zsh ]; then
 # Hermes all-in-one — Node on PATH (railway ssh uses zsh with a minimal PATH)
 export PATH="/usr/local/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH:-}"
 export HERMES_NODE="${HERMES_NODE:-/usr/local/bin/node}"
+export TERMINAL_HOME_MODE="${TERMINAL_HOME_MODE:-real}"
 EOF
 fi
 

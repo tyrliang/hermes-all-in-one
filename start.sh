@@ -6,6 +6,7 @@ set -euo pipefail
 export HOME="${HOME:-/data}"
 export HERMES_HOME="${HERMES_HOME:-/data/.hermes}"
 export HERMES_CONFIG_PATH="${HERMES_CONFIG_PATH:-${HERMES_HOME}/config.yaml}"
+export TERMINAL_HOME_MODE="${TERMINAL_HOME_MODE:-real}"
 export HERMES_WEBUI_STATE_DIR="${HERMES_WEBUI_STATE_DIR:-/data/webui}"
 export HERMES_WEBUI_AGENT_DIR="${HERMES_WEBUI_AGENT_DIR:-/app/vendor/hermes-agent}"
 export HERMES_WORKSPACE_DIR="${HERMES_WORKSPACE_DIR:-/data/workspace}"
