@@ -6,6 +6,7 @@
 
 ARG HERMES_IMAGE=nousresearch/hermes-agent:v2026.6.5
 FROM ${HERMES_IMAGE}
+ENV HOME=/opt/data
 
 USER root
 
