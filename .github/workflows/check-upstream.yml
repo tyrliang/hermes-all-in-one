@@ -57,7 +57,7 @@ jobs:
       - name: Open bump PR
         if: steps.decide.outputs.needs_bump == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
           LATEST: ${{ steps.decide.outputs.latest }}
           CURRENT: ${{ steps.decide.outputs.current }}
         run: |
