@@ -129,6 +129,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Read VERSION file
         id: version
@@ -162,6 +164,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SEMVER: ${{ steps.version.outputs.semver }}
           HERMES_BASE: ${{ steps.version.outputs.hermes_base }}
+          AGENT_BASE: ${{ steps.version.outputs.agent_base }}
+          WEBUI_BASE: ${{ steps.version.outputs.webui_base }}
         run: |
           set -euo pipefail
           tag="v${SEMVER}"
@@ -169,8 +173,23 @@ jobs:
             echo "Release ${tag} already exists; skipping create."
             exit 0
           fi
+
+          prev_tag="$(git tag -l 'v*.*.*' | grep -v "^${tag}\$" | sort -V | tail -1)"
+          compare_line=""
+          if [ -n "$prev_tag" ]; then
+            compare_line="
+
+          **Full diff:** https://github.com/${GITHUB_REPOSITORY}/compare/${prev_tag}...${tag}"
+          fi
+
           gh release create "$tag" \
             --title "hermes-all-in-one ${tag}" \
             --notes "Built on Hermes Agent **${HERMES_BASE}**.
 
-          Image: \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${tag}\`"
+          | Component | Version |
+          |---|---|
+          | \`hermes-base\` (runtime image) | \`${HERMES_BASE}\` |
+          | \`agent-base\` (vendored source) | \`${AGENT_BASE:-n/a}\` |
+          | \`webui-base\` (vendored source) | \`${WEBUI_BASE:-n/a}\` |
+
+          Image: \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${tag}\`${compare_line}"

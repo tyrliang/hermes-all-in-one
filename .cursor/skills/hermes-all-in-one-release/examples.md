@@ -5,42 +5,47 @@
 Current `VERSION`:
 
 ```text
-0.3.9
-hermes-base=v2026.6.5
+0.6.0
+hermes-base=v2026.7.1
+agent-base=v2026.7.1
+webui-base=v0.51.919
 ```
 
 ```bash
 # after fixing docker/cont-init.d/04-tailscale-env
-./scripts/bump-patch.sh          # → 0.3.10
+./scripts/bump-patch.sh          # → 0.6.1
 ./scripts/smoke.sh
 git add -A
 git commit -m "fix(tailscale): correct proxy NO_PROXY for AWS endpoints"
 git push origin main
-git tag v0.3.10
-git push origin v0.3.10
 ```
 
-Published: `ghcr.io/<owner>/hermes-all-in-one:v0.3.10` on Hermes `v2026.6.5`.
+That's the whole release. `auto-tag-release.yml` sees `VERSION` changed on
+`main`, tags `v0.6.1`, and pushes — `release.yml` builds and publishes:
+`ghcr.io/<owner>/hermes-all-in-one:v0.6.1` on Hermes `v2026.7.1`.
 
 ---
 
-## Example 2: Merge auto upstream PR
+## Example 2: Merge the daily upstream-refresh PR (default path)
 
-GitHub opened PR **chore(release): adopt Hermes v2026.7.1** with:
+GitHub opened PR **chore(release): upstream refresh** with:
 
 ```text
-0.4.0
-hermes-base=v2026.7.1
+0.7.0
+hermes-base=v2026.8.2
+agent-base=v2026.8.2
+webui-base=v0.51.919
 ```
 
-After CI green and merge:
-
-```bash
-git checkout main && git pull
-./scripts/smoke.sh               # optional local sanity check
-git tag v0.4.0
-git push origin v0.4.0
 ```
+- [ ] Review the diff (VERSION, Dockerfile, vendor/hermes-agent)
+- [ ] Confirm CI is green — vendor syntax + smoke are required checks
+- [ ] Merge
+```
+
+Nothing else. `auto-tag-release.yml` tags `v0.7.0` and pushes; `release.yml`
+builds, pushes to GHCR, and creates the GitHub Release with the
+hermes-base/agent-base/webui-base table and a compare link — automatically.
 
 ---
 
@@ -51,15 +56,16 @@ git push origin v0.4.0
 # v2026.7.1
 
 ./scripts/bump-hermes.sh v2026.7.1
-./scripts/sync-upstreams.sh      # optional; needs clean tree
 ./scripts/smoke.sh
 
 git add VERSION Dockerfile
-git commit -m "chore(release): 0.4.0 on hermes v2026.7.1"
+git commit -m "chore(release): adopt Hermes Agent v2026.7.1"
 git push origin main
-git tag v0.4.0
-git push origin v0.4.0
 ```
+
+No manual tag — `auto-tag-release.yml` picks up the `VERSION` change and
+tags/publishes on its own. If pushing straight to `main` is blocked by
+branch protection, open a PR instead; merging it triggers the same thing.
 
 ---
 
@@ -67,8 +73,29 @@ git push origin v0.4.0
 
 ```bash
 ./scripts/read-version.sh
-# semver=0.3.9
-# hermes_base=v2026.6.5
+# semver=0.6.0
+# hermes_base=v2026.7.1
+# agent_base=v2026.7.1
+# webui_base=v0.51.919
 ```
 
-Use before tagging to avoid release.yml tag mismatch failures.
+Useful for confirming `agent-base` and `hermes-base` are in lockstep before
+trusting `vendor/hermes-agent`'s model lists.
+
+---
+
+## Example 5: webui-only vendor sync (no package version bump)
+
+`upstream-refresh.yml` can land a webui-only change:
+
+```text
+0.6.0                    # unchanged
+hermes-base=v2026.7.1    # unchanged
+agent-base=v2026.7.1     # unchanged
+webui-base=v0.51.930     # bumped
+```
+
+Merging this PR does **not** trigger `auto-tag-release.yml` — the package
+version (line 1) didn't change, so there's nothing new to tag. The webui
+vendor update just ships in the next Hermes-triggered release, or force a
+patch release yourself with `./scripts/bump-patch.sh` if you need it out now.
