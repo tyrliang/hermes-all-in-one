@@ -12,7 +12,6 @@ import { BillingOverlay } from './billingOverlay.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
-import { PetPicker } from './petPicker.js'
 import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
 import { SkillsHub } from './skillsHub.js'
@@ -141,7 +140,6 @@ export function FloatingOverlays({
   const hasAny =
     overlay.modelPicker ||
     overlay.pager ||
-    overlay.petPicker ||
     overlay.sessions ||
     overlay.skillsHub ||
     overlay.pluginsHub ||
@@ -185,12 +183,6 @@ export function FloatingOverlays({
             sessionId={sid}
             t={theme}
           />
-        </FloatBox>
-      )}
-
-      {overlay.petPicker && (
-        <FloatBox color={theme.color.border}>
-          <PetPicker gw={gw} onClose={() => patchOverlayState({ petPicker: false })} t={theme} />
         </FloatBox>
       )}
 

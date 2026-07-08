@@ -40,8 +40,6 @@ import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { tailBoundedRemend } from '@/lib/remend-tail'
 import { cn } from '@/lib/utils'
 
-import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
-
 // Math rendering plugin (KaTeX). Configured once at module scope — the
 // plugin is stateless beyond its internal cache so re-creating per-render
 // would needlessly thrash. We use a memoizing wrapper around rehype-katex
@@ -272,17 +270,6 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   }
 
   const text = childrenToText(children)
-
-  // Bare autolink → inline rich embed when a provider matches. Labeled links
-  // (`[watch](url)`) stay plain. Desktop only (webview / iframe renderers).
-  if (window.hermesDesktop && text && normalizeExternalUrl(text) === target) {
-    const embed = detectEmbed(target)
-
-    if (embed) {
-      return <UrlEmbed descriptor={embed} />
-    }
-  }
-
   const fallbackLabel = text && normalizeExternalUrl(text) !== target ? text : undefined
 
   return (
@@ -548,25 +535,13 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
         // owning per-line text direction. Inline code carries `dir="ltr"`
         // (see the `code` override) so it doesn't vote here either, same
         // contract as the CSS isolate.
-        // A `> [!NOTE]`/`[!WARNING]`/... blockquote renders as a GFM alert
-        // callout; everything else stays a plain quote.
-        blockquote: ({ children, className, ...props }: ComponentProps<'blockquote'>) => {
-          const alert = extractAlert(children)
-
-          if (alert) {
-            return <MarkdownAlert type={alert.type}>{alert.body}</MarkdownAlert>
-          }
-
-          return (
-            <blockquote
-              className={cn('border-s-2 border-border ps-3 text-muted-foreground italic', className)}
-              dir="auto"
-              {...props}
-            >
-              {children}
-            </blockquote>
-          )
-        },
+        blockquote: ({ className, ...props }: ComponentProps<'blockquote'>) => (
+          <blockquote
+            className={cn('border-s-2 border-border ps-3 text-muted-foreground italic', className)}
+            dir="auto"
+            {...props}
+          />
+        ),
         ul: ({ className, ...props }: ComponentProps<'ul'>) => (
           <ul className={cn('my-1 gap-0', className)} dir="auto" {...props} />
         ),
@@ -603,16 +578,7 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
           <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props} />
         ),
         img: MarkdownImage,
-        // ```mermaid / ```svg fences route to their lazy renderers; every other
-        // language falls back to the Shiki-highlighted code block.
-        SyntaxHighlighter: (props: SyntaxHighlighterProps) => (
-          <RichCodeBlock
-            code={props.code}
-            fallback={<SyntaxHighlighter {...props} defer={isStreaming} />}
-            language={props.language}
-            streaming={isStreaming}
-          />
-        )
+        SyntaxHighlighter: (props: SyntaxHighlighterProps) => <SyntaxHighlighter {...props} defer={isStreaming} />
       }) as StreamdownTextComponents,
     [isStreaming]
   )

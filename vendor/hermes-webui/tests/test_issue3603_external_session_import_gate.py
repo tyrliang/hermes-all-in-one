@@ -6,9 +6,9 @@ sessions, making messaging sessions click-to-open-but-can't-send.
 
 This test pins:
 - `_isExternalSession` exists in sessions.js
-- The shared sidebar open helper uses `_isExternalSession` before import_cli
-- The gateway-refresh gate uses `_isExternalSession`
-- Main, lineage-segment, and child-session opens route through that helper
+- The open-path gate at line ~5024 uses `_isExternalSession` (not just is_cli_session)
+- The gateway-refresh gate at line ~3116 uses `_isExternalSession`
+- The lineage-segment and child-session open gates use `_isExternalSession`
 """
 
 import re
@@ -45,21 +45,14 @@ def test_is_external_session_covers_messaging():
     )
 
 
-def _open_sidebar_session_body(js):
-    start = js.index('async function _openSidebarSession(session, loadOpts={})')
-    end = js.index('function _isReadOnlySession', start)
-    return js[start:end]
-
-
 def test_open_path_uses_is_external_session():
-    """Shared sidebar open helper must use _isExternalSession for import gate."""
+    """Session open handler must use _isExternalSession for import gate."""
     js = _read_js()
-    body = _open_sidebar_session_body(js)
+    # The import gate in the session-click handler should use _isExternalSession
     assert re.search(
-        r'if\s*\(\s*_isExternalSession\s*\(\s*session\s*\)\s*\)',
-        body,
-    ), 'Shared sidebar open helper must use _isExternalSession(session) for import gate'
-    assert "JSON.stringify(_externalImportPayload(session))" in body
+        r'if\s*\(\s*_isExternalSession\s*\(\s*s\s*\)\s*\)',
+        js,
+    ), 'Session open handler must use _isExternalSession(s) for import gate'
 
 
 def test_gateway_refresh_uses_is_external_session():
@@ -74,22 +67,18 @@ def test_gateway_refresh_uses_is_external_session():
 
 
 def test_lineage_open_uses_is_external_session():
-    """Lineage segment open handler must route through shared import/open helper."""
+    """Lineage segment open handler must use _isExternalSession."""
     js = _read_js()
-    body = _open_sidebar_session_body(js)
     assert re.search(
-        r'if\s*\(\s*_isExternalSession\s*\(\s*session\s*\)\s*\)',
-        body,
-    ), 'Shared sidebar helper must keep _isExternalSession(session) import gate'
-    assert "await _openSidebarSession(seg, {skipLineageResolve:true});" in js
+        r'if\s*\(\s*_isExternalSession\s*\(\s*seg\s*\)\s*\)',
+        js,
+    ), 'Lineage segment open must use _isExternalSession(seg)'
 
 
 def test_child_session_open_uses_is_external_session():
-    """Child session open handler must route through shared import/open helper."""
+    """Child session open handler must use _isExternalSession."""
     js = _read_js()
-    body = _open_sidebar_session_body(js)
     assert re.search(
-        r'if\s*\(\s*_isExternalSession\s*\(\s*session\s*\)\s*\)',
-        body,
-    ), 'Shared sidebar helper must keep _isExternalSession(session) import gate'
-    assert "await _openSidebarSession(childSession, {skipLineageResolve:true});" in js
+        r'if\s*\(\s*_isExternalSession\s*\(\s*(?:child|childSession)\s*\)\s*\)',
+        js,
+    ), 'Child session open must use _isExternalSession for the selected child session'

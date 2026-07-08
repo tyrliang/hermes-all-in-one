@@ -62,7 +62,6 @@ def _run_failure_case(api_js: str) -> dict:
             _extract_fn(MESSAGES_JS, "_renderPendingApprovalForActiveSession"),
             _extract_fn(MESSAGES_JS, "_approvalResponseMatches"),
             _extract_fn(MESSAGES_JS, "_setApprovalControlsDisabled"),
-            _extract_fn(MESSAGES_JS, "_setPromptFlyoutHidden"),
             _extract_fn(MESSAGES_JS, "showApprovalCard"),
             _extract_fn(MESSAGES_JS, "_restoreFailedApprovalResponse"),
             _extract_fn(MESSAGES_JS, "respondApproval", prefix="async function "),
@@ -118,10 +117,6 @@ const card = {{
       else this.values.delete(value);
     }},
   }},
-  hidden: false,
-  attributes: {{}},
-  setAttribute(name, value) {{ this.attributes[name] = String(value); }},
-  removeAttribute(name) {{ delete this.attributes[name]; }},
   querySelector() {{ return null; }},
 }};
 const approvalDesc = {{ textContent: '' }};
@@ -244,7 +239,6 @@ def test_poll_rerender_keeps_inflight_buttons_disabled_and_blocks_duplicates():
             _extract_fn(MESSAGES_JS, "_renderPendingApprovalForActiveSession"),
             _extract_fn(MESSAGES_JS, "_approvalResponseMatches"),
             _extract_fn(MESSAGES_JS, "_setApprovalControlsDisabled"),
-            _extract_fn(MESSAGES_JS, "_setPromptFlyoutHidden"),
             _extract_fn(MESSAGES_JS, "showApprovalCard"),
             _extract_fn(MESSAGES_JS, "_restoreFailedApprovalResponse"),
             _extract_fn(MESSAGES_JS, "respondApproval", prefix="async function "),
@@ -297,10 +291,6 @@ const card = {{
       else this.values.delete(value);
     }},
   }},
-  hidden: false,
-  attributes: {{}},
-  setAttribute(name, value) {{ this.attributes[name] = String(value); }},
-  removeAttribute(name) {{ delete this.attributes[name]; }},
   querySelector() {{ return null; }},
 }};
 const approvalDesc = {{ textContent: '' }};

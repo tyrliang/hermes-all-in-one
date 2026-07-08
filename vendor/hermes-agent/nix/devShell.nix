@@ -25,12 +25,10 @@
     in
     {
       devShells.default = pkgs.mkShell {
-        packages =
-          with pkgs;
-          [
-            uv
-          ]
-          ++ self'.packages.default.passthru.devDeps;
+        inputsFrom = packages;
+        packages = with pkgs; [
+          uv
+        ];
         shellHook = ''
           echo "Hermes Agent dev shell"
           ${combinedNonNpm}

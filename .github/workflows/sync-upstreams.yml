@@ -1,0 +1,153 @@
+name: Sync Upstreams
+
+# Refresh the vendored subtrees from upstream and open a PR — never push to
+# main directly. A bad subtree merge or model patch is caught by the inline
+# guard below (and again by ci.yml on the PR) before it can reach main.
+#
+# Both subtrees (hermes-agent, hermes-webui) are pinned to an upstream tag in
+# VERSION. The nightly only advances a pin — and only opens a PR — when a
+# strictly newer upstream tag exists. Nothing happens on off-days.
+#
+# NOTE: PRs opened with the default GITHUB_TOKEN do not trigger other workflows
+# (GitHub's recursion guard), so ci.yml won't run on the sync PR automatically.
+# Set a repo secret SYNC_PAT (a PAT with repo scope) to have CI run on the PR;
+# without it the inline guard still blocks broken syncs, but you'll need to push
+# the branch (or close/reopen the PR) to kick off smoke.
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Read pinned refs from VERSION
+        id: version
+        run: ./scripts/read-version.sh >> "$GITHUB_OUTPUT"
+
+      - name: Add remotes
+        run: |
+          git remote add hermes-agent-upstream https://github.com/NousResearch/hermes-agent.git || true
+          git remote add hermes-webui-upstream https://github.com/nesquena/hermes-webui.git || true
+
+      - name: Fetch upstreams
+        run: |
+          git fetch --tags hermes-agent-upstream
+          git fetch --tags hermes-webui-upstream
+
+      # Both subtrees are pinned to a tag in VERSION (agent-base / webui-base).
+      # Only advance — and only then open a PR — when a strictly newer upstream
+      # tag exists. No `|| true`: a subtree conflict must fail loudly.
+      - name: Sync hermes-agent (advance pin only on a newer tag)
+        run: |
+          set -euo pipefail
+          pinned="${{ steps.version.outputs.agent_base }}"
+          latest="$(git ls-remote --tags hermes-agent-upstream \
+            | sed 's#.*refs/tags/##' | grep -v '\^{}' | sort -V | tail -1)"
+          echo "agent pinned=${pinned:-<unset>} latest-tag=${latest}"
+
+          if [ -z "$latest" ]; then
+            echo "No upstream tags found — skipping agent."
+            exit 0
+          fi
+          # newer = latest != pinned AND latest sorts after pinned (no downgrade)
+          if [ "$latest" = "$pinned" ] || \
+             [ "$(printf '%s\n%s\n' "${pinned:-}" "$latest" | sort -V | tail -1)" != "$latest" ]; then
+            echo "No newer agent tag than the pin — skipping agent."
+            exit 0
+          fi
+
+          echo "Advancing agent pin: ${pinned:-<unset>} -> ${latest}"
+          git fetch hermes-agent-upstream "$latest"
+          git subtree pull --prefix=vendor/hermes-agent hermes-agent-upstream "$latest" --squash \
+            -m "chore(sync): update vendor/hermes-agent to ${latest}"
+          . scripts/version-lib.sh
+          pin_agent_base "$latest"
+          git add VERSION
+          git commit -m "chore(sync): pin agent-base to ${latest}"
+
+      - name: Sync hermes-webui (advance pin only on a newer tag)
+        run: |
+          set -euo pipefail
+          pinned="${{ steps.version.outputs.webui_base }}"
+          latest="$(git ls-remote --tags hermes-webui-upstream \
+            | sed 's#.*refs/tags/##' | grep -v '\^{}' | sort -V | tail -1)"
+          echo "webui pinned=${pinned:-<unset>} latest-tag=${latest}"
+
+          if [ -z "$latest" ]; then
+            echo "No upstream tags found — skipping webui."
+            exit 0
+          fi
+          # newer = latest != pinned AND latest sorts after pinned (no downgrade)
+          if [ "$latest" = "$pinned" ] || \
+             [ "$(printf '%s\n%s\n' "${pinned:-}" "$latest" | sort -V | tail -1)" != "$latest" ]; then
+            echo "No newer webui tag than the pin — skipping webui."
+            exit 0
+          fi
+
+          echo "Advancing webui pin: ${pinned:-<unset>} -> ${latest}"
+          git fetch hermes-webui-upstream "$latest"
+          git subtree pull --prefix=vendor/hermes-webui hermes-webui-upstream "$latest" --squash \
+            -m "chore(sync): update vendor/hermes-webui to ${latest}"
+          . scripts/version-lib.sh
+          pin_webui_base "$latest"
+          git add VERSION
+          git commit -m "chore(sync): pin webui-base to ${latest}"
+
+      - name: Patch vendor model lists
+        run: |
+          python3 scripts/patch-vendor-models.py
+          if ! git diff --quiet vendor/hermes-webui/api/config.py; then
+            git add vendor/hermes-webui/api/config.py
+            git commit -m "chore(sync): patch webui model list from hermes-agent"
+          fi
+
+      - name: Guard — no conflict markers, vendored sources parse
+        run: |
+          if git grep -nE '^(<<<<<<<|>>>>>>>) ' -- vendor/; then
+            echo "::error::unresolved conflict markers in vendor/ after sync"
+            exit 1
+          fi
+          python -m compileall -q vendor/hermes-webui vendor/hermes-agent
+
+      - name: Open / update sync PR
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          branch="automation/sync-upstreams"
+          if git diff --quiet origin/main --; then
+            echo "No changes vs main — nothing to sync."
+            exit 0
+          fi
+          git push -f origin "HEAD:${branch}"
+          if [ "$(gh pr view "$branch" --json state -q .state 2>/dev/null || true)" = "OPEN" ]; then
+            echo "Sync PR already open; branch updated."
+          else
+            gh pr create --base main --head "$branch" \
+              --title "chore(sync): upstream vendor refresh" \
+              --body "Automated upstream vendor refresh. **Review before merge** — gated by ci.yml (smoke + vendor-syntax).
+
+          - hermes-agent: pinned by tag in VERSION (\`agent-base\`); advanced only when a strictly newer upstream tag exists
+          - hermes-webui: pinned by tag in VERSION (\`webui-base\`); advanced only when a strictly newer upstream tag exists"
+          fi

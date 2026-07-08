@@ -9,7 +9,6 @@ import { Switch } from '@/components/ui/switch'
 import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
 import { getSkills, getToolsets, toggleSkill, toggleToolset } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { SkillInfo, ToolsetInfo } from '@/types/hermes'
@@ -18,7 +17,6 @@ import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PAGE_INSET_X } from '../layout-constants'
 import { PageSearchShell } from '../page-search-shell'
-import { ComputerUsePanel } from '../settings/computer-use-panel'
 import { asText, includesQuery, prettyName, toolNames, toolsetDisplayLabel } from '../settings/helpers'
 import { ToolsetConfigPanel } from '../settings/toolset-config-panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
@@ -53,10 +51,6 @@ function filteredToolsets(toolsets: ToolsetInfo[], query: string): ToolsetInfo[]
 
   return toolsets
     .filter(toolset => {
-      if (!isDesktopToolsetVisible(toolset.name)) {
-        return false
-      }
-
       if (!q) {
         return true
       }
@@ -339,9 +333,6 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                             </span>
                           ))}
                         </div>
-                      )}
-                      {expanded && toolset.name === 'computer_use' && (
-                        <ComputerUsePanel onConfiguredChange={refreshToolsets} />
                       )}
                       {expanded && <ToolsetConfigPanel onConfiguredChange={refreshToolsets} toolset={toolset.name} />}
                     </div>

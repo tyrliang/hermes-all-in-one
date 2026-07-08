@@ -31,7 +31,6 @@ interface HarnessProps {
 
 function Harness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessProps) {
   const busyRef: MutableRefObject<boolean> = { current: false }
-
   const cache = useSessionStateCache({
     activeSessionId,
     busyRef,
@@ -83,12 +82,18 @@ describe('useSessionStateCache — per-session turn timer', () => {
   it("keeps a background session's running turn clock and never mirrors it to the view", () => {
     let cache!: Cache
     // Active session is "fg-runtime"; the turn starts on the BACKGROUND session.
-    render(<Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />)
+    render(
+      <Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />
+    )
 
     const startedAt = 1_700_000_000_000
 
     act(() => {
-      cache.updateSessionState('bg-runtime', state => ({ ...state, busy: true, turnStartedAt: startedAt }), 'bg-stored')
+      cache.updateSessionState(
+        'bg-runtime',
+        state => ({ ...state, busy: true, turnStartedAt: startedAt }),
+        'bg-stored'
+      )
     })
 
     // The background session's own cache entry holds the clock...
@@ -107,7 +112,11 @@ describe('useSessionStateCache — per-session turn timer', () => {
     // A turn on the ACTIVE session stages into the view; the flush mirrors its
     // turnStartedAt into the global atom the statusbar reads.
     act(() => {
-      cache.updateSessionState('fg-runtime', state => ({ ...state, busy: true, turnStartedAt: startedAt }), 'fg-stored')
+      cache.updateSessionState(
+        'fg-runtime',
+        state => ({ ...state, busy: true, turnStartedAt: startedAt }),
+        'fg-stored'
+      )
     })
 
     expect($turnStartedAt.get()).toBe(startedAt)
@@ -134,7 +143,6 @@ describe('useSessionStateCache — per-session turn timer', () => {
 
   it('mirrors the focused session model metadata when switching from a cached session', () => {
     let cache!: Cache
-
     const { rerender } = render(
       <Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />
     )
@@ -183,7 +191,6 @@ describe('useSessionStateCache — per-session turn timer', () => {
     setCurrentFastMode(true)
 
     let cache!: Cache
-
     const { rerender } = render(
       <Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />
     )
@@ -228,7 +235,6 @@ interface ViewHarnessProps {
 
 function ViewHarness({ activeSessionId, onReady }: ViewHarnessProps) {
   const busyRef: MutableRefObject<boolean> = { current: false }
-
   const cache = useSessionStateCache({
     activeSessionId,
     busyRef,

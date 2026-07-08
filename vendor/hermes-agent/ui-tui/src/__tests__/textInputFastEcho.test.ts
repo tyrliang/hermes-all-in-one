@@ -217,10 +217,7 @@ describe('supportsFastEchoTerminal', () => {
 
   it('disables fast-echo by default in Termux mode', () => {
     expect(
-      supportsFastEchoTerminal({
-        TERMUX_VERSION: '0.118.0',
-        PREFIX: '/data/data/com.termux/files/usr'
-      } as NodeJS.ProcessEnv)
+      supportsFastEchoTerminal({ TERMUX_VERSION: '0.118.0', PREFIX: '/data/data/com.termux/files/usr' } as NodeJS.ProcessEnv)
     ).toBe(false)
   })
 

@@ -3,7 +3,7 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-UI_JS = (ROOT / "static" / "ui.js").read_text(encoding="utf-8")
+UI_JS = (ROOT / "static" / "ui.js").read_text()
 
 
 def _body_between(src: str, start: str, end: str) -> str:

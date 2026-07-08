@@ -165,10 +165,6 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return patchOverlayState({ modelPicker: false })
     }
 
-    if (overlay.petPicker) {
-      return patchOverlayState({ petPicker: false })
-    }
-
     if (overlay.billing) {
       return patchOverlayState({ billing: null })
     }
@@ -187,10 +183,6 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (overlay.agents) {
       return patchOverlayState({ agents: false })
-    }
-
-    if (overlay.journey) {
-      return patchOverlayState({ journey: false })
     }
   }
 

@@ -15,7 +15,7 @@ REPO = pathlib.Path(__file__).parent.parent
 
 
 def read(rel):
-    return (REPO / rel).read_text(encoding="utf-8")
+    return (REPO / rel).read_text()
 
 
 # ── Group A: /root workspace ──────────────────────────────────────────────────

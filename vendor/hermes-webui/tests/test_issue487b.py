@@ -14,7 +14,7 @@ import pathlib
 import re
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent
-UI_JS = (REPO_ROOT / "static" / "ui.js").read_text(encoding="utf-8")
+UI_JS = (REPO_ROOT / "static" / "ui.js").read_text()
 
 
 # ── Source-level check ────────────────────────────────────────────────────────

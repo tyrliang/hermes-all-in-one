@@ -269,12 +269,7 @@ class TestFastPathSourceShape:
         """The fast-path return must come BEFORE the catalog lookup."""
         src = _read("api/routes.py")
         idx = src.find("def _resolve_compatible_session_model_state(")
-        # Helper grew (profile_config, custom repair); 6k window no longer reaches
-        # the slow-path catalog call — use a bounded slice through the next def.
-        body = src[idx:idx + 12000]
-        next_def = body.find("\ndef ", 100)
-        if next_def != -1:
-            body = body[:next_def]
+        body = src[idx:idx + 6000]
         fast_path_idx = body.find("if model and requested_provider:")
         catalog_idx = body.find("catalog = get_available_models()")
         assert fast_path_idx != -1 and catalog_idx != -1

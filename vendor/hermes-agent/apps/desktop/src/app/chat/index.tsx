@@ -45,7 +45,7 @@ import {
   $sessions,
   sessionPinId
 } from '@/store/session'
-import { isSecondaryWindow, isWatchWindow } from '@/store/windows'
+import { isSecondaryWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 import { routeSessionId } from '../routes'
@@ -75,7 +75,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   maxVoiceRecordingSeconds?: number
   onAttachImageBlob: (blob: Blob) => Promise<boolean | void> | boolean | void
   onAttachDroppedItems: (candidates: DroppedFile[]) => Promise<boolean | void> | boolean | void
-  onPasteClipboardImage: (opts?: { silent?: boolean }) => Promise<boolean> | void
+  onPasteClipboardImage: () => void
   onPickFiles: () => void
   onPickFolders: () => void
   onPickImages: () => void
@@ -88,7 +88,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
   onEdit: (message: AppendMessage) => Promise<void>
   onReload: (parentId: string | null) => Promise<void>
-  onRestoreToMessage?: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
+  onRestoreToMessage?: (messageId: string) => Promise<void>
   onRetryResume: (sessionId: string) => void
   onTranscribeAudio?: (audio: Blob) => Promise<string>
   onDismissError?: (messageId: string) => void
@@ -317,12 +317,7 @@ export function ChatView({
   // The compact new-session pop-out skips the wordmark/tagline intro — it's a
   // scratch window, not the full-height empty state.
   const showIntro =
-    !isSecondaryWindow() &&
-    freshDraftReady &&
-    !isRoutedSessionView &&
-    !selectedSessionId &&
-    !activeSessionId &&
-    messagesEmpty
+    !isSecondaryWindow() && freshDraftReady && !isRoutedSessionView && !selectedSessionId && !activeSessionId && messagesEmpty
 
   // Session is still loading if the route references a session we haven't
   // resumed yet. Once `activeSessionId` is set (runtime has resumed), the
@@ -342,9 +337,8 @@ export function ChatView({
 
   const threadLoading = threadLoadingState(loadingSession, busy, awaitingResponse, lastVisibleIsUser)
   // Hide the composer in the exhausted error state too: there's no live runtime
-  // to send to until a retry rebinds one. Watch windows are pure spectators of a
-  // subagent run driven elsewhere — no composer, transcript is read-only.
-  const showChatBar = !loadingSession && !resumeExhausted && !isWatchWindow()
+  // to send to until a retry rebinds one.
+  const showChatBar = !loadingSession && !resumeExhausted
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
   const modelOptionsQuery = useQuery<ModelOptionsResponse>({
@@ -439,18 +433,17 @@ export function ChatView({
 
       <PromptOverlays />
 
-      <ChatRuntimeBoundary
-        busy={busy}
-        onCancel={onCancel}
-        onEdit={onEdit}
-        onReload={onReload}
-        onThreadMessagesChange={onThreadMessagesChange}
-        suppressMessages={routeSessionMismatch}
+      <div
+        className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]"
+        {...dropHandlers}
       >
-        <div
-          className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]"
-          data-slot="composer-bounds"
-          {...dropHandlers}
+        <ChatRuntimeBoundary
+          busy={busy}
+          onCancel={onCancel}
+          onEdit={onEdit}
+          onReload={onReload}
+          onThreadMessagesChange={onThreadMessagesChange}
+          suppressMessages={routeSessionMismatch}
         >
           <Thread
             clampToComposer={showChatBar}
@@ -465,62 +458,54 @@ export function ChatView({
             sessionId={activeSessionId}
             sessionKey={threadKey}
           />
-          {resumeExhausted && routedSessionId && (
-            <div className="absolute inset-0 z-10 grid place-items-center bg-(--ui-chat-surface-background) px-8 py-10">
-              <ErrorState
-                className="max-w-sm"
-                description={t.desktop.resumeStrandedBody}
-                title={t.desktop.resumeStrandedTitle}
-              >
-                <div className="grid justify-items-center">
-                  <Button onClick={() => onRetryResume(routedSessionId)} size="sm" variant="outline">
-                    {t.desktop.resumeRetry}
-                  </Button>
-                </div>
-              </ErrorState>
-            </div>
+          {showChatBar && (
+            <Suspense fallback={<ChatBarFallback />}>
+              <ChatBar
+                busy={busy}
+                cwd={currentCwd}
+                disabled={!gatewayOpen}
+                focusKey={activeSessionId}
+                gateway={gateway}
+                maxRecordingSeconds={maxVoiceRecordingSeconds}
+                onAddContextRef={onAddContextRef}
+                onAddUrl={onAddUrl}
+                onAttachDroppedItems={onAttachDroppedItems}
+                onAttachImageBlob={onAttachImageBlob}
+                onCancel={onCancel}
+                onPasteClipboardImage={onPasteClipboardImage}
+                onPickFiles={onPickFiles}
+                onPickFolders={onPickFolders}
+                onPickImages={onPickImages}
+                onRemoveAttachment={onRemoveAttachment}
+                onSteer={onSteer}
+                onSubmit={onSubmit}
+                onTranscribeAudio={onTranscribeAudio}
+                queueSessionKey={selectedSessionId}
+                sessionId={activeSessionId}
+                state={chatBarState}
+              />
+            </Suspense>
           )}
-          {showChatBar && <ScrollToBottomButton />}
-          <ChatDropOverlay kind={dragKind} />
-          <ChatSwapOverlay profile={gatewaySwapTarget} />
-        </div>
-        {/* Composer renders OUTSIDE the contain:[layout paint] wrapper above:
-            that wrapper is a containing block for — and clips — position:fixed
-            descendants, so the popped-out (fixed) composer would anchor to the
-            chat column (which shifts/resizes with the sidebars) and get clipped
-            off-screen instead of floating against the viewport. As a sibling it
-            anchors to the outer relative container instead: docked is absolute
-            (identical placement), floating resolves against the viewport. Both
-            states stay mounted here, so dock⇄float never remounts the editor. */}
-        {showChatBar && (
-          <Suspense fallback={<ChatBarFallback />}>
-            <ChatBar
-              busy={busy}
-              cwd={currentCwd}
-              disabled={!gatewayOpen}
-              focusKey={activeSessionId}
-              gateway={gateway}
-              maxRecordingSeconds={maxVoiceRecordingSeconds}
-              onAddContextRef={onAddContextRef}
-              onAddUrl={onAddUrl}
-              onAttachDroppedItems={onAttachDroppedItems}
-              onAttachImageBlob={onAttachImageBlob}
-              onCancel={onCancel}
-              onPasteClipboardImage={onPasteClipboardImage}
-              onPickFiles={onPickFiles}
-              onPickFolders={onPickFolders}
-              onPickImages={onPickImages}
-              onRemoveAttachment={onRemoveAttachment}
-              onSteer={onSteer}
-              onSubmit={onSubmit}
-              onTranscribeAudio={onTranscribeAudio}
-              queueSessionKey={selectedSessionId}
-              sessionId={activeSessionId}
-              state={chatBarState}
-            />
-          </Suspense>
+        </ChatRuntimeBoundary>
+        {resumeExhausted && routedSessionId && (
+          <div className="absolute inset-0 z-10 grid place-items-center bg-(--ui-chat-surface-background) px-8 py-10">
+            <ErrorState
+              className="max-w-sm"
+              description={t.desktop.resumeStrandedBody}
+              title={t.desktop.resumeStrandedTitle}
+            >
+              <div className="grid justify-items-center">
+                <Button onClick={() => onRetryResume(routedSessionId)} size="sm" variant="outline">
+                  {t.desktop.resumeRetry}
+                </Button>
+              </div>
+            </ErrorState>
+          </div>
         )}
-      </ChatRuntimeBoundary>
+        {showChatBar && <ScrollToBottomButton />}
+        <ChatDropOverlay kind={dragKind} />
+        <ChatSwapOverlay profile={gatewaySwapTarget} />
+      </div>
     </div>
   )
 }

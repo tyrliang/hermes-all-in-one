@@ -59,7 +59,6 @@ def _with_ai_gateway_and_custom_provider():
     gateway also exposes."""
     old_cfg = dict(config.cfg)
     old_mtime = config._cfg_mtime
-    old_path = getattr(config, "_cfg_path", None)
     config.cfg.clear()
     config.cfg.update(
         {
@@ -82,13 +81,11 @@ def _with_ai_gateway_and_custom_provider():
         config._cfg_mtime = config.Path(config._get_config_path()).stat().st_mtime
     except Exception:
         config._cfg_mtime = 0.0
-    config._cfg_path = config._get_config_path()
 
     def restore():
         config.cfg.clear()
         config.cfg.update(old_cfg)
         config._cfg_mtime = old_mtime
-        config._cfg_path = old_path
         config.invalidate_models_cache()
 
     return restore
@@ -206,7 +203,6 @@ def test_named_custom_group_still_populates_when_active_is_custom_alias(monkeypa
 
     old_cfg = dict(config.cfg)
     old_mtime = config._cfg_mtime
-    old_path = getattr(config, "_cfg_path", None)
     config.cfg.clear()
     config.cfg.update(
         {
@@ -229,7 +225,6 @@ def test_named_custom_group_still_populates_when_active_is_custom_alias(monkeypa
         config._cfg_mtime = config.Path(config._get_config_path()).stat().st_mtime
     except Exception:
         config._cfg_mtime = 0.0
-    config._cfg_path = config._get_config_path()
 
     try:
         result = config.get_available_models()
@@ -237,7 +232,6 @@ def test_named_custom_group_still_populates_when_active_is_custom_alias(monkeypa
         config.cfg.clear()
         config.cfg.update(old_cfg)
         config._cfg_mtime = old_mtime
-        config._cfg_path = old_path
 
     groups_by_id = {g["provider_id"]: g for g in result["groups"]}
     assert "custom:my-custom" in groups_by_id

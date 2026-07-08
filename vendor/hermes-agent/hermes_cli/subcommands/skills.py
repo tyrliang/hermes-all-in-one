@@ -39,16 +39,8 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
             "clawhub",
             "lobehub",
             "browse-sh",
-            # Provider filters (GitHub taps stored under source="github"):
-            "nvidia",
-            "openai",
-            "anthropic",
-            "huggingface",
-            "voltagent",
-            "gstack",
-            "minimax",
         ],
-        help="Filter by source or provider (e.g. nvidia, openai) (default: all)",
+        help="Filter by source (default: all)",
     )
 
     skills_search = skills_subparsers.add_parser(
@@ -67,18 +59,9 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
             "clawhub",
             "lobehub",
             "browse-sh",
-            # Provider filters (GitHub taps stored under source="github"):
-            "nvidia",
-            "openai",
-            "anthropic",
-            "huggingface",
-            "voltagent",
-            "gstack",
-            "minimax",
         ],
-        help="Filter by source or provider (e.g. nvidia, openai)",
     )
-    skills_search.add_argument("--limit", type=int, default=25, help="Max results")
+    skills_search.add_argument("--limit", type=int, default=10, help="Max results")
     skills_search.add_argument(
         "--json",
         action="store_true",

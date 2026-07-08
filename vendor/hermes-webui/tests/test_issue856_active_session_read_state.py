@@ -3,7 +3,7 @@
 from pathlib import Path
 
 
-MESSAGES_JS = (Path(__file__).resolve().parent.parent / "static" / "messages.js").read_text(encoding="utf-8")
+MESSAGES_JS = (Path(__file__).resolve().parent.parent / "static" / "messages.js").read_text()
 
 
 def test_messages_js_defines_active_session_viewed_helper():

@@ -290,6 +290,10 @@ global.api = (url, opts) => {{
 (async () => {{
   const run = _loadSidebarSessionListPayload('?v=1', {{
     timeoutToast:false,
+    timeoutMs:90000,
+    retries:1,
+    retryTimeouts:true,
+    retryStatuses:[502,503,504],
   }});
 
   await Promise.resolve();

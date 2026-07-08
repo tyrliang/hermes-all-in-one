@@ -158,7 +158,6 @@ export function CopyButton({
 
   const feedbackLabel =
     status === 'copied' ? t.common.copied : status === 'error' ? resolvedErrorMessage : (title ?? resolvedLabel)
-
   const ariaLabel = status === 'idle' ? resolvedLabel : feedbackLabel
 
   if (appearance === 'menu-item' || appearance === 'context-menu-item') {

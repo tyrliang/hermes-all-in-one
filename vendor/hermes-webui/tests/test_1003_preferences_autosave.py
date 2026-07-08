@@ -3,9 +3,9 @@
 Mirrors the structure of test_1003_appearance_autosave.py to verify the
 preferences-panel autosave pattern is wired correctly:
 
-  - All preference fields use _schedulePreferencesAutosave (not _markSettingsDirty)
-  - Password field MUST still call _markSettingsDirty (security: never autosave)
-  - _preferencesPayloadFromUi covers all fields
+- All 14 preference fields use _schedulePreferencesAutosave (not _markSettingsDirty)
+- Password field MUST still call _markSettingsDirty (security: never autosave)
+- _preferencesPayloadFromUi covers all 14 fields
 - _setPreferencesAutosaveStatus uses the shared i18n keys
 - Status div exists in static/index.html
 - _autosavePreferencesSettings clears the dirty flag and hides the unsaved bar
@@ -41,7 +41,6 @@ PREFERENCE_FIELDS_AUTOSAVE = [
     ("settingsShowConversationOutline", "show_conversation_outline"),
     ("settingsShowTps", "show_tps"),
     ("settingsShowCliSessions", "show_cli_sessions"),
-    ("settingsShowClaudeCodeSessions", "show_claude_code_sessions"),
     ("settingsShowPreviousMessagingSessions", "show_previous_messaging_sessions"),
     ("settingsSyncInsights", "sync_to_insights"),
     ("settingsCheckUpdates", "check_for_updates"),
@@ -50,8 +49,7 @@ PREFERENCE_FIELDS_AUTOSAVE = [
     ("settingsNotificationsEnabled", "notifications_enabled"),
     ("settingsSidebarDensity", "sidebar_density"),
     ("settingsAutoTitleRefresh", "auto_title_refresh_every"),
-    ("settingsDefaultMessageMode", "default_message_mode"),
-    ("settingsShowBusyPlaceholderHint", "show_busy_placeholder_hint"),
+    ("settingsBusyInputMode", "busy_input_mode"),
     ("settingsBotName", "bot_name"),
 ]
 

@@ -790,105 +790,99 @@ This repo uses **two version fields**: your all-in-one release semver (`x.y.z`) 
 ### `VERSION` file
 
 ```text
-0.6.0
-hermes-base=v2026.7.1
-agent-base=v2026.7.1
-webui-base=v0.51.919
+0.3.9
+hermes-base=v2026.6.5
 ```
 
 | Line | Field | Meaning |
 |------|--------|---------|
-| 1 | Package semver | GHCR + git tag: `v0.6.0` |
-| 2 | `hermes-base` | Pinned `nousresearch/hermes-agent` tag in the Dockerfile (runtime base image) |
-| 3 | `agent-base` | Pinned `hermes-agent` git tag for the `vendor/hermes-agent` subtree (model lists, docs — not shipped in the image) |
-| 4 | `webui-base` | Pinned `hermes-webui` git tag for the `vendor/hermes-webui` subtree (shipped in the image) |
-
-`hermes-base` and `agent-base` track the **same** upstream release two ways (image vs. vendored source) and always move together — `upstream-refresh.yml` enforces this. `webui-base` is independent.
+| 1 | Package semver | GHCR + git tag: `v0.3.9` |
+| 2 | `hermes-base` | Pinned `nousresearch/hermes-agent` tag in the Dockerfile |
 
 **Bump rules**
 
 | Change | Version bump | Example |
 |--------|----------------|---------|
-| Adopt a new Hermes Agent release | **y** + 1, **z** → 0 | `0.5.0` → `0.6.0` on Hermes `v2026.7.1` |
-| webui-only vendor sync | none | `webui-base` moves, package semver unchanged |
-| All-in-one-only fix (control plane, docker glue) | **z** + 1 | `0.6.0` → `0.6.1` (same `hermes-base`) |
+| Adopt a new Hermes Agent release | **y** + 1, **z** → 0 | `0.3.9` → `0.4.0` on Hermes `v2026.7.1` |
+| All-in-one-only fix (control plane, WebUI vendor, docker glue) | **z** + 1 | `0.4.0` → `0.4.1` (same `hermes-base`) |
 | Breaking packaging change (volume layout, env contract) | **x** + 1 (manual) | Rare |
 
-The agent runtime comes from the **base image** (`HERMES_IMAGE`); vendored WebUI under `vendor/hermes-webui` is copied in at build time. `vendor/hermes-agent` is never shipped — it exists so `scripts/patch-vendor-models.py` can read the upstream model lists.
+The agent runtime comes from the **base image** (`HERMES_IMAGE`); vendored WebUI under `vendor/hermes-webui` is copied in at build time.
 
 ### Maintainer scripts
 
 ```bash
-./scripts/bump-hermes.sh v2026.6.5   # new Hermes base → y+1, z=0, pin Dockerfile + agent-base
+./scripts/bump-hermes.sh v2026.6.5   # new Hermes base → y+1, z=0, pin Dockerfile
 ./scripts/bump-patch.sh              # your layer only → z+1
 ./scripts/set-version.sh 0.4.1 v2026.6.5   # explicit set
 ./scripts/smoke.sh                   # build + runtime smoke (CI runs this too)
+./scripts/sync-upstreams.sh          # refresh vendor/hermes-agent + vendor/hermes-webui
 ```
 
-### Release flow — fully automated
+### Release flow
 
-A daily `upstream-refresh.yml` run checks Hermes Agent (git tag ∩ Docker Hub image) and hermes-webui (git tag) for newer releases and opens **one** PR with everything needed: vendor subtree updates, `VERSION`, and the Dockerfile pin. `ci.yml` (`vendor syntax` + `smoke`) is a **required** check on `main` — the PR cannot be merged until both are green.
-
-**The entire human involvement is: review the PR diff, confirm CI is green, merge.**
-
-```mermaid
-flowchart LR
-  A["upstream-refresh.yml\n(daily 04:00 UTC)"] -->|opens/updates| B["automation/upstream-refresh PR"]
-  B -->|ci.yml required checks| C{"you: review + merge"}
-  C -->|VERSION changed on main| D["auto-tag-release.yml"]
-  D -->|git tag vX.Y.Z + push| E["release.yml"]
-  E --> F["GHCR image + GitHub Release"]
-```
-
-On merge, `auto-tag-release.yml` reads the new package version from `VERSION`, tags it (`vX.Y.Z`), and pushes — which triggers `release.yml`: smoke → multi-arch build → GHCR push → GitHub Release with `hermes-base`/`agent-base`/`webui-base` and a compare link in the notes. **No manual tag, no manual release-note writing.**
-
-**Ad-hoc path** (layer-only fix, no upstream bump):
-
-```bash
-./scripts/bump-patch.sh              # e.g. 0.6.0 → 0.6.1
-./scripts/smoke.sh
-git commit -am "fix: …"
-git push origin main                 # auto-tag-release.yml tags + releases automatically
-```
-
-Pushing to `main` alone does **not** publish — only a `VERSION` change on `main` does (via `auto-tag-release.yml` → tag → `release.yml`).
-
-**Manual Hermes bump** (don't wait for the daily check):
+**1. New Hermes Agent version** (or merge the daily `check-upstream` PR):
 
 ```bash
 ./scripts/bump-hermes.sh v2026.7.1
+./scripts/sync-upstreams.sh          # optional: refresh vendored WebUI
 ./scripts/smoke.sh
 git add VERSION Dockerfile
-git commit -m "chore(release): adopt Hermes Agent v2026.7.1"
-git push origin main                 # still gated by required checks if pushed via PR
+git commit -m "chore(release): 0.4.0 on hermes v2026.7.1"
+git push origin main
+git tag v0.4.0
+git push origin v0.4.0               # triggers release.yml → GHCR + GitHub Release
 ```
+
+**2. All-in-one patch** (same Hermes base):
+
+```bash
+./scripts/bump-patch.sh              # e.g. 0.4.0 → 0.4.1
+./scripts/smoke.sh
+git commit -am "fix: …"
+git tag v0.4.1
+git push origin main --tags
+```
+
+Pushing to `main` alone does **not** publish an image — only a matching **`v*.*.*` git tag** does.
 
 ### CI & automation
 
 | Workflow | When | What |
 |----------|------|------|
-| [`ci.yml`](.github/workflows/ci.yml) | PR + branch push | `vendor syntax` + `./scripts/smoke.sh` — **required checks on `main`** |
-| [`upstream-refresh.yml`](.github/workflows/upstream-refresh.yml) | Daily 04:00 UTC | One PR: Hermes Agent (image+vendor+semver) and/or hermes-webui vendor sync |
-| [`auto-tag-release.yml`](.github/workflows/auto-tag-release.yml) | Push to `main` touching `VERSION` | Tags `vX.Y.Z` and pushes — triggers `release.yml` |
+| [`ci.yml`](.github/workflows/ci.yml) | PR + branch push | `./scripts/smoke.sh` |
 | [`release.yml`](.github/workflows/release.yml) | Tag push `v*.*.*` | Smoke → multi-arch build → GHCR `vX.Y.Z` + `latest` → GitHub Release |
+| [`check-upstream.yml`](.github/workflows/check-upstream.yml) | Daily | Opens a PR when Docker Hub has a newer Hermes tag than `hermes-base` |
+| [`sync-upstreams.yml`](.github/workflows/sync-upstreams.yml) | Daily | Subtree sync for `vendor/` |
 
-`upstream-refresh.yml` and `auto-tag-release.yml` push/tag as `SYNC_PAT` (a PAT owned by a human with write access), not the default `GITHUB_TOKEN` — GitHub requires manual approval on every `github-actions[bot]`-authored PR run (as of the 2026-06-11 policy change) and never lets `GITHUB_TOKEN`-pushed tags trigger other workflows. Without `SYNC_PAT` set, the refresh PR opens but CI won't auto-run on it, and merged version bumps won't auto-tag.
-
-Release notes list `hermes-base`, `agent-base`, `webui-base`, and a full diff link to the previous tag.
+Release notes should mention both versions, e.g. **hermes-all-in-one v0.4.0** built on **Hermes Agent v2026.6.5**.
 
 ### Cursor release skill
 
-This repo ships a [Cursor Agent Skill](.cursor/skills/hermes-all-in-one-release/SKILL.md) for maintainers, mainly for the ad-hoc layer-patch path and manual overrides — the normal Hermes/webui bump flow needs no scripts at all, just reviewing and merging the daily `upstream-refresh.yml` PR.
+This repo ships a [Cursor Agent Skill](.cursor/skills/hermes-all-in-one-release/SKILL.md) for maintainers. It captures the full release playbook — version rules, ad-hoc commands, checklists, and when to rely on daily automation vs manual steps.
 
 **Location:** `.cursor/skills/hermes-all-in-one-release/` (`SKILL.md` + `examples.md`)
 
 **How to use it in Cursor**
 
 1. Open this repo in Cursor (project skills load from `.cursor/skills/`).
-2. In Agent chat, ask in plain language, for example:
+2. In Agent chat, ask in plain language — the skill is picked up from context when you mention releases, for example:
    - *“Release a patch for the Tailscale fix”*
-   - *“Manually bump to the latest Hermes now, don't wait for the daily check”*
-3. The agent follows the skill: runs `bump-patch.sh` or `bump-hermes.sh`, `./scripts/smoke.sh`, and commits/pushes to `main` — `auto-tag-release.yml` handles tagging and `release.yml` handles publishing.
+   - *“Bump to the latest Hermes and walk me through tagging”*
+   - *“Run the release pipeline after merging the upstream PR”*
+3. The agent follows the skill: runs `bump-patch.sh` or `bump-hermes.sh`, `./scripts/smoke.sh`, and the correct `git tag` / push steps.
+
+**Typical ad-hoc path (most common)** — layer-only change, same `hermes-base`; daily `check-upstream` handles Hermes detection for you:
+
+```bash
+./scripts/bump-patch.sh
+./scripts/smoke.sh
+git commit -am "fix: …"
+git tag v$(head -1 VERSION)
+git push origin main --tags
+```
+
+For Hermes bumps, prefer merging the auto-opened `check-upstream` PR, then tag. See the skill’s workflow **C** for that path and **A** for layer patches.
 
 **Reference without Cursor:** the skill mirrors this README section; [`examples.md`](.cursor/skills/hermes-all-in-one-release/examples.md) has copy-paste scenarios.
 

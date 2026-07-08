@@ -30,11 +30,7 @@ def _install_fake_mcp_tool(monkeypatch, shutdown, discover, servers=None, lock=N
 def _install_fake_codex_runtime_switch(monkeypatch):
     import sys
     hermes_cli_pkg = sys.modules.get("hermes_cli") or ModuleType("hermes_cli")
-    # Restore the real hermes_cli.__path__ on teardown instead of emptying it in
-    # place: `sys.modules.get(...)` grabs the REAL package object, so a bare
-    # `__path__ = []` permanently strands it (later `import hermes_cli.<sub>`
-    # fails for the rest of the suite). monkeypatch.setattr snapshots and restores.
-    monkeypatch.setattr(hermes_cli_pkg, "__path__", [], raising=False)
+    hermes_cli_pkg.__path__ = []
     codex_runtime_switch = ModuleType("hermes_cli.codex_runtime_switch")
     calls = []
 
@@ -68,10 +64,7 @@ def _install_fake_codex_runtime_switch(monkeypatch):
 def _install_fake_skill_commands(monkeypatch, reload_skills):
     import sys
     agent_pkg = sys.modules.get("agent") or ModuleType("agent")
-    # See _install_fake_codex_runtime_switch: monkeypatch.setattr restores the
-    # real agent.__path__ on teardown so `from agent.<sub> import ...` keeps
-    # working in later tests (chronic full-suite poison otherwise).
-    monkeypatch.setattr(agent_pkg, "__path__", [], raising=False)
+    agent_pkg.__path__ = []
     skill_commands = ModuleType("agent.skill_commands")
     skill_commands.reload_skills = reload_skills
     monkeypatch.setitem(sys.modules, "agent", agent_pkg)
@@ -83,9 +76,7 @@ def _install_fake_account_usage(monkeypatch, *, view=None, exc=None):
     import sys
 
     agent_pkg = sys.modules.get("agent") or ModuleType("agent")
-    # monkeypatch.setattr restores the real agent.__path__ on teardown (see
-    # _install_fake_skill_commands) to avoid permanently poisoning the package.
-    monkeypatch.setattr(agent_pkg, "__path__", [], raising=False)
+    agent_pkg.__path__ = []
     account_usage = ModuleType("agent.account_usage")
 
     def build_credits_view(*, markdown=False, timeout=10.0):

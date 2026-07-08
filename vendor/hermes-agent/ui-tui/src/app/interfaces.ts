@@ -134,10 +134,8 @@ export interface OverlayState {
   billing: BillingOverlayState | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
-  journey: boolean
   modelPicker: boolean
   pager: null | PagerState
-  petPicker: boolean
   pluginsHub: boolean
   secret: null | SecretReq
   sessions: boolean
@@ -174,6 +172,7 @@ export interface UiState {
 
   sections: SectionVisibility
   sessionTitle: string
+  showCost: boolean
   showReasoning: boolean
   indicatorStyle: IndicatorStyle
   sid: null | string
@@ -334,7 +333,6 @@ export interface SlashHandlerContext {
   composer: {
     enqueue: (text: string) => void
     hasSelection: boolean
-    openEditor: () => Promise<void>
     paste: (quiet?: boolean) => void
     queueRef: MutableRefObject<string[]>
     selection: SelectionApi

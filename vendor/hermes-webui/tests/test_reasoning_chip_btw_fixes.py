@@ -344,18 +344,12 @@ class TestResizeHandlerSymmetry:
     def test_resize_repositions_reasoning_dropdown(self):
         # The global resize handler must handle both composerModelDropdown AND
         # composerReasoningDropdown to keep them aligned when the window resizes.
-        handlers = re.findall(
+        m = re.search(
             r"window\.addEventListener\(\s*['\"]resize['\"][\s\S]*?\}\s*\)\s*;",
             UI_JS,
         )
-        handler = next(
-            (
-                block for block in handlers
-                if "composerModelDropdown" in block and "_positionModelDropdown" in block
-            ),
-            None,
-        )
-        assert handler, "composer model dropdown resize handler not found in ui.js"
+        assert m, "window resize handler not found in ui.js"
+        handler = m.group(0)
         assert "composerReasoningDropdown" in handler, (
             "window resize handler must also re-position composerReasoningDropdown "
             "while it's open (symmetric with the existing model-dropdown branch)"

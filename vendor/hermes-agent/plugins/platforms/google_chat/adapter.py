@@ -761,7 +761,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Connection lifecycle
     # ------------------------------------------------------------------
-    async def connect(self, *, is_reconnect: bool = False) -> bool:
+    async def connect(self) -> bool:
         """Validate config, authenticate, start Pub/Sub pull, resolve bot id."""
         # First call into the heavy google-cloud stack — trigger the lazy
         # import. ``_load_google_modules()`` is idempotent and rebinds the

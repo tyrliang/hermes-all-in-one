@@ -14,10 +14,9 @@ import pytest
 from tests.conftest import TEST_BASE, TEST_STATE_DIR, _post, make_session_tracked
 
 
-def _get(path, headers=None):
+def _get(path):
     """GET helper -- returns parsed JSON, or raises HTTPError on non-2xx."""
-    req = urllib.request.Request(TEST_BASE + path, headers=headers or {})
-    with urllib.request.urlopen(req, timeout=10) as r:
+    with urllib.request.urlopen(TEST_BASE + path, timeout=10) as r:
         return json.loads(r.read())
 
 
@@ -241,10 +240,7 @@ def test_status_returns_profile_specific_hermes_home(cleanup_test_sessions):
     sid = data['session']['session_id']
     cleanup_test_sessions.append(sid)
 
-    r = _get(
-        f'/api/session/status?session_id={sid}',
-        headers={'Cookie': 'hermes_profile=research'},
-    )
+    r = _get(f'/api/session/status?session_id={sid}')
 
     assert r['profile'] == 'research'
     assert r['hermes_home'] == str(TEST_STATE_DIR / 'profiles' / 'research')
