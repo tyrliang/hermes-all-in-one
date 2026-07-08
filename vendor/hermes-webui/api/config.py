@@ -1093,6 +1093,8 @@ _FALLBACK_MODELS = [
     {"provider": "OpenAI",    "id": "openai/gpt-5.4-mini",                "label": "GPT-5.4 Mini"},
     {"provider": "OpenAI",    "id": "openai/gpt-5.4",                     "label": "GPT-5.4"},
     # Anthropic — 4.6 flagship + 4.5 generation
+    {"provider": "Anthropic", "id": "anthropic/claude-sonnet-5", "label": "Claude Sonnet 5"},
+    {"provider": "Anthropic", "id": "anthropic/claude-fable-5", "label": "Claude Fable 5"},
     {"provider": "Anthropic", "id": "anthropic/claude-haiku-4.5", "label": "Claude Haiku 4.5"},
     {"provider": "Anthropic", "id": "anthropic/claude-opus-4.8-fast", "label": "Claude Opus 4.8 Fast"},
     {"provider": "Anthropic", "id": "anthropic/claude-opus-4.8", "label": "Claude Opus 4.8"},
