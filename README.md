@@ -212,6 +212,8 @@ Railway has no kernel TUN, so this image uses **userspace networking**. [Tailsca
 
 Your ACL is fine for either mode (`action: accept`, `autogroup:nonroot` includes `hermes`). If the node has **`tag:server`**, only rules with `dst: ["tag:server"]` apply — not `autogroup:self`.
 
+OpenSSH **host keys** live on the volume at `/opt/data/.ssh/host/` (created once by cont-init, root-owned). Redeploys reuse the same fingerprint, so you should not see `REMOTE HOST IDENTIFICATION HAS CHANGED` after the first boot that creates those keys. Client keys stay in `/opt/data/.ssh/authorized_keys` (`hermes`-owned). Do not `chown -R hermes` the whole `.ssh` tree — that would break host-key permissions.
+
 ### Setup (default openssh)
 
 1. Deploy **v0.3.6+** (or set `TAILSCALE_SSH=openssh` explicitly).
@@ -240,7 +242,7 @@ cat >> /opt/data/.ssh/authorized_keys <<'EOF'
 ssh-ed25519 AAAA...paste-from-~/.ssh/id_ed25519.pub...
 EOF
 chmod 600 /opt/data/.ssh/authorized_keys
-chown -R hermes:hermes /opt/data/.ssh
+chown hermes:hermes /opt/data/.ssh /opt/data/.ssh/authorized_keys
 ```
 
 3. From your Mac (Tailscale app running):
@@ -251,16 +253,31 @@ ssh hermes@hermes-richard
 
 Logs should show `ssh=openssh` and `openssh on 127.0.0.1:22 via tailscale serve`.
 
+If you still have a stale fingerprint from an older image that regenerated host keys every boot:
+
+```bash
+ssh-keygen -R <your-magicdns-name>
+```
+
+Accept the new key once; later redeploys should keep it.
+
 ### Hotfix on v0.3.4 (before redeploy)
 
 ```bash
 railway ssh
 tailscale --socket=/run/tailscale/tailscaled.sock set --ssh=false
 apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server
-mkdir -p /run/sshd /opt/data/.ssh
-# add authorized_keys as above, then:
-ssh-keygen -A
-/usr/sbin/sshd
+mkdir -p /run/sshd /opt/data/.ssh/host
+# add authorized_keys as above, then persist host keys on the volume:
+[ -f /opt/data/.ssh/host/ssh_host_ed25519_key ] || ssh-keygen -t ed25519 -f /opt/data/.ssh/host/ssh_host_ed25519_key -N "" -C hermes-all-in-one
+[ -f /opt/data/.ssh/host/ssh_host_ecdsa_key ] || ssh-keygen -t ecdsa -f /opt/data/.ssh/host/ssh_host_ecdsa_key -N "" -C hermes-all-in-one
+[ -f /opt/data/.ssh/host/ssh_host_rsa_key ] || ssh-keygen -t rsa -b 4096 -f /opt/data/.ssh/host/ssh_host_rsa_key -N "" -C hermes-all-in-one
+chmod 700 /opt/data/.ssh/host && chmod 600 /opt/data/.ssh/host/ssh_host_*_key
+chown -R root:root /opt/data/.ssh/host
+/usr/sbin/sshd \
+  -o HostKey=/opt/data/.ssh/host/ssh_host_ed25519_key \
+  -o HostKey=/opt/data/.ssh/host/ssh_host_ecdsa_key \
+  -o HostKey=/opt/data/.ssh/host/ssh_host_rsa_key
 tailscale --socket=/run/tailscale/tailscaled.sock serve reset
 tailscale --socket=/run/tailscale/tailscaled.sock serve --bg --tcp 22 127.0.0.1:22
 ```
@@ -731,6 +748,8 @@ Hermes agent state lives under `/opt/data/.hermes` (`HERMES_HOME`). The WebUI an
     sessions/              ← conversation history per channel
     skills/                ← agent skills and tools
     SOUL.md                ← agent identity
+  .ssh/                    ← Tailscale OpenSSH (authorized_keys + host/)
+  .tailscale/              ← Tailscale node state
   webui/                   ← WebUI state
   workspace/               ← agent workspace
 ```
