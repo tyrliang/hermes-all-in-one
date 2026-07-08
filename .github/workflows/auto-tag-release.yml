@@ -1,0 +1,56 @@
+name: Auto-tag release
+
+# Whenever a merge to main advances the package version in VERSION, tag it
+# and push — that push is what triggers release.yml (smoke → multi-arch
+# build → GHCR → GitHub Release). This is the last manual step in the release
+# flow; automating it means "review + merge the refresh PR" is the entire
+# human involvement in adopting a new Hermes/webui release.
+#
+# Pushed with SYNC_PAT, not the default GITHUB_TOKEN: tags pushed by the
+# default token do not trigger other workflows (GitHub's recursion guard),
+# so release.yml would never fire.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - VERSION
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Read package version
+        id: version
+        run: |
+          set -euo pipefail
+          semver="$(grep -Ev '^\s*(#|$)' VERSION | head -1 | tr -d ' \t\r\n')"
+          echo "semver=${semver}" >> "$GITHUB_OUTPUT"
+
+      - name: Tag and push if new
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
+          SEMVER: ${{ steps.version.outputs.semver }}
+        run: |
+          set -euo pipefail
+          tag="v${SEMVER}"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "${tag} already exists on origin — nothing to do."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git tag -a "$tag" -m "hermes-all-in-one ${tag}"
+          git push origin "$tag"
+          echo "Pushed ${tag} — release.yml will build and publish it."
