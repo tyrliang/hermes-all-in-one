@@ -212,7 +212,17 @@ class ResponsesApiTransport(ProviderTransport):
         # Scoped to ``is_xai_responses`` deliberately; narrow to specific
         # models if a future grok variant should keep the client-side
         # function.
-        if is_xai_responses and response_tools:
+        #
+        # grok-4.3 carve-out: the native ``{"type": "web_search"}`` built-in
+        # makes grok-4.3 reject the request (HTTP 400 "Invalid arguments
+        # passed to the model") or accept the connection and stream no bytes
+        # until the TTFB guard kills it, when it is combined with a large
+        # function-tool set. The swap was verified only against
+        # grok-composer-2.5-fast; grok-4.3 works with the plain client-side
+        # ``web_search`` function (its pre-swap behavior), so skip the swap
+        # for it and let Hermes dispatch web_search through its own provider.
+        _skip_web_search_swap = "grok-4.3" in (model or "").lower()
+        if is_xai_responses and response_tools and not _skip_web_search_swap:
             has_client_web_search = any(
                 isinstance(t, dict) and t.get("name") == "web_search"
                 for t in response_tools
