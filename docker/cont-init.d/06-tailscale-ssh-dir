@@ -1,6 +1,8 @@
 #!/command/with-contenv sh
 # shellcheck shell=sh
-# Prepare /opt/data/.ssh for TAILSCALE_SSH=openssh and merge TAILSCALE_SSH_AUTHORIZED_KEYS.
+# Prepare /opt/data/.ssh for TAILSCALE_SSH=openssh:
+# - merge TAILSCALE_SSH_AUTHORIZED_KEYS into authorized_keys
+# - persist OpenSSH host keys on the volume so redeploys keep a stable fingerprint
 
 set -eu
 
@@ -11,9 +13,10 @@ esac
 
 DATA_DIR="${HERMES_DATA_DIR:-/opt/data}"
 SSH_DIR="${DATA_DIR}/.ssh"
+HOST_DIR="${SSH_DIR}/host"
 AK="${SSH_DIR}/authorized_keys"
 
-mkdir -p "${SSH_DIR}"
+mkdir -p "${SSH_DIR}" "${HOST_DIR}"
 touch "${AK}"
 
 _is_ssh_pubkey_line() {
@@ -49,10 +52,43 @@ EOF
     echo "[all-in-one] merged TAILSCALE_SSH_AUTHORIZED_KEYS (${added} new key(s)) into ${AK}" >&2
 }
 
+_ensure_host_key() {
+    # $1 = key type (ed25519|ecdsa|rsa)
+    type="$1"
+    key="${HOST_DIR}/ssh_host_${type}_key"
+    if [ -f "${key}" ] && [ -f "${key}.pub" ]; then
+        return 0
+    fi
+    echo "[all-in-one] generating persistent OpenSSH host key (${type}) at ${key}" >&2
+    rm -f "${key}" "${key}.pub"
+    case "${type}" in
+        rsa) ssh-keygen -t rsa -b 4096 -f "${key}" -N "" -C "hermes-all-in-one" ;;
+        *) ssh-keygen -t "${type}" -f "${key}" -N "" -C "hermes-all-in-one" ;;
+    esac
+}
+
 _append_authorized_keys_from_env
 
-chown -R hermes:hermes "${SSH_DIR}"
+# Host private keys must stay root:root 0600 — do not chown -R the whole .ssh tree.
+_ensure_host_key ed25519
+_ensure_host_key ecdsa
+_ensure_host_key rsa
+chown root:root "${HOST_DIR}" \
+    "${HOST_DIR}/ssh_host_ed25519_key" "${HOST_DIR}/ssh_host_ed25519_key.pub" \
+    "${HOST_DIR}/ssh_host_ecdsa_key" "${HOST_DIR}/ssh_host_ecdsa_key.pub" \
+    "${HOST_DIR}/ssh_host_rsa_key" "${HOST_DIR}/ssh_host_rsa_key.pub"
+chmod 700 "${HOST_DIR}"
+chmod 600 \
+    "${HOST_DIR}/ssh_host_ed25519_key" \
+    "${HOST_DIR}/ssh_host_ecdsa_key" \
+    "${HOST_DIR}/ssh_host_rsa_key"
+chmod 644 \
+    "${HOST_DIR}/ssh_host_ed25519_key.pub" \
+    "${HOST_DIR}/ssh_host_ecdsa_key.pub" \
+    "${HOST_DIR}/ssh_host_rsa_key.pub"
+
+chown hermes:hermes "${SSH_DIR}" "${AK}"
 chmod 700 "${SSH_DIR}"
 chmod 600 "${AK}"
 
-echo "[all-in-one] ${AK} ready for TAILSCALE_SSH=openssh" >&2
+echo "[all-in-one] ${AK} ready; host keys in ${HOST_DIR} (stable across redeploys)" >&2
