@@ -3,6 +3,7 @@
 # Tailscale userspace networking (no TUN / NET_ADMIN) for Railway and similar hosts.
 # Inbound: tailnet → Tailscale IP:$PORT forwards to localhost:$PORT (control plane).
 # Outbound to other tailnet nodes: optional TAILSCALE_OUTBOUND_PROXY (see cont-init 04).
+# Subnet routes from other nodes: optional TAILSCALE_ACCEPT_ROUTES (needs outbound proxy).
 #
 # SSH (TAILSCALE_SSH) — Railway uses userspace networking; Tailscale SSH (--ssh) often
 # accepts TCP :22 but never sends an SSH banner (client hangs after "Local version string").
@@ -29,6 +30,15 @@ case "${TAILSCALE_SSH:-openssh}" in
     1|true|TRUE|True|yes|YES|Yes|openssh|OPENSSH|Openssh) TS_SSH_MODE="openssh" ;;
 esac
 
+# Accept subnet routes advertised by other tailnet nodes (e.g. homelab LAN via a
+# subnet router). With userspace networking there is no kernel route table; the
+# SOCKS/HTTP proxy only dials those prefixes when RouteAll is enabled — pair with
+# TAILSCALE_OUTBOUND_PROXY=1 so Hermes traffic goes through localhost:1055.
+TS_ACCEPT_ROUTES=0
+case "${TAILSCALE_ACCEPT_ROUTES:-}" in
+    1|true|TRUE|True|yes|YES|Yes) TS_ACCEPT_ROUTES=1 ;;
+esac
+
 mkdir -p /run/tailscale "${TS_STATE_DIR}" "${TS_STATE_DIR}/profile"
 
 # Do not route tailscaled's own control-plane traffic through ALL_PROXY (set by
@@ -49,7 +59,7 @@ case "${TAILSCALE_MTU:-1200}" in
         ;;
 esac
 
-echo "[tailscaled] starting userspace tailscaled (state=${TS_STATE_DIR} ssh=${TS_SSH_MODE})" >&2
+echo "[tailscaled] starting userspace tailscaled (state=${TS_STATE_DIR} ssh=${TS_SSH_MODE} accept-routes=${TS_ACCEPT_ROUTES})" >&2
 
 tailscaled \
     --tun=userspace-networking \
@@ -61,18 +71,17 @@ tailscaled \
 TPID=$!
 
 _ts_up() {
-    if [ "${TS_SSH_MODE}" = "tailscale" ]; then
-        tailscale --socket="${TS_SOCKET}" up \
-            --auth-key="${TAILSCALE_AUTH_KEY}" \
-            --hostname="${TS_HOSTNAME}" \
-            --accept-dns=false \
-            --ssh
-    else
-        tailscale --socket="${TS_SOCKET}" up \
-            --auth-key="${TAILSCALE_AUTH_KEY}" \
-            --hostname="${TS_HOSTNAME}" \
-            --accept-dns=false
+    set -- \
+        --auth-key="${TAILSCALE_AUTH_KEY}" \
+        --hostname="${TS_HOSTNAME}" \
+        --accept-dns=false
+    if [ "${TS_ACCEPT_ROUTES}" = "1" ]; then
+        set -- "$@" --accept-routes
     fi
+    if [ "${TS_SSH_MODE}" = "tailscale" ]; then
+        set -- "$@" --ssh
+    fi
+    tailscale --socket="${TS_SOCKET}" up "$@"
 }
 
 while ! _ts_up; do

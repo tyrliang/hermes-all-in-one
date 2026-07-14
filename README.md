@@ -196,7 +196,8 @@ Railway blocks `NET_ADMIN` and `/dev/net/tun`, so this image uses Tailscale **us
    ```
 3. Disable the service’s **public** Railway URL if you want tailnet-only access (the Tailscale IP/MagicDNS name still works).
 4. Optional — outbound to other tailnet nodes (homelab DB, etc.): `TAILSCALE_OUTBOUND_PROXY=1` (sets `ALL_PROXY` with `NO_PROXY` for loopback and `*.railway.internal`).
-5. Optional — **shell over the tailnet** via `TAILSCALE_SSH` (see below). Disable with `TAILSCALE_SSH=0`.
+5. Optional — reach **subnet routes** advertised by another node (e.g. `192.168.88.0/24` via a subnet router): `TAILSCALE_ACCEPT_ROUTES=1` (also requires `TAILSCALE_OUTBOUND_PROXY=1`; userspace has no kernel routes — the SOCKS proxy dials accepted prefixes).
+6. Optional — **shell over the tailnet** via `TAILSCALE_SSH` (see below). Disable with `TAILSCALE_SSH=0`.
 
 **Tailscale shell access (`TAILSCALE_SSH`)**
 
@@ -276,6 +277,8 @@ State persists under `/opt/data/.tailscale` on the volume. Without `TAILSCALE_AU
 **Railway logs look scary but are often fine:** s6 (`s6-rc: info: …`), cont-init (`cont-init: info: … exited 0`), and Tailscale startup lines are written to **stderr**, so Railway tags them `severity: error` even when the message says `info` or `successfully started`. Uvicorn `INFO:` lines behave the same way. Filter for real failures: non-zero exits, crash loops, or HTTP 5xx — not every red line.
 
 With `TAILSCALE_OUTBOUND_PROXY=1`, expect one-time Tailscale noise at boot (`TPM`, UDP buffer size, `profile not found`, brief `connection refused` on `127.0.0.1:1055` before the userspace proxy is up). After `[tailscaled] joined tailnet` and `Switching ipn state … -> Running`, the node is healthy. Optional `TAILSCALE_NO_PROXY_EXTRA` adds comma-separated hosts to `NO_PROXY` for APIs that must not go through the tailnet proxy (public LLM endpoints, etc.).
+
+To reach LAN IPs behind a tailnet subnet router (not just `100.x` peers), set `TAILSCALE_ACCEPT_ROUTES=1` with `TAILSCALE_OUTBOUND_PROXY=1`. Approve the advertised routes in the Tailscale admin console (or ACL auto-approvers). Without accept-routes, the userspace SOCKS proxy will not dial those prefixes.
 
 **PMTU black hole (office network: small responses work, large pages hang)**
 
