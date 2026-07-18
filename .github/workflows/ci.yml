@@ -1,7 +1,7 @@
 name: ci
 
-# PR / branch CI: build verification + runtime smoke. Publishing is tag-gated in release.yml.
-
+# PR / branch CI: vendor-syntax + runtime smoke (required on main).
+# Publishing is tag-gated in release.yml (no second smoke there).
 # pull_request covers PR branches; push:main covers post-merge. Tags publish via release.yml.
 on:
   pull_request:
