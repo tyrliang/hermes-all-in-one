@@ -93,11 +93,25 @@ if [ "${TS_SSH_MODE}" = "tailscale" ]; then
 elif [ "${TS_SSH_MODE}" = "openssh" ]; then
     if command -v sshd >/dev/null 2>&1; then
         mkdir -p /run/sshd
-        ssh-keygen -A 2>/dev/null || true
+        # Host keys are created once under ${DATA_DIR}/.ssh/host by cont-init 06
+        # (volume-persisted). Do not run ssh-keygen -A — that regenerates ephemeral
+        # /etc/ssh keys and triggers "REMOTE HOST IDENTIFICATION HAS CHANGED".
+        HOST_DIR="${DATA_DIR}/.ssh/host"
+        if [ ! -f "${HOST_DIR}/ssh_host_ed25519_key" ]; then
+            echo "[tailscaled] warning: missing host keys in ${HOST_DIR}; generating now" >&2
+            mkdir -p "${HOST_DIR}"
+            ssh-keygen -t ed25519 -f "${HOST_DIR}/ssh_host_ed25519_key" -N "" -C "hermes-all-in-one" 2>/dev/null || true
+            ssh-keygen -t ecdsa -f "${HOST_DIR}/ssh_host_ecdsa_key" -N "" -C "hermes-all-in-one" 2>/dev/null || true
+            ssh-keygen -t rsa -b 4096 -f "${HOST_DIR}/ssh_host_rsa_key" -N "" -C "hermes-all-in-one" 2>/dev/null || true
+            chown root:root "${HOST_DIR}" "${HOST_DIR}"/ssh_host_*_key "${HOST_DIR}"/ssh_host_*_key.pub 2>/dev/null || true
+            chmod 700 "${HOST_DIR}"
+            chmod 600 "${HOST_DIR}"/ssh_host_*_key 2>/dev/null || true
+            chmod 644 "${HOST_DIR}"/ssh_host_*_key.pub 2>/dev/null || true
+        fi
         /usr/sbin/sshd -e 2>/dev/null &
         sleep 0.5
         if tailscale --socket="${TS_SOCKET}" serve --bg --tcp 22 127.0.0.1:22 2>/dev/null; then
-            echo "[tailscaled] openssh on 127.0.0.1:22 via tailscale serve (add keys to ${DATA_DIR}/.ssh/authorized_keys)" >&2
+            echo "[tailscaled] openssh on 127.0.0.1:22 via tailscale serve (keys=${DATA_DIR}/.ssh/authorized_keys hostkeys=${HOST_DIR})" >&2
         else
             echo "[tailscaled] warning: tailscale serve for SSH failed; check tailscale serve status" >&2
         fi
