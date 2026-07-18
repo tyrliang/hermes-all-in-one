@@ -12,6 +12,8 @@ from typing import Any
 
 from api.config import (
     CANCEL_FLAGS,
+    PENDING_GOAL_CONTINUATION,
+    STREAM_GOAL_RELATED,
     STREAMS,
     STREAMS_LOCK,
     STREAM_LAST_EVENT_ID,
@@ -20,13 +22,15 @@ from api.config import (
     STREAM_REASONING_TEXT,
     _get_session_agent_lock,
     coerce_reasoning_effort_for_model,
+    gateway_approval_unavailable_reason,
     gateway_supports_approval,
     register_active_run,
     unregister_active_run,
+    unregister_stream_owner,
     update_active_run,
 )
 from api.helpers import _redact_text, redact_session_data
-from api.models import get_session, merge_session_messages_append_only
+from api.models import clear_process_wakeup_pause, get_session, merge_session_messages_append_only
 from api.run_journal import RunJournalWriter
 
 logger = logging.getLogger(__name__)
@@ -39,6 +43,83 @@ _WEBUI_GATEWAY_BASE_URL_ENV = "HERMES_WEBUI_GATEWAY_BASE_URL"
 _WEBUI_GATEWAY_API_KEY_ENV = "HERMES_WEBUI_GATEWAY_API_KEY"
 _WEBUI_GATEWAY_USE_RUNS_API_ENV = "HERMES_WEBUI_GATEWAY_USE_RUNS_API"
 _GATEWAY_CHAT_BACKENDS = {"gateway", "api_server", "api-server"}
+
+# Total byte-silence budget (seconds) for the gateway SSE socket, applied via
+# ``urlopen(timeout=...)``. A stream that emits ANY byte within the window never
+# trips it, so a genuinely alive (if slow) token stream is untouched; only more
+# than this much *total* byte-silence is treated as a dead/stalled gateway.
+#
+# This is a TERMINAL budget, not a per-read grace: CPython's ``socket.makefile``
+# latches ``_timeout_occurred`` on the first ``socket.timeout``, after which every
+# further read raises a bare ``OSError`` — the connection cannot be resumed. So a
+# read timeout ends the turn (surfacing Stop if pressed). It replaces the old flat
+# 600s timeout, under which a half-open gateway (TCP open, zero bytes) pinned the
+# worker for the full 10 minutes and ignored Stop (cancel is only re-checked
+# between SSE lines). We KEEP the 600s default budget: there is no Gateway
+# protocol heartbeat guaranteeing sub-600s progress bytes, so a legitimately
+# long/fully-silent server-side tool call must not be terminated early — reducing
+# the default below 600s would kill currently-working turns (gate finding, #5789).
+# The win here is that a read timeout is now TERMINAL and Stop-honoring (the old
+# flat timeout ignored Stop on a half-open gateway); the budget itself stays 600s
+# for backward compatibility. Deployments that want a tighter dead-gateway cap can
+# lower ``HERMES_WEBUI_GATEWAY_READ_TIMEOUT``.
+_GATEWAY_READ_TIMEOUT_ENV = "HERMES_WEBUI_GATEWAY_READ_TIMEOUT"
+_GATEWAY_READ_TIMEOUT_DEFAULT = 600.0
+
+
+def _gateway_read_timeout_secs() -> float:
+    """Total byte-silence budget for gateway SSE reads (default 600s, env-tunable)."""
+    raw = os.environ.get(_GATEWAY_READ_TIMEOUT_ENV)
+    if raw:
+        try:
+            val = float(raw)
+            if val > 0:
+                return val
+        except (TypeError, ValueError):
+            pass
+    return _GATEWAY_READ_TIMEOUT_DEFAULT
+
+
+def _iter_sse_lines_cancellable(resp, cancel_event):
+    """Yield raw SSE lines from ``resp``, unblocking cleanly on a read timeout.
+
+    ``resp``'s socket carries a read timeout (``urlopen(timeout=...)``). A read
+    that blocks past it raises ``socket.timeout``, and that timeout is TERMINAL:
+    CPython's ``socket.makefile`` latches ``_timeout_occurred`` on the first
+    timeout, so every subsequent read raises a bare ``OSError`` ("cannot read
+    from timed out object") — there is no multi-read grace to reclaim. So on a
+    read timeout (or the poisoned-socket ``OSError``/any read error) this either
+    surfaces the user's Stop or tears the stalled turn down:
+
+      - cancel set -> yield ``b""`` (the caller's ``if cancel_event.is_set()``
+        branch emits its cancel event), then stop. This is why the old flat 600s
+        pin — where a stalled gateway ignored Stop until it eventually errored —
+        is gone: Stop is honored within one timeout window.
+      - otherwise -> re-raise, so the caller's error handling reports the stall.
+
+    A stream that keeps emitting bytes within the timeout window never trips it,
+    so a genuinely alive (if slow) token stream is untouched. Emitting ``b""`` is
+    safe: the SSE loops decode it to an empty line and ``continue`` (same as a
+    real blank line).
+
+    Iterates ``resp`` via the iterator protocol so a real ``HTTPResponse`` and the
+    test fakes (which implement ``__iter__``) behave identically.
+    """
+    resp_iter = iter(resp)
+    while True:
+        try:
+            raw_line = next(resp_iter)
+        except StopIteration:
+            return  # EOF
+        except OSError:
+            # socket.timeout / TimeoutError are OSError subclasses, as is the
+            # post-timeout poisoned-socket "cannot read" error. All are terminal
+            # for this connection.
+            if cancel_event.is_set():
+                yield b""  # let the caller emit its cancel event
+                return
+            raise
+        yield raw_line
 
 
 def webui_chat_backend_mode(config_data=None, environ: dict[str, str] | None = None) -> str:
@@ -299,6 +380,8 @@ def _run_gateway_runs_api_streaming(
         except Exception:
             logger.debug("Failed to build runs-API multimodal attachment payload", exc_info=True)
             message_content = str(msg_text or "")
+    from api.streaming import _strip_oob_blocks
+
     instructions_parts = []
     conversation_history = []
     for entry in getattr(session, "context_messages", None) or []:
@@ -309,6 +392,7 @@ def _run_gateway_runs_api_streaming(
             continue
         content = entry.get("content")
         if content is not None:
+            content = _strip_oob_blocks(content)
             conversation_history.append({"role": role, "content": content})
     for entry in prefill_messages or []:
         if not isinstance(entry, dict):
@@ -323,6 +407,8 @@ def _run_gateway_runs_api_streaming(
             continue
         if role not in {"user", "assistant"}:
             continue
+        if content is not None:
+            content = _strip_oob_blocks(content)
         conversation_history.append({"role": role, "content": content})
     run_input = message_content
     if isinstance(run_input, list):
@@ -359,8 +445,8 @@ def _run_gateway_runs_api_streaming(
     final_text = ""
     usage: dict = {}
     sse_event = "message"
-    with urllib.request.urlopen(req_events, timeout=600) as resp:
-        for raw_line in resp:
+    with urllib.request.urlopen(req_events, timeout=_gateway_read_timeout_secs()) as resp:
+        for raw_line in _iter_sse_lines_cancellable(resp, cancel_event):
             if cancel_event.is_set():
                 put_gateway_event("cancel", {"message": "Cancelled by user"})
                 return None, usage
@@ -472,6 +558,21 @@ def _clear_gateway_pending_state(session: Any, stream_id: str) -> None:
     session.save()
 
 
+def _cleanup_gateway_pending_mirror(session_id: str) -> None:
+    try:
+        from api.route_approvals import (
+            _approval_sse_notify_locked,
+            _lock as _approval_lock,
+            reconcile_gateway_pending_mirror_locked,
+        )
+
+        with _approval_lock:
+            head, total, _ = reconcile_gateway_pending_mirror_locked(session_id)
+            _approval_sse_notify_locked(session_id, head, total)
+    except Exception:
+        logger.debug("Failed to reconcile gateway pending mirror during teardown", exc_info=True)
+
+
 def _run_gateway_chat_streaming(
     session_id,
     msg_text,
@@ -481,6 +582,7 @@ def _run_gateway_chat_streaming(
     attachments=None,
     *,
     model_provider=None,
+    goal_related=False,
 ):
     """Bridge a WebUI chat turn through Hermes Gateway's API server.
 
@@ -492,6 +594,9 @@ def _run_gateway_chat_streaming(
     """
     q = STREAMS.get(stream_id)
     if q is None:
+        # Cancelled before the worker started; release the owner entry the route
+        # layer registered so STREAM_SESSION_OWNERS does not leak (no teardown finally runs).
+        unregister_stream_owner(stream_id)
         return
     register_active_run(
         stream_id,
@@ -515,8 +620,10 @@ def _run_gateway_chat_streaming(
         STREAM_REASONING_TEXT[stream_id] = ""
         STREAM_LIVE_TOOL_CALLS[stream_id] = []
 
+    success_writeback_committed = False
+
     def put_gateway_event(event, data):
-        if cancel_event.is_set() and event not in ("cancel", "error", "apperror"):
+        if cancel_event.is_set() and not success_writeback_committed and event not in ("cancel", "error", "apperror"):
             return
         event_id = None
         if run_journal is not None:
@@ -633,13 +740,19 @@ def _run_gateway_chat_streaming(
         else:
             # Legacy gateway path: emit unsupported approval notice once per session,
             # but only when the gateway genuinely lacks approval capability.
-            if not gateway_supports_approval(base_url, api_key):
+            approval_reason = gateway_approval_unavailable_reason(base_url, api_key)
+            if approval_reason is not None:
                 if not hasattr(s, "_approval_notice_emitted"):
                     s._approval_notice_emitted = False
                 if not s._approval_notice_emitted:
+                    approval_message = "Approvals require a newer gateway. Upgrade the connected Hermes gateway to enable this."
+                    approval_type = "approval_gateway_unsupported"
+                    if approval_reason == "unreachable":
+                        approval_type = "approval_gateway_offline"
+                        approval_message = "Gateway connection failed. Check that the connected Hermes gateway is running and reachable."
                     put_gateway_event("warning", {
-                        "type": "approval_gateway_unsupported",
-                        "message": "Approvals require a newer gateway. Upgrade the connected Hermes gateway to enable this.",
+                        "type": approval_type,
+                        "message": approval_message,
                     })
                     s._approval_notice_emitted = True
 
@@ -683,8 +796,8 @@ def _run_gateway_chat_streaming(
             update_active_run(stream_id, phase="gateway-request")
             last_payload = {}
             sse_event = "message"
-            with urllib.request.urlopen(req, timeout=600) as resp:
-                for raw_line in resp:
+            with urllib.request.urlopen(req, timeout=_gateway_read_timeout_secs()) as resp:
+                for raw_line in _iter_sse_lines_cancellable(resp, cancel_event):
                     if cancel_event.is_set():
                         put_gateway_event("cancel", {"message": "Cancelled by user"})
                         return
@@ -792,6 +905,12 @@ def _run_gateway_chat_streaming(
             s = get_session(session_id)
             if not _stream_writeback_is_current(s, stream_id):
                 return
+            # A late Stop can land after Gateway has yielded a full answer but
+            # before success writeback. Treat it as cancellation so any
+            # credential-exhausted process-wakeup pause stays in place.
+            if cancel_event.is_set():
+                put_gateway_event("cancel", {"message": "Cancelled by user"})
+                return
             now = time.time()
             # Preserve subsecond ordering for gateway-backed turns. Using an
             # integer seconds timestamp gives the user and assistant rows the
@@ -808,7 +927,22 @@ def _run_gateway_chat_streaming(
             saved_reasoning = STREAM_REASONING_TEXT.get(stream_id, "")
             if saved_reasoning:
                 assistant_msg["reasoning"] = saved_reasoning
+            previous_messages = list(getattr(s, "messages", None) or [])
             previous_context = list(getattr(s, "context_messages", None) or getattr(s, "messages", None) or [])
+            previous_process_wakeup_pause = dict(getattr(s, "process_wakeup_pause", {}) or {})
+            # Stamp stable ids on the two new rows (shared with the display merge
+            # below) so display and model-context copies share an id for the
+            # fork/truncate aligner (#context-message-stable-id).
+            try:
+                from api.streaming import _assign_stable_message_ids
+
+                _assign_stable_message_ids(
+                    [user_msg, assistant_msg],
+                    previous_context,
+                    list(getattr(s, "messages", None) or []),
+                )
+            except Exception:
+                logger.debug("Failed to stamp stable ids on gateway turn rows", exc_info=True)
             s.context_messages = previous_context + [user_msg, assistant_msg]
             try:
                 from api.streaming import _is_context_compression_marker
@@ -822,7 +956,7 @@ def _run_gateway_chat_streaming(
                 logger.debug("Failed to filter gateway display context markers", exc_info=True)
                 display_context = previous_context
             display = merge_session_messages_append_only(
-                list(getattr(s, "messages", None) or []),
+                previous_messages,
                 display_context,
             )
             try:
@@ -854,7 +988,82 @@ def _run_gateway_chat_streaming(
             s.workspace = str(workspace)
             s.model = model
             s.model_provider = model_provider
+
+            def _restore_cancelled_success_writeback():
+                if pending_source == "process_wakeup":
+                    s.context_messages = previous_context
+                    s.messages = previous_messages
+                    s.process_wakeup_pause = dict(previous_process_wakeup_pause)
+                elif previous_process_wakeup_pause:
+                    s.process_wakeup_pause = dict(previous_process_wakeup_pause)
+                else:
+                    clear_process_wakeup_pause(s, reason="run_completed")
+                s.save()
+                put_gateway_event("cancel", {"message": "Cancelled by user"})
+
+            # Recheck immediately before clearing the pause; Stop can arrive
+            # while the success transcript is being assembled.
+            if cancel_event.is_set():
+                _restore_cancelled_success_writeback()
+                return
+            clear_process_wakeup_pause(s, reason="run_completed")
+            if cancel_event.is_set():
+                _restore_cancelled_success_writeback()
+                return
             s.save()
+            if cancel_event.is_set():
+                _restore_cancelled_success_writeback()
+                return
+            success_writeback_committed = True
+        try:
+            from api.goals import evaluate_goal_after_turn, has_active_goal
+            from api.profiles import get_hermes_home_for_profile
+
+            profile_home = get_hermes_home_for_profile(getattr(s, "profile", None))
+            if goal_related and has_active_goal(session_id, profile_home=profile_home):
+                put_gateway_event("goal", {
+                    "session_id": session_id,
+                    "state": "evaluating",
+                    "message": "Evaluating goal progress…",
+                    "message_key": "goal_evaluating_progress",
+                })
+                decision = evaluate_goal_after_turn(
+                    session_id,
+                    assistant_text,
+                    user_initiated=True,
+                    profile_home=profile_home,
+                ) or {}
+                goal_message = str(decision.get("message") or "").strip()
+                if goal_message:
+                    put_gateway_event("goal", {
+                        "session_id": session_id,
+                        "state": "continuing" if decision.get("should_continue") else "idle",
+                        "message": goal_message,
+                        "message_key": decision.get("message_key") or (
+                            "goal_continuing" if goal_message else ""
+                        ),
+                        "message_args": decision.get("message_args") or [],
+                        "decision": decision,
+                    })
+                if decision.get("should_continue"):
+                    continuation_prompt = str(decision.get("continuation_prompt") or "").strip()
+                    if continuation_prompt:
+                        PENDING_GOAL_CONTINUATION.add(session_id)
+                        put_gateway_event("goal_continue", {
+                            "session_id": session_id,
+                            "continuation_prompt": continuation_prompt,
+                            "text": continuation_prompt,
+                            "message": goal_message,
+                            "message_key": decision.get("message_key") or "goal_continuing",
+                            "message_args": decision.get("message_args") or [],
+                            "decision": decision,
+                        })
+        except Exception as goal_exc:
+            logger.debug(
+                "Gateway goal continuation hook failed for session %s: %s",
+                session_id,
+                goal_exc,
+            )
         from api.streaming import _session_payload_with_full_messages
         gateway_session_payload = _session_payload_with_full_messages(s, tool_calls=[])
         put_gateway_event("done", {"session": redact_session_data(gateway_session_payload), "usage": usage})
@@ -883,8 +1092,10 @@ def _run_gateway_chat_streaming(
                     _clear_gateway_pending_state(get_session(session_id), stream_id)
             except Exception:
                 logger.debug("Failed to clear gateway stream state", exc_info=True)
+            _cleanup_gateway_pending_mirror(session_id)
         with STREAMS_LOCK:
             CANCEL_FLAGS.pop(stream_id, None)
+            STREAM_GOAL_RELATED.pop(stream_id, None)
             STREAM_PARTIAL_TEXT.pop(stream_id, None)
             STREAM_REASONING_TEXT.pop(stream_id, None)
             STREAM_LIVE_TOOL_CALLS.pop(stream_id, None)
