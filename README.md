@@ -873,7 +873,7 @@ Pushing to `main` alone does **not** publish an image — only a matching **`v*.
 | Workflow | When | What |
 |----------|------|------|
 | [`ci.yml`](.github/workflows/ci.yml) | PR + branch push | `./scripts/smoke.sh` |
-| [`release.yml`](.github/workflows/release.yml) | Tag push `v*.*.*` | Smoke → multi-arch build → GHCR `vX.Y.Z` + `latest` → GitHub Release |
+| [`release.yml`](.github/workflows/release.yml) | Tag push `v*.*.*` | Tag↔VERSION preflight → multi-arch build → GHCR `vX.Y.Z` + `latest` → GitHub Release (smoke stays in `ci.yml`) |
 | [`check-upstream.yml`](.github/workflows/check-upstream.yml) | Daily | Opens a PR when Docker Hub has a newer Hermes tag than `hermes-base` |
 | [`sync-upstreams.yml`](.github/workflows/sync-upstreams.yml) | Daily | Subtree sync for `vendor/` |
 

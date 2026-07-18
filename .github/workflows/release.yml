@@ -1,6 +1,9 @@
 name: release
 
-# Publish multi-arch GHCR image on version tag (v0.x.z). Bump VERSION, merge, then: git tag vX.Y.Z && git push origin vX.Y.Z
+# Publish multi-arch GHCR image on version tag (v0.x.z).
+# Runtime smoke lives in ci.yml (required on PRs + main). Release only
+# re-checks tag↔VERSION, then builds — no second ~2–3 min smoke.
+# Bump VERSION, merge, then: git tag vX.Y.Z && git push origin vX.Y.Z
 
 on:
   push:
@@ -17,10 +20,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  smoke:
-    name: smoke
+  # Cheap gate only — full smoke already ran under branch protection on the
+  # PR/main commit that the tag points at (required checks: vendor syntax, smoke).
+  preflight:
+    name: preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     permissions:
       contents: read
     steps:
@@ -36,12 +41,9 @@ jobs:
             exit 1
           fi
 
-      - name: Runtime smoke (build + health + admin + restart)
-        run: ./scripts/smoke.sh
-
   build-amd64:
     name: build (linux/amd64)
-    needs: [smoke]
+    needs: [preflight]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -81,7 +83,7 @@ jobs:
 
   build-arm64:
     name: build (linux/arm64)
-    needs: [smoke]
+    needs: [preflight]
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read

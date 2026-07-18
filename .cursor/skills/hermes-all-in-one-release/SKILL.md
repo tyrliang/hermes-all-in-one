@@ -142,7 +142,7 @@ When the user asks to release:
 2. Run the matching bump script; do not hand-edit `VERSION` unless `set-version.sh` is needed.
 3. Run `./scripts/smoke.sh` before tagging. Fix failures before proceeding.
 4. Ensure git tag matches line 1 of `VERSION` (with `v` prefix).
-5. Push tag to trigger `release.yml` (smoke → amd64/arm64 build → GHCR → GitHub Release).
+5. Push tag to trigger `release.yml` (tag↔VERSION preflight → amd64/arm64 build → GHCR → GitHub Release). Runtime smoke already ran on the PR via `ci.yml`.
 
 **Do not** push to GHCR manually; tag push handles it.
 
@@ -155,8 +155,8 @@ When the user asks to release:
 
 | File | Trigger | Role |
 |------|---------|------|
-| `.github/workflows/ci.yml` | PR / branch push | Smoke only |
-| `.github/workflows/release.yml` | Tag `v*.*.*` | Build, GHCR, GitHub Release |
+| `.github/workflows/ci.yml` | PR / branch push | vendor-syntax + smoke (required on main) |
+| `.github/workflows/release.yml` | Tag `v*.*.*` | Tag↔VERSION preflight, multi-arch build, GHCR, GitHub Release |
 | `.github/workflows/check-upstream.yml` | Daily 04:00 UTC | Open Hermes bump PR |
 | `.github/workflows/sync-upstreams.yml` | Daily 03:00 UTC | Vendor subtree sync |
 
