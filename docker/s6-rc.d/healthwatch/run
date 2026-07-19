@@ -1,0 +1,80 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Self-heal watchdog for the tailscaled/gateway crash-loop failure mode.
+#
+# Why this exists: Railway's own recovery mechanisms do NOT catch this class
+# of failure.
+#   - healthcheckPath (railway.toml) is deploy-time only — Railway stops
+#     polling it once a deployment goes live, so it can never trigger a
+#     restart of an already-running container.
+#   - restartPolicyType=ON_FAILURE only fires when the container's PID 1
+#     exits non-zero. s6-overlay's PID 1 stays alive indefinitely even while
+#     it endlessly respawns a wedged sub-service (observed: tailscaled loses
+#     its tailnet session, gateway-default/dashboard get SIGKILLed by their
+#     own finish-script timeout and restart every few minutes, for 90+
+#     minutes straight) — so ON_FAILURE never sees a reason to act.
+#
+# This watches the control-plane's own /health JSON (already tracks real
+# webui/gateway readiness — see control_plane/server.py) and, once the app
+# has been continuously degraded for HEALTHWATCH_GRACE_SECONDS, deliberately
+# terminates the container with a non-zero exit code so Railway's
+# restartPolicyType=ON_FAILURE redeploys it — turning a silent, hours-long
+# internal crash loop into an automatic restart within minutes.
+#
+# Two things NOT to do here, verified empirically against this image:
+#   - `kill -KILL 1` is a no-op: per `man 7 pid_namespaces`, a PID-namespace
+#     init process is immune to any signal it hasn't installed a handler
+#     for, INCLUDING SIGKILL. The container keeps running.
+#   - Plain SIGTERM to PID 1 DOES shut the container down (s6-overlay traps
+#     it for graceful shutdown), but reports exit code 0 — ON_FAILURE would
+#     never restart that.
+#   The correct s6-overlay v3 mechanism: write the desired exit code to
+#   /run/s6-linux-init-container-results/exitcode, then run
+#   /run/s6/basedir/bin/halt for a graceful shutdown that still reports the
+#   requested non-zero code.
+#
+# HEALTHWATCH_ENABLED=0 disables this service (holds the dependency slot
+# open without probing, same pattern as tailscaled/run).
+
+case "${HEALTHWATCH_ENABLED:-1}" in
+    0|false|FALSE|off|OFF|no|NO) exec sleep infinity ;;
+esac
+
+GRACE="${HEALTHWATCH_GRACE_SECONDS:-480}"
+INTERVAL="${HEALTHWATCH_INTERVAL_SECONDS:-20}"
+PORT="${PORT:-8787}"
+HEALTH_URL="http://127.0.0.1:${PORT}/health"
+
+echo "[healthwatch] watching ${HEALTH_URL} (grace=${GRACE}s interval=${INTERVAL}s)" >&2
+
+unhealthy_since=""
+
+while true; do
+    sleep "${INTERVAL}"
+
+    if body="$(curl -fsS --max-time 5 "${HEALTH_URL}" 2>/dev/null)" \
+        && case "${body}" in *'"status": "ok"'*|*'"status":"ok"'*) true ;; *) false ;; esac; then
+        if [ -n "${unhealthy_since}" ]; then
+            echo "[healthwatch] recovered" >&2
+        fi
+        unhealthy_since=""
+        continue
+    fi
+
+    now=$(date +%s)
+    if [ -z "${unhealthy_since}" ]; then
+        unhealthy_since="${now}"
+        echo "[healthwatch] degraded (unreachable or status != ok)" >&2
+        continue
+    fi
+
+    elapsed=$((now - unhealthy_since))
+    echo "[healthwatch] still degraded after ${elapsed}s (restarting at ${GRACE}s)" >&2
+
+    if [ "${elapsed}" -ge "${GRACE}" ]; then
+        echo "[healthwatch] degraded for ${elapsed}s >= ${GRACE}s grace; forcing container restart (exit 1 via s6-overlay halt)" >&2
+        echo 1 > /run/s6-linux-init-container-results/exitcode 2>/dev/null || true
+        /run/s6/basedir/bin/halt 2>/dev/null || kill -TERM 1 2>/dev/null || true
+        sleep 30
+    fi
+done
