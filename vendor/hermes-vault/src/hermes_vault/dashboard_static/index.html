@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hermes Vault Console</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="intro" class="intro" aria-hidden="true">
+      <div class="vault-scene">
+        <img class="vault-brand-image" src="/assets/hermes-vault-promo-image.png" alt="" />
+        <div class="vault-halo"></div>
+        <div class="vault-door">
+          <div class="vault-ring"></div>
+          <div class="vault-spokes"></div>
+          <div class="vault-mark">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <!-- Stylized Winged Foot -->
+              <path d="M19 13.5c0 3.58-2.92 6.5-6.5 6.5S6 17.08 6 13.5s2.92-6.5 6.5-6.5 6.5 2.92 6.5 6.5z" stroke-opacity="0.2"/>
+              <path d="M12.5 16.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" fill="currentColor"/>
+              <path d="M10 11.5c-2.5 0-5.5 1.5-6 4M8 9.5C5.5 9.5 3 11 2.5 13M6.5 7.5C4 7.5 2 9 1.5 10.5" stroke-linecap="round"/>
+              <path d="M11 13c1.5-1.5 3.5-1.5 5 0M10.5 14.5c1.2-1.2 2.8-1.2 4 0" stroke-linecap="round"/>
+            </svg>
+          </div>
+        </div>
+      </div>
+      <div class="intro-copy">
+        <p>Hermes Vault Console</p>
+        <strong>Hermes Vault</strong>
+        <span>Local credential control plane</span>
+        <div class="intro-terminal">
+          <div class="terminal-line">[INIT] RESOLVING LOCAL KEY MATERIAL... <span class="status-ok">OK</span></div>
+          <div class="terminal-line">[AUTH] VALIDATING PROFILE CONFIGURATION... <span class="status-ok">OK</span></div>
+          <div class="terminal-line">[OPEN] DECRYPTING ENVELOPE METADATA... <span class="status-success">SUCCESS</span></div>
+        </div>
+      </div>
+    </div>
+
+    <main class="shell" aria-live="polite">
+      <aside class="rail">
+        <div class="brand">
+          <div class="brand-mark">HV</div>
+          <div>
+            <div class="brand-title">Hermes Vault</div>
+            <div class="brand-subtitle">Console</div>
+          </div>
+        </div>
+        <nav class="nav" aria-label="Console views">
+          <div class="nav-indicator" id="nav-indicator"></div>
+          <button class="nav-item active" data-view="overview">Overview</button>
+          <button class="nav-item" data-view="onboarding">Onboarding</button>
+          <button class="nav-item" data-view="credentials">Credentials</button>
+          <button class="nav-item" data-view="policy">Policy</button>
+          <button class="nav-item" data-view="command">Command Center</button>
+          <button class="nav-item" data-view="leases">Leases</button>
+          <button class="nav-item" data-view="audit">Audit</button>
+          <button class="nav-item" data-view="operations">Operations</button>
+        </nav>
+        <div class="rail-status">
+          <span class="pulse"></span>
+          <span id="connection">Local session</span>
+        </div>
+      </aside>
+
+      <section class="workspace">
+        <div class="brand-atmosphere" aria-hidden="true"></div>
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Local Credential Control Plane</p>
+            <h1 id="view-title">Overview</h1>
+          </div>
+          <div class="topbar-actions">
+            <div id="profile-badge" class="profile-badge">Profile: default</div>
+            <button id="refresh" class="primary-button" type="button">
+              <span class="button-label">Refresh</span>
+            </button>
+          </div>
+        </header>
+        <section id="key-warning" class="key-warning" hidden>
+          <strong>Vault key status</strong>
+          <p>Hermes Vault is checking local key material.</p>
+        </section>
+
+        <section id="overview" class="view active">
+          <div class="metric-grid">
+            <article class="metric"><span>Credentials</span><strong id="metric-credentials">0</strong></article>
+            <article class="metric"><span>Services</span><strong id="metric-services">0</strong></article>
+            <article class="metric"><span>Health Findings</span><strong id="metric-health">0</strong></article>
+            <article class="metric"><span>Policy Findings</span><strong id="metric-policy">0</strong></article>
+            <article class="metric"><span>Leases</span><strong id="metric-leases">0</strong></article>
+          </div>
+          <div class="two-col">
+            <section class="panel">
+              <div class="panel-head"><h2>Vault Health</h2><button class="ghost-button" type="button" data-action="health">Run</button></div>
+              <div id="health-summary" class="stack"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head"><h2>MCP Binding</h2></div>
+              <div id="mcp-summary" class="stack"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="onboarding" class="view">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Onboarding Preview</h2>
+              <button class="primary-button" type="button" data-action="onboarding-preview">Preview</button>
+            </div>
+            <div class="form-grid">
+              <label>
+                <span>.env path</span>
+                <input id="onboarding-env-path" placeholder="/path/to/.env" />
+              </label>
+              <label>
+                <span>Agent</span>
+                <input id="onboarding-agent" value="hermes" />
+              </label>
+              <label class="wide">
+                <span>Mappings</span>
+                <input id="onboarding-map" placeholder="CUSTOM_TOKEN=custom:api_key, DATABASE_URL=postgres:connection_url" />
+              </label>
+            </div>
+            <div id="onboarding-summary" class="summary-grid"></div>
+          </section>
+        </section>
+
+        <section id="credentials" class="view">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Credential Inventory</h2>
+              <button class="ghost-button" type="button" data-action="verify-all" data-secret-action="true">Verify All</button>
+            </div>
+            <div class="filter-bar">
+              <input id="credential-filter" data-filter="credentials" placeholder="Filter service, alias, type, tag, note, status" />
+              <select id="credential-status-filter" data-filter="credentialStatus" aria-label="Credential status">
+                <option value="">Any status</option>
+                <option value="active">Active</option>
+                <option value="invalid">Invalid</option>
+                <option value="expired">Expired</option>
+                <option value="unknown">Unknown</option>
+              </select>
+              <select id="credential-sort" data-filter="credentialSort" aria-label="Credential sort">
+                <option value="service">Service</option>
+                <option value="status">Status</option>
+                <option value="last_verified_at">Last verified</option>
+                <option value="expiry">Expiry</option>
+              </select>
+            </div>
+            <div id="credential-table" class="table"></div>
+          </section>
+        </section>
+
+        <section id="policy" class="view">
+          <div class="two-col">
+            <section class="panel">
+              <div class="panel-head"><h2>Policy Doctor</h2><button class="ghost-button" type="button" data-action="policy_doctor">Run</button></div>
+              <div id="policy-findings" class="stack"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head"><h2>Agents</h2></div>
+              <div id="agent-list" class="stack"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="command" class="view">
+          <div class="command-grid">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Agent Context</h2>
+                <button class="ghost-button" type="button" data-action="agent-context">Load</button>
+              </div>
+              <div class="form-grid compact-form">
+                <label>
+                  <span>Agent</span>
+                  <input id="agent-context-agent" value="hermes" />
+                </label>
+              </div>
+              <div id="agent-context-summary" class="summary-grid compact"></div>
+              <div id="agent-context-services" class="stack command-stack"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Policy Explain</h2>
+                <button class="ghost-button" type="button" data-action="policy-explain">Run</button>
+              </div>
+              <div class="form-grid command-form">
+                <label>
+                  <span>Agent</span>
+                  <input id="policy-explain-agent" value="hermes" />
+                </label>
+                <label>
+                  <span>Service</span>
+                  <input id="policy-explain-service" placeholder="openai" />
+                </label>
+                <label>
+                  <span>Action</span>
+                  <select id="policy-explain-action">
+                    <option value="get_env">Get Env</option>
+                    <option value="metadata">Metadata</option>
+                    <option value="verify">Verify</option>
+                    <option value="issue_lease">Issue Lease</option>
+                    <option value="list_leases">List Leases</option>
+                    <option value="show_lease">Show Lease</option>
+                  </select>
+                </label>
+                <label>
+                  <span>TTL</span>
+                  <input id="policy-explain-ttl" inputmode="numeric" placeholder="900" />
+                </label>
+              </div>
+              <div id="policy-explain-summary" class="summary-grid compact"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Access Request</h2>
+                <button class="primary-button" type="button" data-action="request-access">Request</button>
+              </div>
+              <div class="form-grid command-form">
+                <label>
+                  <span>Agent</span>
+                  <input id="request-agent" value="hermes" />
+                </label>
+                <label>
+                  <span>Service</span>
+                  <input id="request-service" placeholder="openai" />
+                </label>
+                <label>
+                  <span>Alias</span>
+                  <input id="request-alias" value="default" />
+                </label>
+                <label>
+                  <span>TTL</span>
+                  <input id="request-ttl" inputmode="numeric" placeholder="900" />
+                </label>
+                <label class="wide">
+                  <span>Purpose</span>
+                  <input id="request-purpose" placeholder="deployment check, test run, incident response" />
+                </label>
+              </div>
+            </section>
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Approval Inbox</h2>
+                <button class="ghost-button" type="button" data-action="requests-refresh">Refresh</button>
+              </div>
+              <div id="request-inbox" class="table request-table"></div>
+            </section>
+            <section class="panel command-wide">
+              <div class="panel-head">
+                <h2>Recovery Drill</h2>
+                <button class="primary-button" type="button" data-action="recovery-drill" data-secret-action="true">Run Drill</button>
+              </div>
+              <div class="form-grid compact-form">
+                <label>
+                  <span>Backup Path</span>
+                  <input id="recovery-drill-path" placeholder="/path/to/vault-backup.json" />
+                </label>
+              </div>
+              <div id="recovery-drill-summary" class="summary-grid compact"></div>
+            </section>
+          </div>
+          <section class="panel output-panel">
+            <div class="panel-head"><h2>Command Output</h2></div>
+            <pre id="command-output">No command has run yet.</pre>
+          </section>
+        </section>
+
+        <section id="leases" class="view">
+          <section class="panel">
+            <div class="panel-head"><h2>Lease Inventory</h2></div>
+            <div class="filter-bar">
+              <input id="lease-filter" data-filter="leases" placeholder="Filter service, alias, agent, purpose, reason" />
+              <select id="lease-status-filter" data-filter="leaseStatus" aria-label="Lease status">
+                <option value="">Any status</option>
+                <option value="active">Active</option>
+                <option value="expired">Expired</option>
+                <option value="revoked">Revoked</option>
+              </select>
+              <select id="lease-sort" data-filter="leaseSort" aria-label="Lease sort">
+                <option value="expires_at">Expiry</option>
+                <option value="service">Service</option>
+                <option value="agent_id">Agent</option>
+                <option value="status">Status</option>
+              </select>
+            </div>
+            <div id="lease-table" class="table"></div>
+          </section>
+        </section>
+
+        <section id="audit" class="view">
+          <section class="panel">
+            <div class="panel-head"><h2>Audit Timeline</h2></div>
+            <div class="filter-bar">
+              <input id="audit-filter" data-filter="audit" placeholder="Filter time, agent, action, service, decision, reason" />
+              <select id="audit-sort" data-filter="auditSort" aria-label="Audit sort">
+                <option value="timestamp">Time</option>
+                <option value="agent_id">Agent</option>
+                <option value="action">Action</option>
+                <option value="service">Service</option>
+                <option value="decision">Decision</option>
+              </select>
+            </div>
+            <div id="audit-table" class="table"></div>
+          </section>
+        </section>
+
+        <section id="operations" class="view">
+          <div class="ops-grid">
+            <section class="panel">
+              <h2>Maintenance</h2>
+              <p class="panel-note">Dashboard maintenance is dry-run-only. Use the CLI for live maintenance.</p>
+              <div class="button-row">
+                <button class="primary-button" type="button" data-action="maintenance-dry" data-secret-action="true">Run Dry-Run</button>
+              </div>
+            </section>
+            <section class="panel">
+              <h2>OAuth Refresh</h2>
+              <p class="panel-note">OAuth refresh is dry-run-only from the dashboard. Use the CLI for live refresh.</p>
+              <div class="form-row">
+                <input id="oauth-service" placeholder="service, e.g. google" />
+                <input id="oauth-alias" placeholder="alias" value="default" />
+              </div>
+              <div class="button-row">
+                <button class="primary-button" type="button" data-action="oauth-refresh-dry" data-secret-action="true">Dry Run</button>
+              </div>
+            </section>
+            <section class="panel">
+              <h2>Recovery Hub</h2>
+              <input id="backup-path" placeholder="/path/to/vault-backup.json" />
+              <div class="button-row">
+                <button class="primary-button" type="button" data-action="backup-verify" data-secret-action="true">Verify Backup</button>
+                <button class="ghost-button" type="button" data-action="restore-dry-run" data-secret-action="true">Restore Dry-Run</button>
+                <button class="ghost-button" type="button" data-action="backup-diff" data-secret-action="true">Diff</button>
+              </div>
+              <div id="recovery-summary" class="summary-grid compact"></div>
+            </section>
+          </div>
+          <section class="panel output-panel">
+            <div class="panel-head"><h2>Action Output</h2></div>
+            <pre id="action-output">No action has run yet.</pre>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
