@@ -19,7 +19,8 @@ concurrency:
 jobs:
   # Fast gate: catch unresolved conflict markers and unparseable vendored
   # Python in seconds, instead of as a 60s health-timeout in the smoke build.
-  # The vendored webui ships in the image and crash-loops if it won't import.
+  # The vendored webui and vault plugin ship in the image and crash-loop if
+  # they won't import.
   vendor-syntax:
     name: vendor syntax
     runs-on: ubuntu-latest
@@ -40,8 +41,8 @@ jobs:
             exit 1
           fi
 
-      - name: Byte-compile vendored webui
-        run: python -m compileall -q vendor/hermes-webui
+      - name: Byte-compile vendored webui and vault
+        run: python -m compileall -q vendor/hermes-webui vendor/hermes-vault
 
   smoke:
     name: smoke
