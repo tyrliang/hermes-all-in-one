@@ -807,38 +807,46 @@ Keep `HERMES_GATEWAY_AUTOSTART=off`, deploy once, and use the WebUI exclusively 
 
 ## Releases & versioning
 
-This repo uses **two version fields**: your all-in-one release semver (`x.y.z`) and the upstream Hermes Agent Docker tag baked into the image.
+This repo uses **two version fields**: your all-in-one release semver (`x.y.z`) and the upstream base tags baked into the image.
 
 ### `VERSION` file
 
 ```text
-0.3.9
-hermes-base=v2026.6.5
+0.7.2
+hermes-base=v2026.7.7.2
+agent-base=v2026.7.7.2
+webui-base=v0.52.41
+vault-base=v0.21.0
 ```
 
 | Line | Field | Meaning |
 |------|--------|---------|
-| 1 | Package semver | GHCR + git tag: `v0.3.9` |
+| 1 | Package semver | GHCR + git tag: `v0.7.2` |
 | 2 | `hermes-base` | Pinned `nousresearch/hermes-agent` tag in the Dockerfile |
+| 3 | `agent-base` | Pinned upstream tag for the vendored `vendor/hermes-agent` subtree |
+| 4 | `webui-base` | Pinned upstream tag for the vendored `vendor/hermes-webui` subtree |
+| 5 | `vault-base` | Pinned upstream tag for the vendored `vendor/hermes-vault` subtree |
 
-**Bump rules**
+**Bump rules — minor is reserved for the upstream agent/webui bases, patch for everything else:**
 
 | Change | Version bump | Example |
 |--------|----------------|---------|
-| Adopt a new Hermes Agent release | **y** + 1, **z** → 0 | `0.3.9` → `0.4.0` on Hermes `v2026.7.1` |
-| All-in-one-only fix (control plane, WebUI vendor, docker glue) | **z** + 1 | `0.4.0` → `0.4.1` (same `hermes-base`) |
+| Adopt a new Hermes Agent / `agent-base` or `webui-base` release | **y** + 1, **z** → 0 | `0.7.1` → `0.8.0` on Hermes `v2026.8.1` |
+| `vault-base` bump, all-in-one-only fix or feature (control plane, docker glue, new bundled plugin, watchdog, SSH persistence, etc.) | **z** + 1 | `0.7.1` → `0.7.2` |
 | Breaking packaging change (volume layout, env contract) | **x** + 1 (manual) | Rare |
 
-The agent runtime comes from the **base image** (`HERMES_IMAGE`); vendored WebUI under `vendor/hermes-webui` is copied in at build time.
+The rule is **not** "how big is the change" — it's whether `hermes-base`/`agent-base`/`webui-base` moved. A brand-new capability that only touches this repo's own container layer (a new watchdog service, SSH host-key persistence, baking in a whole new vendored dependency like `hermes-vault`) is still a **patch**, because it doesn't track an upstream Hermes Agent or WebUI release. Save minor bumps for when one of those two actually advances. (Real precedent: `v0.6.2` — SSH host-key persistence — and `v0.7.1` — healthwatch watchdog — were both patches despite adding whole new capabilities, because neither moved `hermes-base`/`agent-base`/`webui-base`.)
+
+The agent runtime comes from the **base image** (`HERMES_IMAGE`); vendored WebUI (`vendor/hermes-webui`), agent (`vendor/hermes-agent`), and vault (`vendor/hermes-vault`) are copied in at build time via `git subtree`.
 
 ### Maintainer scripts
 
 ```bash
-./scripts/bump-hermes.sh v2026.6.5   # new Hermes base → y+1, z=0, pin Dockerfile
-./scripts/bump-patch.sh              # your layer only → z+1
-./scripts/set-version.sh 0.4.1 v2026.6.5   # explicit set
+./scripts/bump-hermes.sh v2026.7.1   # new Hermes/agent base → y+1, z=0, pins hermes-base + agent-base + Dockerfile
+./scripts/bump-patch.sh              # your layer only (incl. webui-base/vault-base bumps) → z+1
+./scripts/set-version.sh 0.7.2 v2026.7.7.2   # explicit set
 ./scripts/smoke.sh                   # build + runtime smoke (CI runs this too)
-./scripts/sync-upstreams.sh          # refresh vendor/hermes-agent + vendor/hermes-webui
+./scripts/sync-upstreams.sh          # refresh vendor/hermes-agent + vendor/hermes-webui + vendor/hermes-vault
 ```
 
 ### Release flow
@@ -847,22 +855,22 @@ The agent runtime comes from the **base image** (`HERMES_IMAGE`); vendored WebUI
 
 ```bash
 ./scripts/bump-hermes.sh v2026.7.1
-./scripts/sync-upstreams.sh          # optional: refresh vendored WebUI
+./scripts/sync-upstreams.sh          # optional: refresh vendored WebUI/vault
 ./scripts/smoke.sh
 git add VERSION Dockerfile
-git commit -m "chore(release): 0.4.0 on hermes v2026.7.1"
+git commit -m "chore(release): 0.8.0 on hermes v2026.7.1"
 git push origin main
-git tag v0.4.0
-git push origin v0.4.0               # triggers release.yml → GHCR + GitHub Release
+git tag v0.8.0
+git push origin v0.8.0               # triggers release.yml → GHCR + GitHub Release
 ```
 
-**2. All-in-one patch** (same Hermes base):
+**2. All-in-one patch** (same hermes/agent/webui base — includes vault-base bumps and new container-only features):
 
 ```bash
-./scripts/bump-patch.sh              # e.g. 0.4.0 → 0.4.1
+./scripts/bump-patch.sh              # e.g. 0.7.1 → 0.7.2
 ./scripts/smoke.sh
 git commit -am "fix: …"
-git tag v0.4.1
+git tag v0.7.2
 git push origin main --tags
 ```
 
@@ -875,7 +883,7 @@ Pushing to `main` alone does **not** publish an image — only a matching **`v*.
 | [`ci.yml`](.github/workflows/ci.yml) | PR + branch push | `./scripts/smoke.sh` |
 | [`release.yml`](.github/workflows/release.yml) | Tag push `v*.*.*` | Tag↔VERSION preflight → multi-arch build → GHCR `vX.Y.Z` + `latest` → GitHub Release (smoke stays in `ci.yml`) |
 | [`check-upstream.yml`](.github/workflows/check-upstream.yml) | Daily | Opens a PR when Docker Hub has a newer Hermes tag than `hermes-base` |
-| [`sync-upstreams.yml`](.github/workflows/sync-upstreams.yml) | Daily | Subtree sync for `vendor/` |
+| [`sync-upstreams.yml`](.github/workflows/sync-upstreams.yml) | Daily | Subtree sync for `vendor/hermes-agent`, `vendor/hermes-webui`, `vendor/hermes-vault` |
 
 Release notes should mention both versions, e.g. **hermes-all-in-one v0.4.0** built on **Hermes Agent v2026.6.5**.
 
