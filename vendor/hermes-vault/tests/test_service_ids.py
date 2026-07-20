@@ -70,6 +70,19 @@ def test_get_env_var_map_unknown_falls_back_to_generic() -> None:
     assert "HERMES_VAULT_SECRET" in m
 
 
+def test_get_env_var_map_unknown_accepts_any_requested_name() -> None:
+    # Custom/self-hosted services have no canonical env-var name to
+    # validate against, so the caller's configured binding name must be
+    # honored, not forced onto the shared generic name (regression: a
+    # prior version rejected any name other than HERMES_VAULT_SECRET for
+    # non-canonical services, breaking custom secrets.hermes_vault.env
+    # mappings such as HINDSIGHT_API_KEY -> hv://hindsight).
+    m = get_env_var_map("hindsight")
+    assert "HINDSIGHT_API_KEY" in m
+    assert m["HINDSIGHT_API_KEY"].format(secret="s3cr3t") == "s3cr3t"
+    assert "ANY_OTHER_NAME" in m
+
+
 def test_new_common_services_are_canonical() -> None:
     for service in [
         "openrouter",
