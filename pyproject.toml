@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=83.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-vault"
+version = "0.21.0"
+description = "Hermes-native local-first credential broker, scanner, and encrypted vault."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "Tony Simons" }
+]
+license = "MIT"
+dependencies = [
+  "cryptography>=42.0.0",
+  "mcp>=1.0.0",
+  "pydantic>=2.7.0",
+  "PyYAML>=6.0.0",
+  "rich>=13.7.0",
+  "typer>=0.12.0",
+  "pathspec>=0.12.1",
+  "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+  "mcp>=1.0.0",
+]
+# DPAPI support. Required at runtime for Windows DPAPI; absent on
+# POSIX installs. The import is deferred (see hermes_vault/dpapi.py)
+# so the dep is only required on Windows. Use:
+#   uv pip install 'hermes-vault[windows]'
+windows = ["pywin32>=306"]
+
+[project.scripts]
+hermes-vault = "hermes_vault.cli:app"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = ["release-readiness", "site"]
+
+[tool.ruff.lint]
+# Block syntax failures and the full Pyflakes correctness family.
+# Style-only rules remain out of scope until adopted intentionally.
+select = ["E9", "F"]
+
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
+ignore_missing_imports = true
+warn_unused_ignores = true
+exclude = ["plugins/hermes-vault-secret-source/"]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+hermes_vault = ["dashboard_static/*", "dashboard_static/assets/*"]

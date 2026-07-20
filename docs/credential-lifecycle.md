@@ -1,0 +1,78 @@
+# Credential Lifecycle
+
+v0.13.0 treats this doc as the operator loop behind the release story. The vault has to stay healthy on its own, explain drift clearly, and prove it can recover from a real backup, not just look freshly touched.
+
+## 1. Discovery
+
+- Hermes Vault scans approved Hermes-relevant paths
+- Plaintext secrets, duplicates, and insecure permissions are identified
+
+## 2. Import or Add
+
+- Operator imports from `.env` or JSON, or manually adds a credential
+- All additions flow through ``VaultMutations`` (centralized audit-backed mutation path)
+- Operator path skips policy checks but produces audit entries
+- Agent path requires ``add_credential`` capability and service action permission
+- Raw secret is encrypted before being written to the vault
+- Metadata records service, alias, type, provenance, timestamps, and crypto version
+- Plaintext copies are allowed only during migration windows or explicit exemptions
+- Long-lived plaintext under managed Hermes paths is a policy violation, not a normal state
+
+## 3. Brokered Use
+
+- Hermes or a sub-agent requests access through the broker
+- Policy v2 determines whether access is allowed based on per-service action permissions
+- Agent-level capabilities gate non-service-scoped actions (list, scan, export, import)
+- Broker prefers ephemeral environment materialization for downstream task execution
+- **v0.15.0: OAuth Freshness at Handoff** — Near-expiry OAuth tokens are automatically refreshed during `get_ephemeral_env` before the credential reaches the agent. The `rotate` permission is required for this live refresh; `get_env` alone does not authorize vault mutation. A 30-second per-credential cooldown prevents provider rate-limit abuse.
+- All broker decisions are recorded in the audit log
+
+## 4. Verification
+
+- When a task fails or an operator requests verification, the verifier checks the credential against a provider endpoint
+- Result is classified precisely
+- Vault status and last verified timestamp are updated
+- Non-auth failures such as network, scope, endpoint, and rate limit should remain distinct from invalid/expired credential results
+
+## 5. Rotation
+
+- Operator replaces the secret for an existing record
+- Rotation flows through ``VaultMutations`` with policy check and audit
+- Agent path requires ``rotate`` service action permission
+- Old ciphertext is overwritten in the record
+- Status returns to unknown until verification runs again
+
+## 6. Deletion
+
+- Operator explicitly confirms deletion
+- Deletion flows through ``VaultMutations`` with policy check and audit
+- Agent path requires ``delete`` service action permission
+- Metadata and encrypted payload are removed from SQLite
+
+## 7. Skill Contract
+
+- Generated SKILL.md files tell agents to stop credential freelancing
+- Verification-before-reauth is part of the required workflow
+### Generated skills are review artifacts unless explicitly installed by the operator
+
+## 8. Observability
+
+v0.4.0 adds visibility into credential state and access history:
+
+- hermes-vault audit queries the access log with filters by agent, service,
+  action, decision, and time range
+- hermes-vault status shows credential health: stale, invalid, or expiring
+- hermes-vault set-expiry and clear-expiry record operator-defined expiry
+  metadata on credentials
+- hermes-vault verify --all --format table or --report provides structured
+  verification output
+
+These commands do not change credential security properties. No secrets are
+ever exposed in audit, status, or verification output.
+
+## 9. Recovery proof
+
+- `hermes-vault backup-verify --input <backup-file>` proves a backup decrypts with the current vault key.
+- `hermes-vault restore --dry-run --input <backup-file>` exercises restore semantics without mutating the live vault.
+- Metadata-only backups are inspection artifacts, not recovery proofs.
+- Backup age is a warning signal, not evidence that recovery will work.
