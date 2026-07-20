@@ -194,9 +194,13 @@ docker exec "${CONTAINER_NAME}" /bin/sh -lc '
   test -x /usr/local/bin/micro
   test -x /usr/local/bin/node
   command -v zsh >/dev/null
+  test -x /usr/local/bin/hermes-vault
+  /usr/local/bin/hermes-vault secret-source --help >/dev/null
+  test -f /opt/hermes/plugins/hermes-vault-secret-source/plugin.yaml
+  test -f /opt/hermes/plugins/hermes-vault-secret-source/__init__.py
   curl --silent --show-error --fail http://127.0.0.1:8788/health >/dev/null
 ' || { echo "[smoke] volume bootstrap / tooling checks failed" >&2; exit 1; }
-echo "[smoke] bootstrap dirs, agent mount, shell tools, internal WebUI OK"
+echo "[smoke] bootstrap dirs, agent mount, shell tools, baked-in hermes-vault, internal WebUI OK"
 
 if [[ -n "${PACKAGE_VERSION:-}" && "${SMOKE_SKIP_BUILD:-0}" != "1" ]]; then
   expected_webui_version="v${PACKAGE_VERSION}"

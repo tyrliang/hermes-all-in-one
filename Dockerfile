@@ -13,6 +13,7 @@ USER root
 WORKDIR /app
 
 COPY vendor/hermes-webui /app/vendor/hermes-webui
+COPY vendor/hermes-vault /app/vendor/hermes-vault
 COPY control_plane /app/control_plane
 COPY requirements-control-plane.txt /app/requirements-control-plane.txt
 COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
@@ -65,6 +66,21 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gh \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Hermes Vault — baked into the image as its own isolated venv (matches the
+# `uv tool install` isolation the persisted-volume install used, avoiding any
+# dependency collision with /opt/hermes/.venv's pinned versions). Bundling the
+# Hermes Secret Source plugin adapter into /opt/hermes/plugins/ makes it a
+# first-class bundled plugin (see hermes_cli/plugins.py:get_bundled_plugins_dir),
+# discovered on every boot with no dependency on the persistent volume.
+RUN python3 -m venv /opt/hermes-vault \
+    && /opt/hermes-vault/bin/pip install --no-cache-dir /app/vendor/hermes-vault \
+    && ln -s /opt/hermes-vault/bin/hermes-vault /usr/local/bin/hermes-vault \
+    && mkdir -p /opt/hermes/plugins/hermes-vault-secret-source \
+    && cp /app/vendor/hermes-vault/plugins/hermes-vault-secret-source/__init__.py \
+          /app/vendor/hermes-vault/plugins/hermes-vault-secret-source/plugin.yaml \
+          /opt/hermes/plugins/hermes-vault-secret-source/ \
+    && chown -R hermes:hermes /opt/hermes-vault /opt/hermes/plugins/hermes-vault-secret-source
 
 # fastapi + uvicorn[standard] are the `hermes dashboard` deps: keep them in sync
 # with the tool.dashboard pins in vendor/hermes-agent/tools/lazy_deps.py.
