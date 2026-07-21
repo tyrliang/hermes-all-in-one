@@ -87,6 +87,13 @@ RUN python3 -m venv /opt/hermes-vault \
 # uvicorn[standard] (not plain uvicorn) is required — it pulls in `websockets`,
 # which the dashboard's /api/pty and /api/ws WebSocket endpoints depend on.
 # chown the venv to hermes so the non-root user can run lazy installs at runtime.
+# hermes-vault is ALSO installed here with --no-deps: the bundled secret-source
+# plugin runs inside this venv and imports hermes_vault.crypto whenever a vault
+# profile is set (cfg `secrets.hermes_vault.profile` or HERMES_VAULT_PROFILE env,
+# see plugins/hermes-vault-secret-source/__init__.py:_profile_passphrase_env_name).
+# --no-deps adds no new pins (crypto.py needs only stdlib + cryptography, already
+# pulled by hermes-webui's requirements); the CLI keeps running from the isolated
+# /opt/hermes-vault venv above.
 RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-webui/api/_version.py \
     && uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir \
         -r /app/vendor/hermes-webui/requirements.txt \
@@ -94,6 +101,8 @@ RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-w
         "mcp>=1.24.0" \
         "fastapi==0.133.1" \
         "uvicorn[standard]==0.41.0" \
+    && uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir --no-deps \
+        /app/vendor/hermes-vault \
     && chown -R hermes:hermes /opt/hermes/.venv \
     && chmod +x /etc/cont-init.d/03-all-in-one-setup \
     && chmod +x /etc/cont-init.d/04-tailscale-env \

@@ -198,6 +198,7 @@ docker exec "${CONTAINER_NAME}" /bin/sh -lc '
   /usr/local/bin/hermes-vault secret-source --help >/dev/null
   test -f /opt/hermes/plugins/hermes-vault-secret-source/plugin.yaml
   test -f /opt/hermes/plugins/hermes-vault-secret-source/__init__.py
+  /opt/hermes/.venv/bin/python -c "import hermes_vault.crypto"
   curl --silent --show-error --fail http://127.0.0.1:8788/health >/dev/null
 ' || { echo "[smoke] volume bootstrap / tooling checks failed" >&2; exit 1; }
 echo "[smoke] bootstrap dirs, agent mount, shell tools, baked-in hermes-vault, internal WebUI OK"
