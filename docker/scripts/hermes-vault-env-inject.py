@@ -32,22 +32,57 @@ VAULT_HOME = Path(
 )
 STAMP = VAULT_HOME / "last-env-inject.json"
 CONFIG = HERMES_HOME / "config.yaml"
-DEFAULT_BINARY = os.environ.get("HERMES_VAULT_BINARY", "hermes-vault")
+# Prefer the isolated image CLI. Never rely on PATH alone: after
+# `uv pip install --no-deps hermes-vault` into /opt/hermes/.venv, a broken
+# console script at .venv/bin/hermes-vault (missing typer) sits ahead of
+# /usr/local/bin on the gateway PATH and makes every fetch fail.
+_ISOLATED_BINARY_CANDIDATES = (
+    "/usr/local/bin/hermes-vault",
+    "/opt/hermes-vault/bin/hermes-vault",
+)
 
 
-def _bindings() -> list[str]:
+def _load_config() -> dict:
+    if not CONFIG.is_file():
+        return {}
     try:
         import yaml  # type: ignore
     except Exception as exc:  # pragma: no cover
         print(f"[vault-inject] pyyaml missing: {exc}", file=sys.stderr)
-        return []
-    if not CONFIG.is_file():
-        return []
+        return {}
     try:
         data = yaml.safe_load(CONFIG.read_text(encoding="utf-8")) or {}
     except Exception as exc:
         print(f"[vault-inject] config read failed: {exc}", file=sys.stderr)
-        return []
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _resolve_binary(config: dict | None = None) -> str:
+    """Pick a working hermes-vault CLI path.
+
+    Order: HERMES_VAULT_BINARY env → secrets.hermes_vault.binary → isolated
+    image paths → bare ``hermes-vault`` (PATH).
+    """
+    env_bin = (os.environ.get("HERMES_VAULT_BINARY") or "").strip()
+    if env_bin:
+        return env_bin
+    cfg = config if config is not None else _load_config()
+    vault = ((cfg.get("secrets") or {}) if isinstance(cfg, dict) else {}).get(
+        "hermes_vault"
+    ) or {}
+    if isinstance(vault, dict):
+        cfg_bin = vault.get("binary")
+        if isinstance(cfg_bin, str) and cfg_bin.strip():
+            return cfg_bin.strip()
+    for candidate in _ISOLATED_BINARY_CANDIDATES:
+        if Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return "hermes-vault"
+
+
+def _bindings(config: dict | None = None) -> list[str]:
+    data = config if config is not None else _load_config()
     env_map = ((data.get("secrets") or {}).get("hermes_vault") or {}).get("env") or {}
     out: list[str] = []
     if isinstance(env_map, dict):
@@ -57,14 +92,15 @@ def _bindings() -> list[str]:
     return out
 
 
-def _fetch(bindings: list[str]) -> dict:
+def _fetch(bindings: list[str], binary: str | None = None) -> dict:
     if not bindings:
         return {"secrets": {}, "errors": {}}
     if not os.environ.get("HERMES_VAULT_PASSPHRASE"):
         return {"secrets": {}, "errors": {"_": "HERMES_VAULT_PASSPHRASE unset"}}
 
+    bin_path = binary or _resolve_binary()
     cmd = [
-        DEFAULT_BINARY,
+        bin_path,
         "--no-banner",
         "secret-source",
         "fetch",
@@ -84,7 +120,7 @@ def _fetch(bindings: list[str]) -> dict:
             cmd, capture_output=True, text=True, env=env, timeout=45, check=False
         )
     except FileNotFoundError:
-        return {"secrets": {}, "errors": {"_": f"{DEFAULT_BINARY} not found"}}
+        return {"secrets": {}, "errors": {"_": f"{bin_path} not found"}}
     except subprocess.TimeoutExpired:
         return {"secrets": {}, "errors": {"_": "fetch timed out"}}
     except Exception as exc:  # noqa: BLE001
@@ -148,7 +184,9 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    bindings = _bindings()
+    config = _load_config()
+    bindings = _bindings(config)
+    binary = _resolve_binary(config)
     if args.check:
         stamp: dict = {}
         if STAMP.exists():
@@ -156,10 +194,15 @@ def main() -> int:
                 stamp = json.loads(STAMP.read_text(encoding="utf-8"))
             except Exception:
                 stamp = {"error": "unreadable stamp"}
-        print(json.dumps({"bindings": len(bindings), "stamp": stamp}, indent=2))
+        print(
+            json.dumps(
+                {"bindings": len(bindings), "binary": binary, "stamp": stamp},
+                indent=2,
+            )
+        )
         return 0
 
-    payload = _fetch(bindings)
+    payload = _fetch(bindings, binary=binary)
     secrets = payload.get("secrets") or {}
     errors = payload.get("errors") or {}
     if not isinstance(secrets, dict):
@@ -175,13 +218,22 @@ def main() -> int:
     _write_stamp(clean, errors, len(bindings))
 
     if args.format == "json":
-        print(json.dumps({"secrets": clean, "errors": errors, "bindings": len(bindings)}))
+        print(
+            json.dumps(
+                {
+                    "secrets": clean,
+                    "errors": errors,
+                    "bindings": len(bindings),
+                    "binary": binary,
+                }
+            )
+        )
         return 0
 
     for key, value in clean.items():
         print(f"export {key}={shlex.quote(value)}")
     print(
-        f"echo '[vault-inject] applied {len(clean)}/{len(bindings)} secret(s)' >&2"
+        f"echo '[vault-inject] applied {len(clean)}/{len(bindings)} secret(s) via {binary}' >&2"
     )
     if errors:
         print(f"echo '[vault-inject] errors={list(errors.keys())}' >&2")

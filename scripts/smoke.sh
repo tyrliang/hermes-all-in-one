@@ -205,6 +205,9 @@ docker exec "${CONTAINER_NAME}" /bin/sh -lc '
   # nested singles + \| would end the string early and pipe to a bogus
   # "preloaded" command (CI failure: /bin/sh: preloaded: not found).
   grep -qE "hermes-with-vault|preloaded" /opt/hermes/.venv/bin/hermes
+  # --no-deps must not leave a PATH-shadowing broken CLI stub
+  test ! -e /opt/hermes/.venv/bin/hermes-vault
+  test -x /usr/local/bin/hermes-vault
   test -x /app/docker/scripts/hermes-vault-env-inject.py
   /opt/hermes/.venv/bin/python /app/docker/scripts/hermes-vault-env-inject.py --check >/dev/null
   curl --silent --show-error --fail http://127.0.0.1:8788/health >/dev/null
