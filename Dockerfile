@@ -90,9 +90,11 @@ RUN python3 -m venv /opt/hermes-vault \
 # hermes-vault is ALSO installed here with --no-deps: the bundled secret-source
 # plugin runs inside this venv and imports hermes_vault.crypto whenever a vault
 # profile is set (cfg `secrets.hermes_vault.profile` or HERMES_VAULT_PROFILE env).
-# --no-deps adds no new pins (crypto.py needs only stdlib + cryptography, already
-# pulled by hermes-webui's requirements); the CLI keeps running from the isolated
-# /opt/hermes-vault venv above.
+# --no-deps still installs a console-script entrypoint at
+# /opt/hermes/.venv/bin/hermes-vault that imports hermes_vault.cli (needs typer).
+# Gateway PATH puts .venv/bin first, so that broken stub shadows the isolated
+# /usr/local/bin/hermes-vault CLI and pre-exec inject fails (n=0 secrets).
+# Remove the stub; the real CLI stays in /opt/hermes-vault + /usr/local/bin.
 #
 # Gateway vault pre-exec shim: stock s6 run scripts call `hermes gateway run`
 # after cont-init regenerates them. Secret-source plugins register *after* the
@@ -109,6 +111,7 @@ RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-w
         "uvicorn[standard]==0.41.0" \
     && uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir --no-deps \
         /app/vendor/hermes-vault \
+    && rm -f /opt/hermes/.venv/bin/hermes-vault \
     && cp /opt/hermes/.venv/bin/hermes /opt/hermes/.venv/bin/hermes.stock.bak \
     && cp /app/docker/scripts/hermes-with-vault /opt/hermes/.venv/bin/hermes \
     && chmod 755 /opt/hermes/.venv/bin/hermes \

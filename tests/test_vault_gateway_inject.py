@@ -104,23 +104,40 @@ def test_inject_script_check_and_bindings(tmp_path: Path, monkeypatch: pytest.Mo
     cfg = {
         "secrets": {
             "hermes_vault": {
+                "binary": "/usr/local/bin/hermes-vault",
                 "env": {"TELEGRAM_BOT_TOKEN": "hv://telegram", "TAVILY_API_KEY": "hv://tavily"}
             }
         }
     }
     (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_VAULT_BINARY", raising=False)
     monkeypatch.setattr(mod, "HERMES_HOME", home)
     monkeypatch.setattr(mod, "CONFIG", home / "config.yaml")
     monkeypatch.setattr(mod, "VAULT_HOME", home / "hermes-vault-data")
     monkeypatch.setattr(mod, "STAMP", home / "hermes-vault-data" / "last-env-inject.json")
 
-    bindings = mod._bindings()
+    loaded = mod._load_config()
+    bindings = mod._bindings(loaded)
     assert "TELEGRAM_BOT_TOKEN=hv://telegram" in bindings
     assert "TAVILY_API_KEY=hv://tavily" in bindings
+    assert mod._resolve_binary(loaded) == "/usr/local/bin/hermes-vault"
 
     # Without passphrase, fetch returns empty + error marker — still exit 0.
     monkeypatch.delenv("HERMES_VAULT_PASSPHRASE", raising=False)
-    payload = mod._fetch(bindings)
+    payload = mod._fetch(bindings, binary=mod._resolve_binary(loaded))
     assert payload["secrets"] == {}
     assert "_" in payload["errors"]
+
+
+def test_resolve_binary_prefers_env_then_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    mod = _load_inject_module()
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    cfg = {"secrets": {"hermes_vault": {"binary": "/from/config/hermes-vault", "env": {}}}}
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    monkeypatch.setattr(mod, "CONFIG", home / "config.yaml")
+    monkeypatch.delenv("HERMES_VAULT_BINARY", raising=False)
+    assert mod._resolve_binary() == "/from/config/hermes-vault"
+    monkeypatch.setenv("HERMES_VAULT_BINARY", "/from/env/hermes-vault")
+    assert mod._resolve_binary() == "/from/env/hermes-vault"
