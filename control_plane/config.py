@@ -102,6 +102,17 @@ CHANNEL_ENV_KEYS = tuple(
     key for mapping in CHANNEL_FIELDS.values() for key in (mapping["primary"], mapping["secondary"]) if key
 )
 
+# Token-like channel keys that may live only in Hermes Vault (hv://) bindings.
+_VAULT_CHANNEL_TOKEN_KEYS = frozenset(
+    {
+        "TELEGRAM_BOT_TOKEN",
+        "DISCORD_BOT_TOKEN",
+        "SLACK_BOT_TOKEN",
+        "SLACK_APP_TOKEN",
+        "EMAIL_PASSWORD",
+    }
+)
+
 _PROVIDER_ENV_VARS = {meta["env_var"] for meta in _SUPPORTED_PROVIDER_SETUPS.values()}
 
 
@@ -212,19 +223,58 @@ def apply_provider_setup(
     return {"provider": provider, "model": model, "env_var": meta["env_var"]}
 
 
-def has_valid_channel_credentials(env_values: dict[str, str]) -> bool:
+def hermes_vault_env_bindings(config: dict[str, Any] | None) -> dict[str, str]:
+    """Return ``secrets.hermes_vault.env`` key→ref map (may be empty)."""
+    if not isinstance(config, dict):
+        return {}
+    secrets = config.get("secrets")
+    if not isinstance(secrets, dict):
+        return {}
+    vault = secrets.get("hermes_vault")
+    if not isinstance(vault, dict):
+        return {}
+    env_map = vault.get("env")
+    if not isinstance(env_map, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, value in env_map.items():
+        if isinstance(key, str) and isinstance(value, str) and value.strip():
+            out[key] = value.strip()
+    return out
+
+
+def has_vault_channel_bindings(config: dict[str, Any] | None) -> bool:
+    """True when a messaging channel token is bound via Hermes Vault only."""
+    bindings = hermes_vault_env_bindings(config)
+    return any(key in bindings for key in _VAULT_CHANNEL_TOKEN_KEYS)
+
+
+def has_vault_provider_binding(config: dict[str, Any] | None, env_var: str) -> bool:
+    """True when a provider API key env var is bound via Hermes Vault."""
+    if not env_var:
+        return False
+    return env_var in hermes_vault_env_bindings(config)
+
+
+def has_valid_channel_credentials(
+    env_values: dict[str, str],
+    config: dict[str, Any] | None = None,
+) -> bool:
     telegram = env_values.get("TELEGRAM_BOT_TOKEN", "").strip()
     discord = env_values.get("DISCORD_BOT_TOKEN", "").strip()
     slack = env_values.get("SLACK_BOT_TOKEN", "").strip()
     whatsapp = env_values.get("WHATSAPP_ENABLED", "").strip().lower()
     email = env_values.get("EMAIL_ADDRESS", "").strip()
-    return any([
-        bool(telegram),
-        bool(discord),
-        bool(slack),
-        whatsapp in {"1", "true", "yes", "on"},
-        bool(email),
-    ])
+    return any(
+        [
+            bool(telegram),
+            bool(discord),
+            bool(slack),
+            whatsapp in {"1", "true", "yes", "on"},
+            bool(email),
+            has_vault_channel_bindings(config),
+        ]
+    )
 
 
 def has_valid_provider_setup(config: dict[str, Any], env_values: dict[str, str]) -> bool:
@@ -236,7 +286,7 @@ def has_valid_provider_setup(config: dict[str, Any], env_values: dict[str, str])
         meta = _SUPPORTED_PROVIDER_SETUPS[provider]
         env_var = meta["env_var"]
         api_key = env_values.get(env_var, "").strip() or model_cfg["api_key"]
-        if not api_key:
+        if not api_key and not has_vault_provider_binding(config, env_var):
             return False
         if meta.get("requires_base_url"):
             return bool(model_cfg["base_url"])
@@ -257,7 +307,9 @@ def should_autostart_gateway(
         return False
     config = load_yaml_config(config_path)
     env_values = load_env_file(env_path)
-    channels_ready = has_valid_channel_credentials(env_values)
+    # Pass config so vault-only TELEGRAM_BOT_TOKEN (hv://) still counts as a
+    # configured channel — plaintext may be fully redacted from .env.
+    channels_ready = has_valid_channel_credentials(env_values, config)
     providers_ready = has_valid_provider_setup(config, env_values)
     if mode in {"1", "true", "yes", "on", "enabled"}:
         return channels_ready and providers_ready

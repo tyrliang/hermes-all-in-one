@@ -198,9 +198,18 @@ docker exec "${CONTAINER_NAME}" /bin/sh -lc '
   /usr/local/bin/hermes-vault secret-source --help >/dev/null
   test -f /opt/hermes/plugins/hermes-vault-secret-source/plugin.yaml
   test -f /opt/hermes/plugins/hermes-vault-secret-source/__init__.py
+  /opt/hermes/.venv/bin/python -c "import hermes_vault.crypto"
+  test -x /opt/hermes/.venv/bin/hermes
+  test -f /opt/hermes/.venv/bin/hermes.stock.bak
+  # Use double quotes: this block is already single-quoted for sh -lc, so
+  # nested singles + \| would end the string early and pipe to a bogus
+  # "preloaded" command (CI failure: /bin/sh: preloaded: not found).
+  grep -qE "hermes-with-vault|preloaded" /opt/hermes/.venv/bin/hermes
+  test -x /app/docker/scripts/hermes-vault-env-inject.py
+  /opt/hermes/.venv/bin/python /app/docker/scripts/hermes-vault-env-inject.py --check >/dev/null
   curl --silent --show-error --fail http://127.0.0.1:8788/health >/dev/null
 ' || { echo "[smoke] volume bootstrap / tooling checks failed" >&2; exit 1; }
-echo "[smoke] bootstrap dirs, agent mount, shell tools, baked-in hermes-vault, internal WebUI OK"
+echo "[smoke] bootstrap dirs, agent mount, shell tools, baked-in hermes-vault, gateway vault shim, internal WebUI OK"
 
 if [[ -n "${PACKAGE_VERSION:-}" && "${SMOKE_SKIP_BUILD:-0}" != "1" ]]; then
   expected_webui_version="v${PACKAGE_VERSION}"
