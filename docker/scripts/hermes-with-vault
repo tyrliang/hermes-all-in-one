@@ -1,0 +1,103 @@
+#!/opt/hermes/.venv/bin/python3
+"""Hermes CLI entrypoint with pre-import Hermes Vault inject for gateway run.
+
+Stock s6 run scripts call ``hermes gateway run`` after cont-init regenerates
+them. Secret-source plugins register after the first ``load_hermes_dotenv()``,
+so vault-backed ``TELEGRAM_BOT_TOKEN`` (and friends) never reach the gateway
+parent unless we materialize them into ``os.environ`` *before* importing
+``hermes_cli.main``.
+
+Installed over ``/opt/hermes/.venv/bin/hermes`` at image build time.
+Stock console script kept at ``hermes.stock.bak``.
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+_INJECT = Path(
+    os.environ.get(
+        "HERMES_VAULT_INJECT_SCRIPT",
+        "/app/docker/scripts/hermes-vault-env-inject.py",
+    )
+)
+
+
+def _should_inject(argv: list[str]) -> bool:
+    """Inject for gateway long-running entrypoints only."""
+    if "gateway" not in argv:
+        return False
+    # bare `hermes gateway` defaults to run in some code paths; always inject
+    # for the gateway command group so start/restart/run are covered.
+    return True
+
+
+def _maybe_inject_vault() -> None:
+    if not _should_inject(sys.argv[1:]):
+        return
+    if not _INJECT.is_file():
+        return
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(_INJECT), "--format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=45,
+            env=os.environ.copy(),
+            check=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[hermes-with-vault] inject failed: {exc}", file=sys.stderr)
+        return
+
+    if proc.returncode != 0 and not (proc.stdout or "").strip():
+        err = (proc.stderr or "").strip()[:200]
+        print(
+            f"[hermes-with-vault] inject rc={proc.returncode} {err}",
+            file=sys.stderr,
+        )
+        return
+
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[hermes-with-vault] bad inject json: {exc}", file=sys.stderr)
+        return
+
+    secrets = payload.get("secrets") or {}
+    errors = payload.get("errors") or {}
+    applied = 0
+    if isinstance(secrets, dict):
+        for key, value in secrets.items():
+            if isinstance(key, str) and isinstance(value, str) and value:
+                os.environ[key] = value
+                applied += 1
+    if applied:
+        print(
+            f"[hermes-with-vault] preloaded {applied} secret(s) into env",
+            file=sys.stderr,
+        )
+    if errors:
+        print(
+            f"[hermes-with-vault] inject errors={list(errors.keys())}",
+            file=sys.stderr,
+        )
+
+
+def main() -> int:
+    _maybe_inject_vault()
+    # Match stock console_script argv normalization
+    if sys.argv and sys.argv[0].endswith("-script.pyw"):
+        sys.argv[0] = sys.argv[0][:-11]
+    elif sys.argv and sys.argv[0].endswith(".exe"):
+        sys.argv[0] = sys.argv[0][:-4]
+    from hermes_cli.main import main as hermes_main
+
+    return int(hermes_main() or 0)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

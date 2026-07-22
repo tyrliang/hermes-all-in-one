@@ -729,6 +729,61 @@ The gateway starts automatically. Send `/start` to your bot on Telegram — it s
 
 ---
 
+## Hermes Vault (baked into the image)
+
+This image vendors **[Hermes Vault](https://github.com/asimons81/hermes-vault)** and installs:
+
+| Path | Role |
+|------|------|
+| `/usr/local/bin/hermes-vault` | CLI (isolated venv at `/opt/hermes-vault`) |
+| `/opt/hermes/plugins/hermes-vault-secret-source/` | Bundled Secret Source plugin |
+| `/opt/hermes/.venv/bin/hermes` | **Gateway vault shim** — preloads `hv://` secrets before `hermes gateway run` |
+| `/app/docker/scripts/hermes-vault-env-inject.py` | Fetch helper used by the shim |
+
+### Why the gateway shim exists
+
+Hermes applies secret sources during the first `load_hermes_dotenv()`, which runs **before** Python plugins (including `hermes_vault`) are discovered. Cron sessions re-pull secrets and keep working; the **gateway parent** does not — so with vault-only `TELEGRAM_BOT_TOKEN` you get:
+
+- ✅ Cron → Telegram outbound still works  
+- ❌ Inbound Telegram DMs get no reply (`TELEGRAM_BOT_TOKEN` missing in the gateway process)
+
+The shim materializes `secrets.hermes_vault.env` into the process environment **before** importing `hermes_cli.main`, so stock s6 `hermes gateway run` (regenerated on every cont-init) still receives vault tokens.
+
+### Minimal config
+
+Railway (or compose) must provide the vault unlock secret:
+
+```bash
+HERMES_VAULT_PASSPHRASE=...          # platform secret — not on the volume
+# optional override:
+# HERMES_VAULT_HOME=/opt/data/.hermes/hermes-vault-data
+```
+
+In `/opt/data/.hermes/config.yaml`:
+
+```yaml
+secrets:
+  sources:
+    - hermes_vault
+  hermes_vault:
+    binary: hermes-vault
+    env:
+      TELEGRAM_BOT_TOKEN: hv://telegram
+      # OPENROUTER_API_KEY: hv://openrouter
+```
+
+After unlock + bindings exist, restart the gateway. Verify (names/lengths only):
+
+```bash
+python3 /app/docker/scripts/hermes-vault-env-inject.py --check
+cat /opt/data/.hermes/hermes-vault-data/last-env-inject.json
+# gateway_state.json → platforms.telegram.state should be "connected"
+```
+
+Plaintext tokens in `.env` / `/admin` still work; vault is optional.
+
+---
+
 ## Your Agent's Identity — SOUL.md
 
 `SOUL.md` controls the agent's persistent persona and behavior — its name, how it speaks, what it cares about. On the persistent volume it lives at `/opt/data/.hermes/SOUL.md`.
