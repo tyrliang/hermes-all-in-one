@@ -201,7 +201,10 @@ docker exec "${CONTAINER_NAME}" /bin/sh -lc '
   /opt/hermes/.venv/bin/python -c "import hermes_vault.crypto"
   test -x /opt/hermes/.venv/bin/hermes
   test -f /opt/hermes/.venv/bin/hermes.stock.bak
-  grep -q 'hermes-with-vault\|preloaded' /opt/hermes/.venv/bin/hermes
+  # Use double quotes: this block is already single-quoted for sh -lc, so
+  # nested singles + \| would end the string early and pipe to a bogus
+  # "preloaded" command (CI failure: /bin/sh: preloaded: not found).
+  grep -qE "hermes-with-vault|preloaded" /opt/hermes/.venv/bin/hermes
   test -x /app/docker/scripts/hermes-vault-env-inject.py
   /opt/hermes/.venv/bin/python /app/docker/scripts/hermes-vault-env-inject.py --check >/dev/null
   curl --silent --show-error --fail http://127.0.0.1:8788/health >/dev/null
