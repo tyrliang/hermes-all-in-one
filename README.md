@@ -297,9 +297,15 @@ State persists under `/opt/data/.tailscale` on the volume. Without `TAILSCALE_AU
 Post-join `tailscale serve --bg --https=443 http://127.0.0.1:$PORT` (not a `tailscale up` flag). Open `https://<TAILSCALE_HOSTNAME>.<tailnet>.ts.net/` (port 443).
 
 ```bash
-# After deploy with TAILSCALE_HTTPS=1
+# Local docker-compose (docker host access):
 docker exec hermes-all-in-one tailscale --socket=/run/tailscale/tailscaled.sock serve status
-docker exec hermes-all-in-one ls -la /opt/data/.tailscale/certs
+
+# Railway (no docker exec — reach the box over tailnet SSH as `hermes`; the
+# certs directory is root-owned 0700 with no sudo, so check the live cert
+# off the wire instead of listing the directory):
+ssh hermes@<TAILSCALE_HOSTNAME>.<tailnet>.ts.net tailscale --socket=/run/tailscale/tailscaled.sock serve status
+echo | openssl s_client -connect <TAILSCALE_HOSTNAME>.<tailnet>.ts.net:443 -servername <TAILSCALE_HOSTNAME>.<tailnet>.ts.net 2>/dev/null \
+  | openssl x509 -noout -serial -dates -subject
 ```
 
 Serve config is persisted node state, so every boot reconciles it against your env **one handler at a time** — applying what you asked for and running `… off` on what you didn't. There is no global `serve reset`, so handlers you added yourself on other ports (including Funnel) are never touched. Port 22 is reconciled unconditionally, since the image has owned it since `TAILSCALE_SSH=openssh` became the default — setting `TAILSCALE_SSH=0` therefore also clears a handler inherited from an older image. Port 443 is only disabled when the image was the one that enabled it, tracked by a marker at `/opt/data/.tailscale/.serve-https-managed`, so an operator-managed 443 handler survives. Every serve failure is non-fatal: nothing is torn down before a re-apply, so a previously working handler stays in effect and the service logs a warning instead of restarting. After disabling something the image re-reads `serve status` and warns loudly if the handler is somehow still live.
