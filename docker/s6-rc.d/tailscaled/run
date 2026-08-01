@@ -16,7 +16,13 @@
 # Does NOT close plain http://<magicdns>:$PORT/ (userspace still forwards $PORT).
 # Requires MagicDNS + HTTPS Certificates enabled on the tailnet (admin console).
 # Certs/state live under --statedir on the volume (avoid LE rate limits on redeploy).
-# Serve config is persisted node state: every boot resets and re-applies from env.
+# Serve config is persisted node state, so each boot reconciles it against env
+# PER HANDLER — apply what's requested, `… off` what isn't. No global `serve reset`:
+# handlers on other ports (operator-added serve/Funnel) are never touched. Port 22 is
+# reconciled unconditionally (owned since the openssh default); port 443 is only
+# disabled when we enabled it, tracked by ${TAILSCALE_STATE_DIR}/.serve-https-managed.
+# All serve failures are non-fatal — nothing is torn down before a re-apply, so a
+# previously working handler survives a failed attempt.
 
 # No auth key: hold the dependency slot open without joining a tailnet.
 case "${TAILSCALE_AUTH_KEY:-}" in
@@ -148,10 +154,11 @@ elif [ "${TS_SSH_MODE}" = "openssh" ]; then
     fi
 fi
 
-# Serve config is persisted node state. Reset once, then re-apply every handler
-# from current env so toggling TAILSCALE_HTTPS/SSH off actually clears them.
-# Must run outside the SSH-mode branch (HTTPS-only and SSH-off still need reset).
-# Retry apply: after reset, a transient serve failure would drop SSH with no fallback.
+# Serve config is persisted node state, so each boot reconciles it against env.
+# Reconcile PER HANDLER (apply when wanted, `… off` when not) instead of a global
+# `serve reset`: reset would wipe operator-added serve/Funnel handlers on nodes this
+# image doesn't manage, and would briefly destroy a working SSH handler that a failed
+# re-apply could not restore. Per-handler edits only ever touch ports we own.
 _ts_serve() {
     _ts_serve_n=0
     _ts_serve_err=""
@@ -166,25 +173,74 @@ _ts_serve() {
     return 1
 }
 
-if ! _ts_serve_err="$(tailscale --socket="${TS_SOCKET}" serve reset 2>&1)"; then
-    echo "[tailscaled] warning: tailscale serve reset failed: ${_ts_serve_err}" >&2
-fi
+# Best-effort disable. `off` is the last positional arg and takes the same port flag
+# used to enable (target optional). It fails harmlessly when no such handler exists —
+# the common fresh-node case — so a failure is not logged as an error here; the
+# verification pass below catches a handler that genuinely refused to clear.
+_ts_serve_off() {
+    if _ts_serve_off_err="$(tailscale --socket="${TS_SOCKET}" serve "$@" off 2>&1)"; then
+        echo "[tailscaled] serve $* disabled (not requested by env)" >&2
+        return 0
+    fi
+    return 1
+}
+
+# Port 22: this image has owned it since the openssh default, so reconcile it
+# unconditionally (clears the handler inherited from <=v0.8.0 when SSH is turned off).
+# Port 443 is new in v0.8.1, so only disable it when WE enabled it — tracked by a
+# marker on the volume — otherwise an operator's own 443 handler would be removed.
+TS_HTTPS_MARKER="${TS_STATE_DIR}/.serve-https-managed"
+TS_OFF_TCP22=0
+TS_OFF_443=0
 
 if [ "${TS_SSH_MODE}" = "openssh" ]; then
     if _ts_serve --bg --tcp 22 127.0.0.1:22; then
         echo "[tailscaled] openssh on 127.0.0.1:22 via tailscale serve (keys=${DATA_DIR}/.ssh/authorized_keys hostkeys=${DATA_DIR}/.ssh/host)" >&2
     else
-        echo "[tailscaled] warning: tailscale serve for SSH failed after retries" >&2
+        # Non-fatal: nothing was torn down first, so any previously persisted SSH
+        # handler is still in effect. Exiting here would respawn the whole node.
+        echo "[tailscaled] warning: tailscale serve for SSH failed after retries; check tailscale serve status" >&2
     fi
+else
+    TS_OFF_TCP22=1
+    _ts_serve_off --tcp=22 || true
 fi
 
 if [ "${TS_HTTPS}" = "1" ]; then
     TS_HTTPS_TARGET="http://127.0.0.1:${PORT:-8787}"
+    # Record intent before applying: a partial apply still means we own port 443.
+    : > "${TS_HTTPS_MARKER}"
     # Modern CLI: serve --bg --https=443 <target> (legacy "serve https / <target>" is gone).
+    # Non-fatal: HTTPS is cert-additive, plain $PORT still serves the control plane.
     if _ts_serve --bg --https=443 "${TS_HTTPS_TARGET}"; then
         echo "[tailscaled] https://<magicdns>/ → ${TS_HTTPS_TARGET} (certs under ${TS_STATE_DIR}/certs; plain http://<magicdns>:\$PORT still open)" >&2
     else
-        echo "[tailscaled] warning: HTTPS serve failed after retries (enable MagicDNS + HTTPS Certificates in admin console if unset)" >&2
+        echo "[tailscaled] warning: HTTPS serve failed after retries; continuing without TLS (enable MagicDNS + HTTPS Certificates in admin console if unset)" >&2
+    fi
+elif [ -f "${TS_HTTPS_MARKER}" ]; then
+    TS_OFF_443=1
+    # Marker removal is decided by the verification pass below, not by this exit
+    # status: a benign no-op `off` (e.g. a previous apply failed, so no handler was
+    # ever created) also reports failure and would otherwise strand the marker.
+    _ts_serve_off --https=443 || true
+fi
+
+# A no-op `off` and a failed `off` are indistinguishable by exit status, so confirm
+# against actual node state. Only warns when something we disabled is still live.
+if [ "${TS_OFF_TCP22}" = "1" ] || [ "${TS_OFF_443}" = "1" ]; then
+    TS_SERVE_STATUS="$(tailscale --socket="${TS_SOCKET}" serve status --json 2>/dev/null)"
+    if [ -n "${TS_SERVE_STATUS}" ]; then
+        if [ "${TS_OFF_TCP22}" = "1" ] && printf '%s' "${TS_SERVE_STATUS}" | grep -qE '"22"[[:space:]]*:'; then
+            echo "[tailscaled] warning: TCP 22 serve handler still present after disable; run: tailscale --socket=${TS_SOCKET} serve status" >&2
+        fi
+        if [ "${TS_OFF_443}" = "1" ]; then
+            if printf '%s' "${TS_SERVE_STATUS}" | grep -qE '(:443"|"443"[[:space:]]*:)'; then
+                echo "[tailscaled] warning: HTTPS 443 serve handler still present after disable; run: tailscale --socket=${TS_SOCKET} serve status" >&2
+            else
+                # Confirmed gone (or never existed) — we no longer own port 443.
+                rm -f "${TS_HTTPS_MARKER}"
+            fi
+        fi
     fi
 fi
 

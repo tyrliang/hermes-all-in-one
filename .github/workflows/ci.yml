@@ -17,10 +17,11 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Fast gate: catch unresolved conflict markers and unparseable vendored
-  # Python in seconds, instead of as a 60s health-timeout in the smoke build.
-  # The vendored webui and vault plugin ship in the image and crash-loop if
-  # they won't import.
+  # Fast gate: catch unresolved conflict markers, unparseable vendored Python,
+  # and shell-syntax errors in the docker init/s6 scripts in seconds, instead of
+  # as a 60s health-timeout in the smoke build. The vendored webui and vault
+  # plugin ship in the image and crash-loop if they won't import; a broken
+  # cont-init/s6 script wedges startup the same way.
   vendor-syntax:
     name: vendor syntax
     runs-on: ubuntu-latest
