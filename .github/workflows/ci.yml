@@ -44,6 +44,19 @@ jobs:
       - name: Byte-compile vendored webui and vault
         run: python -m compileall -q vendor/hermes-webui vendor/hermes-vault
 
+      - name: Shell-syntax check docker init/s6 scripts
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in docker/cont-init.d/* docker/s6-rc.d/*/run docker/s6-rc.d/*/finish; do
+            [ -f "$f" ] || continue
+            if ! dash -n "$f"; then
+              echo "::error file=${f}::dash -n failed"
+              fail=1
+            fi
+          done
+          exit "$fail"
+
   smoke:
     name: smoke
     needs: [vendor-syntax]

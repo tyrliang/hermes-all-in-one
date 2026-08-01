@@ -34,6 +34,10 @@ async def proxy_to_webui(request: Request, path: str) -> Response:
             continue
         headers[key] = value
     headers["X-Forwarded-Host"] = request.headers.get("host", "")
+    # uvicorn (proxy_headers default on) rewrites request.url.scheme from
+    # X-Forwarded-Proto only for trusted peers (default 127.0.0.1). Tailscale
+    # Serve dials loopback, so scheme is already https here — do not read the
+    # raw header (that would let any public/tailnet client forge Secure cookies).
     headers["X-Forwarded-Proto"] = request.url.scheme
     headers["X-Real-Host"] = request.headers.get("host", "")
 
