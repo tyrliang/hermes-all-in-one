@@ -186,7 +186,7 @@ Railway builds the Dockerfile and starts the container. The control plane at `/a
 
 #### Optional: Tailscale (tailnet-only access)
 
-Railway blocks `NET_ADMIN` and `/dev/net/tun`, so this image uses Tailscale **userspace networking** (no kernel TUN). When enabled, the container joins your tailnet and inbound traffic to `http://<magicdns>:$PORT/` reaches the control plane (same paths as the public URL: `/`, `/admin`, `/health`).
+Railway blocks `NET_ADMIN` and `/dev/net/tun`, so this image uses Tailscale **userspace networking** (no kernel TUN). When enabled, the container joins your tailnet and inbound traffic to `http://<magicdns>:$PORT/` reaches the control plane (same paths as the public URL: `/`, `/admin`, `/health`). **v0.8.1+:** optional `TAILSCALE_HTTPS=1` also exposes `https://<magicdns>/` on 443 via [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve) (does **not** close plain `$PORT`).
 
 1. Create an [ephemeral auth key](https://tailscale.com/kb/1085/auth-keys) in the Tailscale admin console.
 2. Set Railway variables:
@@ -198,6 +198,7 @@ Railway blocks `NET_ADMIN` and `/dev/net/tun`, so this image uses Tailscale **us
 4. Optional — outbound to other tailnet nodes (homelab DB, etc.): `TAILSCALE_OUTBOUND_PROXY=1` (sets `ALL_PROXY` with `NO_PROXY` for loopback and `*.railway.internal`).
 5. Optional — reach **subnet routes** advertised by another node (e.g. `192.168.88.0/24` via a subnet router): `TAILSCALE_ACCEPT_ROUTES=1` (also requires `TAILSCALE_OUTBOUND_PROXY=1`; userspace has no kernel routes — the SOCKS proxy dials accepted prefixes).
 6. Optional — **shell over the tailnet** via `TAILSCALE_SSH` (see below). Disable with `TAILSCALE_SSH=0`.
+7. Optional (**v0.8.1+**) — **HTTPS on the tailnet** (`TAILSCALE_HTTPS=1`): Serve terminates TLS on 443 with a Let’s Encrypt cert for `<hostname>.<tailnet>.ts.net` and proxies to `http://127.0.0.1:$PORT`. Prerequisites (tailnet admin — the image cannot enable these): **MagicDNS** and **HTTPS Certificates** on. Certs/state live under `/opt/data/.tailscale/` (`--statedir`). This is **cert-additive**: `http://<magicdns>:$PORT/` stays reachable. Not TLS-only. Prefer the HTTPS URL for login; cont-init sets `HERMES_WEBUI_TRUST_FORWARDED_PROTO=1` so Secure cookies work on that path.
 
 **Tailscale shell access (`TAILSCALE_SSH`)**
 
@@ -290,6 +291,20 @@ Only if you explicitly want identity-based Tailscale SSH. Try `tailscale ssh her
 `railway ssh` remains the Railway-hosted shell; tailnet SSH is separate and works when the public Railway URL is disabled.
 
 State persists under `/opt/data/.tailscale` on the volume. Without `TAILSCALE_AUTH_KEY`, the sidecar is a no-op and local/docker-compose behavior is unchanged.
+
+**HTTPS (`TAILSCALE_HTTPS=1`, v0.8.1+)**
+
+Post-join `tailscale serve --bg --https=443 http://127.0.0.1:$PORT` (not a `tailscale up` flag). Open `https://<TAILSCALE_HOSTNAME>.<tailnet>.ts.net/` (port 443).
+
+```bash
+# After deploy with TAILSCALE_HTTPS=1
+docker exec hermes-all-in-one tailscale --socket=/run/tailscale/tailscaled.sock serve status
+docker exec hermes-all-in-one ls -la /opt/data/.tailscale/certs
+```
+
+Serve config is persisted node state, so every boot reconciles it against your env **one handler at a time** — applying what you asked for and running `… off` on what you didn't. There is no global `serve reset`, so handlers you added yourself on other ports (including Funnel) are never touched. Port 22 is reconciled unconditionally, since the image has owned it since `TAILSCALE_SSH=openssh` became the default — setting `TAILSCALE_SSH=0` therefore also clears a handler inherited from an older image. Port 443 is only disabled when the image was the one that enabled it, tracked by a marker at `/opt/data/.tailscale/.serve-https-managed`, so an operator-managed 443 handler survives. Every serve failure is non-fatal: nothing is torn down before a re-apply, so a previously working handler stays in effect and the service logs a warning instead of restarting. After disabling something the image re-reads `serve status` and warns loudly if the handler is somehow still live.
+
+When HTTPS is on, cont-init sets `HERMES_WEBUI_TRUST_FORWARDED_PROTO=1` so WebUI auth cookies get the `Secure` flag on the real HTTPS path (Serve → loopback). Prefer `https://…ts.net/` for login. Plain `http://$PORT` is still open; under userspace networking that hop is also loopback, so a forged `X-Forwarded-Proto: https` from a tailnet peer is trusted at best-effort and can only break that peer’s own cookies (browser drops `Secure` over HTTP). Railway’s public edge stays outside uvicorn’s default trusted-peer set. TLS certs share the volume with machine credentials under `/opt/data/.tailscale/`. Wiping that directory forces a new Tailscale node **and** re-issues Let’s Encrypt certs (rate limit: 5 duplicate certs/week per name) — prefer rotating the auth key over wiping state when possible.
 
 **Railway logs look scary but are often fine:** s6 (`s6-rc: info: …`), cont-init (`cont-init: info: … exited 0`), and Tailscale startup lines are written to **stderr**, so Railway tags them `severity: error` even when the message says `info` or `successfully started`. Uvicorn `INFO:` lines behave the same way. Filter for real failures: non-zero exits, crash loops, or HTTP 5xx — not every red line.
 

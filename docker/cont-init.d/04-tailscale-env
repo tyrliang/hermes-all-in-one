@@ -1,30 +1,51 @@
 #!/command/with-contenv sh
 # shellcheck shell=sh
-# Optional outbound proxy env for supervised services (tailnet egress via userspace SOCKS5).
+# Tailscale-related env for supervised services (s6 container_environment fan-out).
+# - TAILSCALE_OUTBOUND_PROXY=1 → ALL_PROXY / HTTP(S)_PROXY via userspace SOCKS5
+# - TAILSCALE_HTTPS=1 → HERMES_WEBUI_TRUST_FORWARDED_PROTO so Secure cookies work
+#   when Serve terminates TLS and control-plane proxies with X-Forwarded-Proto: https.
+#   Safe: webui is loopback-only; plain http://$PORT still forwards proto=http.
 
 set -eu
 
 case "${TAILSCALE_AUTH_KEY:-}" in "") exit 0 ;; esac
 
-case "${TAILSCALE_OUTBOUND_PROXY:-}" in
-    1|true|TRUE|True|yes|YES|Yes) ;;
-    *) exit 0 ;;
-esac
-
 CONT_ENV="/run/s6/container_environment"
 if [ ! -d "${CONT_ENV}" ]; then
-    echo "[tailscale-env] warning: ${CONT_ENV} missing; skipping proxy env" >&2
+    echo "[tailscale-env] warning: ${CONT_ENV} missing; skipping env fan-out" >&2
     exit 0
 fi
 
-printf '%s' 'socks5://127.0.0.1:1055/' > "${CONT_ENV}/ALL_PROXY"
-printf '%s' 'http://127.0.0.1:1055/' > "${CONT_ENV}/HTTP_PROXY"
-printf '%s' 'http://127.0.0.1:1055/' > "${CONT_ENV}/HTTPS_PROXY"
-# Public cloud APIs must bypass the tailnet SOCKS proxy (e.g. Bedrock model catalog).
-NO_PROXY_DEFAULT='localhost,127.0.0.1,::1,.railway.internal,.amazonaws.com,amazonaws.com,.tailscale.com,tailscale.com,controlplane.tailscale.com,log.tailscale.com'
-if [ -n "${TAILSCALE_NO_PROXY_EXTRA:-}" ]; then
-    NO_PROXY_DEFAULT="${NO_PROXY_DEFAULT},${TAILSCALE_NO_PROXY_EXTRA}"
-fi
-printf '%s' "${NO_PROXY_DEFAULT}" > "${CONT_ENV}/NO_PROXY"
+TS_HTTPS=0
+case "${TAILSCALE_HTTPS:-}" in
+    1|true|TRUE|True|yes|YES|Yes) TS_HTTPS=1 ;;
+esac
 
-echo "[tailscale-env] outbound tailnet proxy enabled (ALL_PROXY + NO_PROXY for loopback)" >&2
+TS_OUTBOUND=0
+case "${TAILSCALE_OUTBOUND_PROXY:-}" in
+    1|true|TRUE|True|yes|YES|Yes) TS_OUTBOUND=1 ;;
+esac
+
+if [ "${TS_HTTPS}" = "0" ] && [ "${TS_OUTBOUND}" = "0" ]; then
+    exit 0
+fi
+
+if [ "${TS_HTTPS}" = "1" ]; then
+    # WebUI only honors X-Forwarded-Proto when this opt-in is set (auth.py).
+    # Control plane already sets the header from request.url.scheme / client proto.
+    printf '%s' '1' > "${CONT_ENV}/HERMES_WEBUI_TRUST_FORWARDED_PROTO"
+    echo "[tailscale-env] HERMES_WEBUI_TRUST_FORWARDED_PROTO=1 (TAILSCALE_HTTPS; Secure cookies via Serve)" >&2
+fi
+
+if [ "${TS_OUTBOUND}" = "1" ]; then
+    printf '%s' 'socks5://127.0.0.1:1055/' > "${CONT_ENV}/ALL_PROXY"
+    printf '%s' 'http://127.0.0.1:1055/' > "${CONT_ENV}/HTTP_PROXY"
+    printf '%s' 'http://127.0.0.1:1055/' > "${CONT_ENV}/HTTPS_PROXY"
+    # Public cloud APIs must bypass the tailnet SOCKS proxy (e.g. Bedrock model catalog).
+    NO_PROXY_DEFAULT='localhost,127.0.0.1,::1,.railway.internal,.amazonaws.com,amazonaws.com,.tailscale.com,tailscale.com,controlplane.tailscale.com,log.tailscale.com'
+    if [ -n "${TAILSCALE_NO_PROXY_EXTRA:-}" ]; then
+        NO_PROXY_DEFAULT="${NO_PROXY_DEFAULT},${TAILSCALE_NO_PROXY_EXTRA}"
+    fi
+    printf '%s' "${NO_PROXY_DEFAULT}" > "${CONT_ENV}/NO_PROXY"
+    echo "[tailscale-env] outbound tailnet proxy enabled (ALL_PROXY + NO_PROXY for loopback)" >&2
+fi
