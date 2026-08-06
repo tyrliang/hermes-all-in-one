@@ -23,6 +23,13 @@
 # disabled when we enabled it, tracked by ${TAILSCALE_STATE_DIR}/.serve-https-managed.
 # All serve failures are non-fatal — nothing is torn down before a re-apply, so a
 # previously working handler survives a failed attempt.
+#
+# Exit node (TAILSCALE_EXIT_NODE) — optional internet egress via a tailnet exit node.
+# Value: peer base name, MagicDNS name, or Tailscale IP (same as `tailscale set --exit-node`).
+# Unset/empty: do not pass --exit-node (leaves any prior manual/state preference alone).
+# Pair with TAILSCALE_OUTBOUND_PROXY=1 so app traffic uses the userspace SOCKS/HTTP proxy
+# (localhost:1055); only proxied traffic exits via the node. Approve the exit node in the
+# Tailscale admin console the first time a client uses it.
 
 # No auth key: hold the dependency slot open without joining a tailnet.
 case "${TAILSCALE_AUTH_KEY:-}" in
@@ -57,6 +64,12 @@ case "${TAILSCALE_HTTPS:-}" in
     1|true|TRUE|True|yes|YES|Yes) TS_HTTPS=1 ;;
 esac
 
+# Optional exit node for internet egress (userspace SOCKS/HTTP proxy dials via it).
+# Trim whitespace; empty/unset means "do not configure an exit node via env".
+TS_EXIT_NODE="${TAILSCALE_EXIT_NODE:-}"
+# shellcheck disable=SC2001
+TS_EXIT_NODE="$(printf '%s' "${TS_EXIT_NODE}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
 mkdir -p /run/tailscale "${TS_STATE_DIR}" "${TS_STATE_DIR}/profile"
 
 # Do not route tailscaled's own control-plane traffic through ALL_PROXY (set by
@@ -77,7 +90,11 @@ case "${TAILSCALE_MTU:-1200}" in
         ;;
 esac
 
-echo "[tailscaled] starting userspace tailscaled (statedir=${TS_STATE_DIR} ssh=${TS_SSH_MODE} https=${TS_HTTPS} accept-routes=${TS_ACCEPT_ROUTES})" >&2
+if [ -n "${TS_EXIT_NODE}" ]; then
+    echo "[tailscaled] starting userspace tailscaled (statedir=${TS_STATE_DIR} ssh=${TS_SSH_MODE} https=${TS_HTTPS} accept-routes=${TS_ACCEPT_ROUTES} exit-node=${TS_EXIT_NODE})" >&2
+else
+    echo "[tailscaled] starting userspace tailscaled (statedir=${TS_STATE_DIR} ssh=${TS_SSH_MODE} https=${TS_HTTPS} accept-routes=${TS_ACCEPT_ROUTES})" >&2
+fi
 
 # Keep --state for existing volumes; add --statedir so TLS certs land on the
 # volume (…/certs), not ephemeral /var/lib/tailscale/certs.
@@ -102,6 +119,11 @@ _ts_up() {
     if [ "${TS_SSH_MODE}" = "tailscale" ]; then
         set -- "$@" --ssh
     fi
+    # Only when set: unset/empty must not pass --exit-node (avoids wiping a
+    # manually configured exit node and keeps default = no env-driven exit node).
+    if [ -n "${TS_EXIT_NODE}" ]; then
+        set -- "$@" --exit-node="${TS_EXIT_NODE}"
+    fi
     tailscale --socket="${TS_SOCKET}" up "$@"
 }
 
@@ -125,6 +147,16 @@ while ! _ts_up; do
     fi
     sleep 0.5
 done
+
+# Re-apply exit node after join. `up --exit-node` usually sticks, but a warm
+# node with prior prefs can need an explicit set; only when env is non-empty.
+if [ -n "${TS_EXIT_NODE}" ]; then
+    if ! tailscale --socket="${TS_SOCKET}" set --exit-node="${TS_EXIT_NODE}" 2>/dev/null; then
+        echo "[tailscaled] warning: failed to set exit-node=${TS_EXIT_NODE}; approve the node in admin console if first use" >&2
+    else
+        echo "[tailscaled] exit-node=${TS_EXIT_NODE} (pair with TAILSCALE_OUTBOUND_PROXY=1 for app egress)" >&2
+    fi
+fi
 
 if [ "${TS_SSH_MODE}" = "tailscale" ]; then
     tailscale --socket="${TS_SOCKET}" set --ssh 2>/dev/null || true
@@ -244,7 +276,11 @@ if [ "${TS_OFF_TCP22}" = "1" ] || [ "${TS_OFF_443}" = "1" ]; then
     fi
 fi
 
-echo "[tailscaled] joined tailnet as ${TS_HOSTNAME} (ssh=${TS_SSH_MODE} https=${TS_HTTPS})" >&2
+if [ -n "${TS_EXIT_NODE}" ]; then
+    echo "[tailscaled] joined tailnet as ${TS_HOSTNAME} (ssh=${TS_SSH_MODE} https=${TS_HTTPS} exit-node=${TS_EXIT_NODE})" >&2
+else
+    echo "[tailscaled] joined tailnet as ${TS_HOSTNAME} (ssh=${TS_SSH_MODE} https=${TS_HTTPS})" >&2
+fi
 if [ "${TS_SSH_MODE}" = "tailscale" ]; then
     echo "[tailscaled] warning: Tailscale SSH often hangs on userspace (no remote SSH banner); prefer TAILSCALE_SSH=openssh" >&2
 fi
