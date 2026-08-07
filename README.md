@@ -197,8 +197,9 @@ Railway blocks `NET_ADMIN` and `/dev/net/tun`, so this image uses Tailscale **us
 3. Disable the service’s **public** Railway URL if you want tailnet-only access (the Tailscale IP/MagicDNS name still works).
 4. Optional — outbound to other tailnet nodes (homelab DB, etc.): `TAILSCALE_OUTBOUND_PROXY=1` (sets `ALL_PROXY` with `NO_PROXY` for loopback and `*.railway.internal`).
 5. Optional — reach **subnet routes** advertised by another node (e.g. `192.168.88.0/24` via a subnet router): `TAILSCALE_ACCEPT_ROUTES=1` (also requires `TAILSCALE_OUTBOUND_PROXY=1`; userspace has no kernel routes — the SOCKS proxy dials accepted prefixes).
-6. Optional — **shell over the tailnet** via `TAILSCALE_SSH` (see below). Disable with `TAILSCALE_SSH=0`.
-7. Optional (**v0.8.1+**) — **HTTPS on the tailnet** (`TAILSCALE_HTTPS=1`): Serve terminates TLS on 443 with a Let’s Encrypt cert for `<hostname>.<tailnet>.ts.net` and proxies to `http://127.0.0.1:$PORT`. Prerequisites (tailnet admin — the image cannot enable these): **MagicDNS** and **HTTPS Certificates** on. Certs/state live under `/opt/data/.tailscale/` (`--statedir`). This is **cert-additive**: `http://<magicdns>:$PORT/` stays reachable. Not TLS-only. Prefer the HTTPS URL for login; cont-init sets `HERMES_WEBUI_TRUST_FORWARDED_PROTO=1` so Secure cookies work on that path.
+6. Optional — **internet egress via a tailnet exit node** (`TAILSCALE_EXIT_NODE=<peer>`): routes proxied outbound traffic through a node advertising as an exit node (home/office Pi, etc.). Value is a peer base name, MagicDNS name, or Tailscale IP (same as `tailscale set --exit-node`). Unset/empty = no env-driven exit node (default). Pair with `TAILSCALE_OUTBOUND_PROXY=1` so app traffic uses `localhost:1055`; only proxied traffic exits via the node. Approve the exit node in the Tailscale admin console on first use. Preference is also written into node state on the volume.
+7. Optional — **shell over the tailnet** via `TAILSCALE_SSH` (see below). Disable with `TAILSCALE_SSH=0`.
+8. Optional (**v0.8.1+**) — **HTTPS on the tailnet** (`TAILSCALE_HTTPS=1`): Serve terminates TLS on 443 with a Let’s Encrypt cert for `<hostname>.<tailnet>.ts.net` and proxies to `http://127.0.0.1:$PORT`. Prerequisites (tailnet admin — the image cannot enable these): **MagicDNS** and **HTTPS Certificates** on. Certs/state live under `/opt/data/.tailscale/` (`--statedir`). This is **cert-additive**: `http://<magicdns>:$PORT/` stays reachable. Not TLS-only. Prefer the HTTPS URL for login; cont-init sets `HERMES_WEBUI_TRUST_FORWARDED_PROTO=1` so Secure cookies work on that path.
 
 **Tailscale shell access (`TAILSCALE_SSH`)**
 
@@ -317,6 +318,27 @@ When HTTPS is on, cont-init sets `HERMES_WEBUI_TRUST_FORWARDED_PROTO=1` so WebUI
 With `TAILSCALE_OUTBOUND_PROXY=1`, expect one-time Tailscale noise at boot (`TPM`, UDP buffer size, `profile not found`, brief `connection refused` on `127.0.0.1:1055` before the userspace proxy is up). After `[tailscaled] joined tailnet` and `Switching ipn state … -> Running`, the node is healthy. Optional `TAILSCALE_NO_PROXY_EXTRA` adds comma-separated hosts to `NO_PROXY` for APIs that must not go through the tailnet proxy (public LLM endpoints, etc.).
 
 To reach LAN IPs behind a tailnet subnet router (not just `100.x` peers), set `TAILSCALE_ACCEPT_ROUTES=1` with `TAILSCALE_OUTBOUND_PROXY=1`. Approve the advertised routes in the Tailscale admin console (or ACL auto-approvers). Without accept-routes, the userspace SOCKS proxy will not dial those prefixes.
+
+**Exit node (`TAILSCALE_EXIT_NODE`, optional)**
+
+Use a residential/home/office peer as internet egress so datacenter IPs (Railway) are not seen by sites that block them (e.g. Reddit). The peer must advertise as an exit node (`tailscale set --advertise-exit-node` on that machine) and be approved in the admin console.
+
+```
+TAILSCALE_OUTBOUND_PROXY=1
+TAILSCALE_EXIT_NODE=server-office-pi-01
+# or MagicDNS / Tailscale IP:
+# TAILSCALE_EXIT_NODE=server-office-pi-01.your-tailnet.ts.net
+# TAILSCALE_EXIT_NODE=100.x.y.z
+```
+
+Unset or empty = default: the image does **not** pass `--exit-node` and does **not** clear a preference you set manually (`tailscale set --exit-node=…`). When set, every boot applies it via `tailscale up` and a post-join `tailscale set`. Verify:
+
+```bash
+tailscale status | grep 'exit node'
+curl -s https://ipinfo.io/ip   # should match the exit node's public IP, not Railway
+```
+
+Only traffic that uses the userspace proxy (`ALL_PROXY` / `HTTP(S)_PROXY` → `localhost:1055`) exits via the node. Direct sockets still use the host's public IP.
 
 **PMTU black hole (office network: small responses work, large pages hang)**
 
