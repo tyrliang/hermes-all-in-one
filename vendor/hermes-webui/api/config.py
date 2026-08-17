@@ -1096,6 +1096,12 @@ _FALLBACK_MODELS = [
     # OpenAI
     {"provider": "OpenAI", "id": "openai/gpt-5.5-pro", "label": "GPT 5.5 Pro"},
     {"provider": "OpenAI", "id": "openai/gpt-5.5", "label": "GPT 5.5"},
+    {"provider": "OpenAI", "id": "openai/gpt-5.6-luna-pro", "label": "GPT 5.6 Luna Pro"},
+    {"provider": "OpenAI", "id": "openai/gpt-5.6-luna", "label": "GPT 5.6 Luna"},
+    {"provider": "OpenAI", "id": "openai/gpt-5.6-terra-pro", "label": "GPT 5.6 Terra Pro"},
+    {"provider": "OpenAI", "id": "openai/gpt-5.6-terra", "label": "GPT 5.6 Terra"},
+    {"provider": "OpenAI", "id": "openai/gpt-5.6-sol-pro", "label": "GPT 5.6 Sol Pro"},
+    {"provider": "OpenAI", "id": "openai/gpt-5.6-sol", "label": "GPT 5.6 Sol"},
     {"provider": "OpenAI",    "id": "openai/gpt-5.4-mini",                "label": "GPT-5.4 Mini"},
     {"provider": "OpenAI",    "id": "openai/gpt-5.4",                     "label": "GPT-5.4"},
     # Anthropic — 4.6 flagship + 4.5 generation
@@ -1103,6 +1109,8 @@ _FALLBACK_MODELS = [
     {"provider": "Anthropic", "id": "anthropic/claude-sonnet-5", "label": "Claude Sonnet 5"},
     {"provider": "Anthropic", "id": "anthropic/claude-opus-4.8-fast", "label": "Claude Opus 4.8 Fast"},
     {"provider": "Anthropic", "id": "anthropic/claude-opus-4.8", "label": "Claude Opus 4.8"},
+    {"provider": "Anthropic", "id": "anthropic/claude-opus-5-fast", "label": "Claude Opus 5 Fast"},
+    {"provider": "Anthropic", "id": "anthropic/claude-opus-5", "label": "Claude Opus 5"},
     {"provider": "Anthropic", "id": "anthropic/claude-fable-5", "label": "Claude Fable 5"},
     {"provider": "Anthropic", "id": "anthropic/claude-opus-4.7",          "label": "Claude Opus 4.7"},
     {"provider": "Anthropic", "id": "anthropic/claude-opus-4.6",          "label": "Claude Opus 4.6"},
@@ -1110,26 +1118,25 @@ _FALLBACK_MODELS = [
     {"provider": "Anthropic", "id": "anthropic/claude-sonnet-4-5",        "label": "Claude Sonnet 4.5"},
     {"provider": "Anthropic", "id": "anthropic/claude-haiku-4-5",         "label": "Claude Haiku 4.5"},
     # Google — 3.x (latest preview) + 2.5 (stable GA)
-    {"provider": "Google", "id": "google/gemini-3.5-flash", "label": "Gemini 3.5 Flash"},
-    {"provider": "Google", "id": "google/gemini-3-pro-preview", "label": "Gemini 3 Pro Preview"},
+    {"provider": "Google", "id": "google/gemini-3.7-flash", "label": "Gemini 3.7 Flash"},
     {"provider": "Google",    "id": "google/gemini-3.1-pro-preview",            "label": "Gemini 3.1 Pro Preview"},
     {"provider": "Google",    "id": "google/gemini-3-flash-preview",            "label": "Gemini 3 Flash Preview"},
     {"provider": "Google",    "id": "google/gemini-3.1-flash-lite-preview",     "label": "Gemini 3.1 Flash Lite Preview"},
     {"provider": "Google",    "id": "google/gemini-2.5-pro",                    "label": "Gemini 2.5 Pro"},
     {"provider": "Google",    "id": "google/gemini-2.5-flash",                  "label": "Gemini 2.5 Flash"},
     # DeepSeek
+    {"provider": "DeepSeek", "id": "deepseek/deepseek-v4-flash-0731", "label": "Deepseek V4 Flash 0731"},
+    {"provider": "DeepSeek", "id": "deepseek/deepseek-v4-pro-0813", "label": "Deepseek V4 Pro 0813"},
     {"provider": "DeepSeek",  "id": "deepseek/deepseek-v4-flash",          "label": "DeepSeek V4 Flash"},
     {"provider": "DeepSeek",  "id": "deepseek/deepseek-v4-pro",            "label": "DeepSeek V4 Pro"},
     {"provider": "DeepSeek",  "id": "deepseek/deepseek-chat-v3-0324",      "label": "DeepSeek V3 (legacy)"},
     {"provider": "DeepSeek",  "id": "deepseek/deepseek-r1",                "label": "DeepSeek R1 (legacy)"},
     # Qwen (Alibaba) — strong coding and general models
-    {"provider": "Qwen", "id": "qwen/qwen3.6-35b-a3b", "label": "Qwen3.6 35b A3b"},
-    {"provider": "Qwen", "id": "qwen/qwen3.7-plus", "label": "Qwen3.7 Plus"},
-    {"provider": "Qwen", "id": "qwen/qwen3.7-max", "label": "Qwen3.7 Max"},
+    {"provider": "Qwen", "id": "qwen/qwen3.8-max", "label": "Qwen3.8 Max"},
     {"provider": "Qwen",      "id": "qwen/qwen3-coder",                   "label": "Qwen3 Coder"},
     {"provider": "Qwen",      "id": "qwen/qwen3.6-plus",                  "label": "Qwen3.6 Plus"},
     # xAI
-    {"provider": "xAI", "id": "x-ai/grok-4.3", "label": "Grok 4.3"},
+    {"provider": "xAI", "id": "x-ai/grok-4.6", "label": "Grok 4.6"},
     {"provider": "xAI",       "id": "x-ai/grok-4.20",                    "label": "Grok 4.20"},
     # Mistral
     {"provider": "Mistral",   "id": "mistralai/mistral-large-latest",     "label": "Mistral Large"},
@@ -1363,6 +1370,46 @@ def _custom_provider_entries(config_obj: dict | None = None) -> list[dict]:
     if not isinstance(entries, list):
         return []
     return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _configured_model_ids(raw_models: object) -> list[str]:
+    """Return ordered model IDs from supported config allowlist shapes."""
+    if isinstance(raw_models, dict):
+        candidates = (key for key in raw_models if isinstance(key, str))
+    elif isinstance(raw_models, list):
+        candidates = raw_models
+    else:
+        return []
+
+    model_ids: list[str] = []
+    for item in candidates:
+        if isinstance(item, dict):
+            candidate = item.get("id") or item.get("model") or item.get("name")
+        else:
+            candidate = item
+        model_id = str(candidate or "").strip()
+        if model_id and model_id not in model_ids:
+            model_ids.append(model_id)
+    return model_ids
+
+
+def _configured_model_options(raw_models: object) -> list[dict[str, str]]:
+    """Return picker option rows from supported config allowlist shapes."""
+    labels: dict[str, str] = {}
+    if isinstance(raw_models, list):
+        for item in raw_models:
+            if not isinstance(item, dict):
+                continue
+            candidate = item.get("id") or item.get("model") or item.get("name")
+            model_id = str(candidate or "").strip()
+            if not model_id or model_id in labels:
+                continue
+            label = str(item.get("label") or model_id).strip() or model_id
+            labels[model_id] = label
+    return [
+        {"id": model_id, "label": labels.get(model_id, model_id)}
+        for model_id in _configured_model_ids(raw_models)
+    ]
 
 
 def _named_custom_provider_slugs(config_obj: dict | None = None) -> set[str]:
@@ -1645,6 +1692,12 @@ _PROVIDER_MODELS = {
         {"id": "gpt-5.3-codex-spark", "label": "GPT 5.3 Codex Spark"},
         {"id": "openai", "label": "Openai"},
         {"id": "gpt-5.3-codex", "label": "GPT 5.3 Codex"},
+        {"id": "gpt-5.6-luna-pro", "label": "GPT 5.6 Luna Pro"},
+        {"id": "gpt-5.6-luna", "label": "GPT 5.6 Luna"},
+        {"id": "gpt-5.6-terra-pro", "label": "GPT 5.6 Terra Pro"},
+        {"id": "gpt-5.6-terra", "label": "GPT 5.6 Terra"},
+        {"id": "gpt-5.6-sol-pro", "label": "GPT 5.6 Sol Pro"},
+        {"id": "gpt-5.6-sol", "label": "GPT 5.6 Sol"},
         {"id": "gpt-5.5",      "label": "GPT-5.5"},
         {"id": "gpt-5.5-mini", "label": "GPT-5.5 Mini"},
         {"id": "gpt-5.4-mini", "label": "GPT-5.4 Mini"},
@@ -1659,6 +1712,12 @@ _PROVIDER_MODELS = {
     "openai-codex": [
         {"id": "gpt-5.3-codex-spark", "label": "GPT 5.3 Codex Spark"},
         {"id": "openai", "label": "Openai"},
+        {"id": "gpt-5.6-luna-pro", "label": "GPT 5.6 Luna Pro"},
+        {"id": "gpt-5.6-luna", "label": "GPT 5.6 Luna"},
+        {"id": "gpt-5.6-terra-pro", "label": "GPT 5.6 Terra Pro"},
+        {"id": "gpt-5.6-terra", "label": "GPT 5.6 Terra"},
+        {"id": "gpt-5.6-sol-pro", "label": "GPT 5.6 Sol Pro"},
+        {"id": "gpt-5.6-sol", "label": "GPT 5.6 Sol"},
         {"id": "gpt-5.5", "label": "GPT-5.5"},
         {"id": "gpt-5.5-mini", "label": "GPT-5.5 Mini"},
         {"id": "gpt-5.4", "label": "GPT-5.4"},
@@ -2373,6 +2432,46 @@ def _is_local_server_provider(provider_id: str) -> bool:
     return False
 
 
+def _model_id_declared_in_config(model_id: str, config_provider: str | None) -> bool:
+    """True when the user's own config declares ``model_id`` verbatim (full form).
+
+    This is the COLD-catalog provenance signal for #5979: when the live
+    ``/v1/models`` catalog is unbuilt (fresh process, headless client), a
+    vendor-namespaced id the user configured — ``model.default``, the
+    ``model.models`` allowlist, or the matching ``custom_providers[].models`` /
+    ``.model`` for a named ``custom:<slug>`` — is still authoritative provenance
+    that the full id is intentional and must be preserved. Config is the one
+    source available with zero network and no catalog dependency, so it survives
+    a cold restart (b3nw's ``model.default: x-ai/grok-4.5``). Checked ONLY for
+    custom providers; returns False for anything not verbatim-declared so the
+    caller falls through to the legacy family heuristic.
+    """
+    model = str(model_id or "").strip()
+    if not model:
+        return False
+    model_cfg = cfg.get("model", {})
+    if isinstance(model_cfg, dict):
+        if str(model_cfg.get("default") or "").strip() == model:
+            return True
+        _declared = model_cfg.get("models")
+        if model in _configured_model_ids(_declared):
+            return True
+    # Named custom:<slug> — scan its custom_providers[] entry for a verbatim id.
+    prov = str(config_provider or "").strip().lower()
+    if prov.startswith("custom:"):
+        raw_suffix = prov.removeprefix("custom:")
+        for entry in _custom_provider_entries():
+            slug = _custom_provider_slug_from_name(entry.get("name"))
+            entry_name = str(entry.get("name") or "").strip().lower()
+            if not (prov in {entry_name, slug} or (slug and raw_suffix == slug.removeprefix("custom:"))):
+                continue
+            if str(entry.get("model") or "").strip() == model:
+                return True
+            if model in _configured_model_ids(entry.get("models")):
+                return True
+    return False
+
+
 def _is_first_party_model(provider_id: str, model_id: str) -> bool:
     """True when ``model_id`` is listed in ``provider_id``'s own static catalog.
 
@@ -2528,7 +2627,7 @@ def _get_provider_cfg(provider_id) -> dict:
     return provider_cfg if isinstance(provider_cfg, dict) else {}
 
 
-def resolve_model_provider(model_id: str) -> tuple:
+def resolve_model_provider(model_id: str, *, explicitly_picked: bool = False) -> tuple:
     """Resolve model name, provider, and base_url for AIAgent.
 
     Model IDs from the dropdown can be in several formats:
@@ -2548,6 +2647,16 @@ def resolve_model_provider(model_id: str) -> tuple:
     provider.
 
     Returns (model, provider, base_url) where provider and base_url may be None.
+
+    ``explicitly_picked``: True when the caller knows the user DELIBERATELY
+    selected ``model_id`` this session (persisted from an ``explicit_model_pick``
+    UI action), as opposed to it being a stale session leftover. Used ONLY for
+    the custom-proxy COLD-catalog decision (#5979): with no provenance available,
+    a deliberately-picked ``vendor/model`` is preserved verbatim (the user chose
+    it, the proxy routes on it), while an UNMARKED id (a stale cross-provider
+    leftover, e.g. #433's ``openai/gpt-5.4`` on a bare-only relay) still gets the
+    legacy redundant-prefix strip so it keeps routing when cold. Warm provenance
+    (endpoint-advertised ids) always takes precedence over this flag.
     """
     config_provider = None
     config_base_url = None
@@ -2622,16 +2731,7 @@ def resolve_model_provider(model_id: str) -> tuple:
                     continue
                 if _canon_config_provider == "copilot":
                     continue  # copilot.models is a settings map, not an allowlist
-                _own_models = _pdef.get('models')
-                if isinstance(_own_models, list):
-                    for _m in _own_models:
-                        _mid = str(_m.get('id') or '') if isinstance(_m, dict) else str(_m or '')
-                        if _mid.strip():
-                            _provider_models_set.add(_mid.strip())
-                elif isinstance(_own_models, dict):
-                    _provider_models_set.update(
-                        str(k).strip() for k in _own_models if isinstance(k, str) and str(k).strip()
-                    )
+                _provider_models_set.update(_configured_model_ids(_pdef.get('models')))
     _skip_custom_providers = (
         _is_explicit_non_custom_provider
         and (
@@ -2652,13 +2752,7 @@ def resolve_model_provider(model_id: str) -> tuple:
             entry_model_ids = set()
             if entry_model:
                 entry_model_ids.add(entry_model)
-            entry_models = entry.get('models')
-            if isinstance(entry_models, dict):
-                entry_model_ids.update(
-                    key.strip()
-                    for key in entry_models.keys()
-                    if isinstance(key, str) and key.strip()
-                )
+            entry_model_ids.update(_configured_model_ids(entry.get('models')))
             if entry_name and model_id in entry_model_ids:
                 provider_hint = _custom_provider_slug_from_name(entry_name)
                 return model_id, provider_hint, entry_base_url or None
@@ -2692,20 +2786,9 @@ def resolve_model_provider(model_id: str) -> tuple:
             # own providers: entry may match; skip all other slugs.
             if _skip_custom_providers and _canonicalise_provider_id(slug) != _active_slug:
                 continue
-            p_models = pdef.get('models')
-            if isinstance(p_models, list):
-                for m in p_models:
-                    mid = str(m.get('id') or '') if isinstance(m, dict) else str(m or '')
-                    if not mid:
-                        continue
-                    if mid.strip() == target:
-                        p_base_url = str(pdef.get('base_url') or '').strip()
-                        return model_id, slug, p_base_url or None
-            elif isinstance(p_models, dict):
-                for mid in p_models:
-                    if isinstance(mid, str) and mid.strip() == target:
-                        p_base_url = str(pdef.get('base_url') or '').strip()
-                        return model_id, slug, p_base_url or None
+            if target in _configured_model_ids(pdef.get('models')):
+                p_base_url = str(pdef.get('base_url') or '').strip()
+                return model_id, slug, p_base_url or None
 
     # @provider:model format — explicit provider hint from the dropdown.
     # Route through that provider directly (resolve_runtime_provider will
@@ -2827,9 +2910,76 @@ def resolve_model_provider(model_id: str) -> tuple:
             # earlier by the ``prefix == config_provider`` branch.
             _cp_lower = (config_provider or "").strip().lower()
             _is_custom = _cp_lower == "custom" or _cp_lower.startswith("custom:")
-            if prefix in _PROVIDER_MODELS and (
-                not _is_custom or _is_first_party_model(prefix, bare)
-            ):
+            if _is_custom:
+                # Vendor-routing proxy: the reliable signal for whether the
+                # endpoint wants the full ``vendor/model`` id or the bare id is
+                # what its own catalog actually advertised (the ids the user
+                # picked from the dropdown, populated by the endpoint's live
+                # ``/v1/models`` probe or a ``custom_providers[].models``
+                # allowlist). The catalog-FAMILY heuristic (_is_first_party_model)
+                # is the wrong question: it answered "is this bare id a first-
+                # party model of the prefix's home vendor?" which is True for BOTH
+                # ``x-ai/grok-4.5`` (proxy advertised it whole — must preserve,
+                # #5979) and ``openai/gpt-5.4`` (a stale leftover on a relay that
+                # only serves bare ``gpt-5.4`` — must strip, #433). Those two are
+                # structurally identical to the family heuristic, so a model
+                # graduating into a first-party catalog (agent commit 62ada5175
+                # adding grok-4.5) silently flipped a working custom-proxy id from
+                # preserved to stripped. Tri-state provenance tells them apart:
+                #
+                # (1) Config declares the full id verbatim (model.default /
+                #     model.models / custom_providers[].models). Authoritative and
+                #     network-free, so #5979 survives a cold restart — preserve.
+                if _model_id_declared_in_config(model_id, config_provider):
+                    return model_id, config_provider, config_base_url
+                # (2) The endpoint's live/cached catalog advertised it.
+                _advertised = _endpoint_advertised_model_ids(config_provider)
+                if _advertised:
+                    # Full id advertised → route on it verbatim (#5979/#3872/#548).
+                    if model_id in _advertised:
+                        return model_id, config_provider, config_base_url
+                    # ONLY the bare id advertised → the prefix is a redundant
+                    # leftover the relay rejects; strip it (#433). Keep the
+                    # ``prefix in _PROVIDER_MODELS`` belt so an adversarial catalog
+                    # advertising a bare id can't strip an unknown-vendor prefix.
+                    if bare in _advertised and prefix in _PROVIDER_MODELS:
+                        return bare, config_provider, config_base_url
+                    # Advertised but neither exact shape matched → intrinsic /
+                    # unknown prefix the proxy routes on; preserve it whole.
+                    return model_id, config_provider, config_base_url
+                # (3) Provenance genuinely unavailable (cold/unbuilt or
+                #     fingerprint-mismatched catalog AND not config-declared).
+                #     Distinguish a DELIBERATE selection from a stale leftover:
+                #
+                #     * explicitly_picked → PRESERVE verbatim. The user chose this
+                #       exact ``vendor/model`` in the UI this session; the proxy
+                #       routes on it. A wrong strip destroys a namespace the proxy
+                #       needs (recurs every turn, unrepairable short of declaring
+                #       every model in config) — this is b3nw's #5979 case: a
+                #       non-default pick on a custom:<slug> proxy, cold catalog.
+                #     * NOT explicitly_picked → legacy redundant-prefix strip. An
+                #       unmarked id here is a stale cross-provider leftover (the
+                #       user switched providers and the old session model lingers,
+                #       e.g. #433's ``openai/gpt-5.4`` on a relay that only serves
+                #       bare ``gpt-5.4``); stripping keeps it routing while cold.
+                #
+                #     Warm provenance (case 2, endpoint-advertised ids) always
+                #     wins over this flag; the send path also warms provenance
+                #     network-free from the disk cache first
+                #     (warm_models_catalog_provenance_if_cold), so this branch is
+                #     reached only in the narrow no-disk-cache window. The flag
+                #     removes the data-driven flaw where a model graduating into
+                #     the static first-party catalog silently flipped routing
+                #     (exactly how #5979 regressed).
+                if explicitly_picked:
+                    return model_id, config_provider, config_base_url
+                if prefix in _PROVIDER_MODELS and _is_first_party_model(prefix, bare):
+                    return bare, config_provider, config_base_url
+                return model_id, config_provider, config_base_url
+            # Non-custom first-party provider pointed at an OpenAI-compatible
+            # proxy (e.g. provider=openai + base_url=litellm): the bare id is
+            # what it expects — "openai/gpt-5.4" → "gpt-5.4" (#433).
+            if prefix in _PROVIDER_MODELS:
                 return bare, config_provider, config_base_url
             # Intrinsic / unknown prefix — pass the full model_id through unchanged.
             return model_id, config_provider, config_base_url
@@ -3270,6 +3420,94 @@ def _nested_gateway_route_reasoning(model: str) -> bool:
     return False
 
 
+def _zai_glm_classification(model_id: str, provider_id: str) -> str | None:
+    """Classify a model on the native ``zai`` endpoint into a Z.AI capability tier.
+
+    Returns one of:
+
+    * ``"effort"``  — accepts the ``reasoning_effort`` intensity ladder
+      (GLM-5.2+; Z.AI's max/xhigh/high/medium/low/minimal values match
+      ``VALID_REASONING_EFFORTS`` exactly).
+    * ``"thinking"`` — does NOT accept the effort ladder but DOES accept the
+      ``thinking: {"type": "enabled"|"disabled"}`` on/off toggle (GLM-4.5,
+      4.5-air/flash, 4.6, 5, 5.1, 5-turbo, and other 4.5+ non-4.7 GLM models).
+    * ``"forced"``  — GLM-4.7 family: forced thinking, neither the toggle nor
+      the ladder is configurable.
+    * ``None``      — not a native-``zai`` GLM model (non-GLM id, non-zai
+      provider, or an aggregator/custom provider that routes through its own
+      router rather than Z.AI's per-model docs).
+
+    Scoped to the native ``zai`` endpoint (aliases ``glm``/``z-ai``/``z.ai``/
+    ``zhipu`` all resolve to ``zai`` via ``_resolve_provider_alias``). Per
+    docs.z.ai: ``thinking`` is supported by GLM-4.5+ (4.7 forces it on),
+    ``reasoning_effort`` is GLM-5.2+ exclusive.
+
+    Shared by ``_filter_reasoning_efforts_for_provider`` (UI dropdown options),
+    ``coerce_reasoning_effort_for_model`` (what is actually sent to Z.AI), and
+    ``get_reasoning_status`` (whether the composer renders an On/None toggle when
+    the effort ladder is empty) so all three surfaces agree.
+    """
+    provider = _resolve_provider_alias(str(provider_id or "").strip().lower())
+    if provider != "zai":
+        return None
+    bare = _strip_provider_hint_for_reasoning(str(model_id or "")).lower().rsplit("/", 1)[-1]
+    if "glm" not in bare:
+        return None
+    # GLM-4.7 family: forced thinking — reasoning is not configurable at all.
+    if bare.startswith("glm-4.7"):
+        return "forced"
+    m = re.search(r"glm-(\d+)(?:\D+(\d+))?", bare)
+    if m:
+        major = int(m.group(1))
+        minor = int(m.group(2)) if m.group(2) else 0
+        # GLM-5.2+ accepts the effort ladder.
+        if (major, minor) >= (5, 2):
+            return "effort"
+        # GLM-4.5+ (but below 5.2) accepts the thinking toggle only.
+        if (major, minor) >= (4, 5):
+            return "thinking"
+    # Pre-4.5 GLM (e.g. glm-4, glm-3): no thinking support documented by Z.AI.
+    return None
+
+
+def _zai_glm_reasoning_efforts_supported(model_id: str, provider_id: str) -> bool | None:
+    """Z.AI native-endpoint gate for the ``reasoning_effort`` intensity field.
+
+    Returns True if the model accepts the effort ladder (GLM-5.2+), False if it
+    is known NOT to (pre-5.2 GLM and the forced-thinking GLM-4.7 family), or None
+    if this is not a native-``zai`` GLM model (caller should defer to other rules).
+
+    Thin wrapper over ``_zai_glm_classification`` kept for the coercion path's
+    explicit True/False/None contract. A known-False result means "send no
+    ``reasoning_effort`` field" (distinct from the ambiguous empty list returned
+    for genuinely unknown models, which preserves the configured effort verbatim
+    per #3505).
+    """
+    cls = _zai_glm_classification(model_id, provider_id)
+    if cls is None:
+        return None
+    return cls == "effort"
+
+
+def _zai_glm_thinking_toggle_supported(model_id: str, provider_id: str) -> bool | None:
+    """Z.AI native-endpoint gate for the ``thinking`` on/off toggle.
+
+    Returns True if the model accepts the ``thinking: {"type": ...}`` toggle
+    (GLM-4.5+ except the forced-thinking GLM-4.7), False if it does not
+    (GLM-4.7 forced, or pre-4.5 GLM with no thinking support), or None if this
+    is not a native-``zai`` GLM model (caller should defer — the toggle's
+    availability is then governed by ``supported_efforts`` as before).
+
+    Drives the ``supports_thinking_toggle`` field in ``get_reasoning_status`` so
+    the composer can render an operable On/None control for GLM-4.5–5.1 models
+    that accept the thinking toggle but not the effort ladder.
+    """
+    cls = _zai_glm_classification(model_id, provider_id)
+    if cls is None:
+        return None
+    return cls in {"effort", "thinking"}
+
+
 def _filter_reasoning_efforts_for_provider(
     efforts: list[str],
     model_id: str,
@@ -3307,6 +3545,14 @@ def _filter_reasoning_efforts_for_provider(
     }
     if provider in _anthropic_lanes and "claude" in bare and _is_pre_adaptive_anthropic(bare):
         return [eff for eff in normalized if eff != "max"]
+    # Z.AI / GLM native-endpoint gate: see _zai_glm_reasoning_efforts_supported.
+    # True → keep the full ladder (GLM-5.2+); False → strip it entirely (pre-5.2
+    # GLM and forced-thinking GLM-4.7); None → not a zai GLM case, defer.
+    zai_supports = _zai_glm_reasoning_efforts_supported(model_id, provider_id)
+    if zai_supports is True:
+        return normalized
+    if zai_supports is False:
+        return []
     return normalized
 
 
@@ -3640,6 +3886,12 @@ def resolve_model_reasoning_efforts(
     raw = _resolve_model_reasoning_efforts_impl(model_id, provider_id, base_url)
     if not raw:
         return raw
+    # Forced-thinking models (GLM-4.7 on native zai) cannot have reasoning
+    # disabled, so the 'none' sentinel must NOT appear in their supported list —
+    # otherwise the UI offers an "off" option that has no effect and contradicts
+    # the forced-tier contract. (#6219 round-3)
+    if _zai_glm_classification(model_id, provider_id) == "forced":
+        return []
     # Preserve any explicit 'none' sentinel (valid UI option = "no reasoning");
     # the ceiling filter only knows the reasoning LEVELS.
     had_none = "none" in raw
@@ -3773,6 +4025,13 @@ def coerce_reasoning_effort_for_model(
     raw = str(effort or "").strip().lower()
     if not raw:
         return ""
+    # Forced-thinking models (GLM-4.7 on native zai) cannot have reasoning
+    # disabled at all — a stored 'none' must coerce to '' (provider default =
+    # thinking on) so streaming does not build disabled reasoning for a model
+    # that forces thinking on regardless. Checked BEFORE the generic 'none'
+    # early-return below so the forced-tier contract wins. (#6219 round-3)
+    if raw == "none" and _zai_glm_classification(model_id, provider_id) == "forced":
+        return ""
     if raw == "none":
         return "none"
     if raw not in VALID_REASONING_EFFORTS:
@@ -3828,7 +4087,15 @@ def coerce_reasoning_effort_for_model(
     # a brand-new adaptive id) — those genuinely support 'max', and the ceiling
     # filter above already stripped it for any KNOWN-capped model. All other
     # levels (minimal..xhigh) keep the conservative preserve-verbatim behavior.
+    #
+    # EXCEPTION for the ZAI native-endpoint gate: a pre-5.2 GLM model (incl. the
+    # forced-thinking GLM-4.7) is KNOWN not to accept reasoning_effort at all, so
+    # any stored level must coerce to "" (send no field) — NOT be preserved
+    # verbatim, which Z.AI would silently ignore. This keeps the value actually
+    # sent in agreement with the UI (which offers no options for these models).
     if not supported:
+        if _zai_glm_reasoning_efforts_supported(model_id, provider_id) is False:
+            return ""
         if raw == "max" and not _provider_known_reasoning_capable(provider_id):
             return "xhigh"
         return raw
@@ -3887,6 +4154,17 @@ def get_reasoning_status(
         provider_id=resolve_provider,
         base_url=resolve_base_url,
     )
+    # supports_thinking_toggle: can the user turn thinking on/off at all? An
+    # effort-capable model obviously can. The ZAI gate separately exposes the
+    # toggle for GLM-4.5–5.1 (which accept `thinking: {"type": ...}` but NOT the
+    # `reasoning_effort` ladder), so the composer still renders an On/None control
+    # when supported_efforts is empty. Without this, returning [] for those models
+    # would hide the entire reasoning chip and silently regress the working
+    # thinking on/off control (#6219 round-2 review).
+    zai_thinking = _zai_glm_thinking_toggle_supported(
+        resolve_model, resolve_provider
+    )
+    supports_thinking_toggle = bool(supported_efforts) or (zai_thinking is True)
     return {
         # Match CLI default (True if unset in config.yaml)
         "show_reasoning": bool(show_raw) if isinstance(show_raw, bool) else True,
@@ -3900,6 +4178,10 @@ def get_reasoning_status(
         ),
         "supported_efforts": supported_efforts,
         "supports_reasoning_effort": bool(supported_efforts),
+        # Whether the composer should render ANY reasoning control. True for any
+        # effort-capable model OR a ZAI GLM model that accepts the thinking
+        # toggle but not the effort ladder. False hides the chip entirely.
+        "supports_thinking_toggle": supports_thinking_toggle,
     }
 
 
@@ -4011,12 +4293,18 @@ def set_reasoning_effort(
 
     Mirrors CLI ``/reasoning <level>``: same key, same valid values
     (``none`` | ``minimal`` | ``low`` | ``medium`` | ``high`` | ``xhigh`` | ``max``).
-    Raises ``ValueError`` on an unrecognised level so callers can return 400.
+
+    An empty string is accepted as "clear the override" — it removes the
+    ``agent.reasoning_effort`` key so the provider default takes effect. This is
+    the re-enable path for thinking-toggle-only models (GLM-4.5–5.1 on native
+    zai): the dropdown's "Default"/"On" option POSTs ``effort:''`` to switch
+    thinking back on after the user selected "None". Without this, the toggle
+    would be one-way (off-only) for those models. (#6219 round-3)
+
+    Raises ``ValueError`` on any other unrecognised level so callers can 400.
     """
     raw = str(effort or "").strip().lower()
-    if not raw:
-        raise ValueError("effort is required")
-    if raw != "none" and raw not in VALID_REASONING_EFFORTS:
+    if raw and raw != "none" and raw not in VALID_REASONING_EFFORTS:
         raise ValueError(
             f"Unknown reasoning effort '{effort}'. "
             f"Valid: none, {', '.join(VALID_REASONING_EFFORTS)}."
@@ -4027,7 +4315,14 @@ def set_reasoning_effort(
         agent_cfg = config_data.get("agent")
         if not isinstance(agent_cfg, dict):
             agent_cfg = {}
-        agent_cfg["reasoning_effort"] = raw
+        if raw:
+            agent_cfg["reasoning_effort"] = raw
+        else:
+            # Clear the override so the provider default takes effect (the
+            # "Default"/"On" re-enable path for thinking-toggle-only models).
+            # Drop the key entirely rather than writing an empty string so the
+            # CLI's "is reasoning_effort configured?" check stays simple.
+            agent_cfg.pop("reasoning_effort", None)
         config_data["agent"] = agent_cfg
         _save_yaml_config_file(config_path, config_data)
     reload_config()
@@ -4530,6 +4825,121 @@ _available_models_cache_lock = threading.RLock()  # must be RLock: cold path ref
 _cache_build_cv = threading.Condition(_available_models_cache_lock)  # shares underlying RLock so notify_all() is safe inside with _available_models_cache_lock
 _cache_build_in_progress = False  # True while a cold path is actively building
 
+# Memoized (snapshot_ref, {provider_slug: frozenset(model_ids)}) derived from
+# the published models-catalog snapshot. Used by _endpoint_advertised_model_ids
+# to answer "did this endpoint actually advertise this exact id?" in O(1) per
+# send without rebuilding. Keyed on the snapshot object identity so it is
+# recomputed exactly once per catalog publish (the cache is replaced wholesale,
+# never mutated) and can never serve stale ids from a superseded catalog.
+_advertised_model_ids_memo: tuple | None = None
+
+# Atomic provenance pair: an immutable (snapshot, publisher_fingerprint) tuple
+# published together at every catalog publish/invalidate site via
+# _sync_models_cache_provenance(). The resolver reads THIS single global with one
+# lock-free load so it can never observe a torn snapshot/fingerprint pair (the
+# two underlying globals are assigned as separate statements). Reading a tuple is
+# atomic under the GIL and, crucially, acquires NO lock — so the per-send
+# provenance check introduces no lock-ordering edge (avoids the _cfg_lock ↔
+# _available_models_cache_lock deadlock) and never waits behind a catalog rebuild.
+_models_cache_provenance: tuple | None = None
+
+
+def _sync_models_cache_provenance() -> None:
+    """Republish the atomic (snapshot, fingerprint) provenance pair.
+
+    MUST be called at every site that assigns ``_available_models_cache`` and
+    ``_available_models_cache_source_fingerprint`` (publish and invalidate),
+    AFTER both have been set. It snapshots the current pair into one immutable
+    tuple so ``_endpoint_advertised_model_ids`` reads both consistently with a
+    single lock-free load. A reader that races between an underlying assignment
+    and this call sees the PREVIOUS consistent tuple (never a torn pair); once
+    this runs, readers see the new consistent pair.
+    """
+    global _models_cache_provenance
+    snap = _available_models_cache
+    _models_cache_provenance = (
+        (snap, _available_models_cache_source_fingerprint) if snap is not None else None
+    )
+
+
+def _endpoint_advertised_model_ids(provider_id: str | None) -> frozenset | None:
+    """Model ids the given provider's group advertised in the current catalog.
+
+    Reads ONLY the already-published in-memory catalog snapshot
+    (``_available_models_cache``) — it never builds, live-probes, or touches
+    disk, so it is safe to call on the per-turn send hot path. Returns:
+
+      * a ``frozenset`` of the ids advertised by ``provider_id``'s own group
+        (bare ids for the active provider, e.g. ``x-ai/grok-4.5``), or
+      * ``None`` when the catalog is cold/unbuilt OR the provider has no group.
+
+    ``None`` means "no provenance signal available" — callers MUST treat that as
+    "preserve the model id verbatim" so a cache miss never silently strips a
+    vendor namespace off an id the user actively selected (#5979). Scoping to
+    the provider's OWN group prevents a same-named id in a sibling group (e.g.
+    an ``openai/gpt-5.4`` sitting in the OpenRouter group) from masquerading as
+    something this custom endpoint advertised.
+    """
+    global _advertised_model_ids_memo
+    # Single lock-free atomic read of the immutable (snapshot, fingerprint) pair
+    # published by _sync_models_cache_provenance(). Reading one tuple can never
+    # tear, and acquiring no lock means this per-send check adds no lock-ordering
+    # edge (no _cfg_lock ↔ _available_models_cache_lock deadlock) and never waits
+    # behind a catalog rebuild.
+    provenance = _models_cache_provenance
+    if provenance is None:
+        return None
+    snapshot, published_fp = provenance
+    if snapshot is None:
+        return None
+    # Profile-isolation fail-safe (profiles are islands): the catalog cache is a
+    # process global, so a concurrently-active profile could have published the
+    # snapshot we're now reading. Only trust it for provenance when the
+    # fingerprint captured AT PUBLISH TIME still matches the current runtime
+    # fingerprint — the ``config_yaml`` axis of that fingerprint is the
+    # PROFILE-SPECIFIC config path (_get_config_path -> get_active_hermes_home),
+    # so a match guarantees the snapshot belongs to the profile asking. Any
+    # mismatch (foreign profile, config edit, stale) returns None so the caller
+    # preserves the id verbatim rather than stripping against another profile's
+    # catalog.
+    try:
+        if published_fp != _models_cache_source_fingerprint():
+            return None
+    except Exception:
+        return None  # fingerprint unavailable → no trustworthy provenance
+    memo = _advertised_model_ids_memo
+    # Identity check (``is``), not id(): holding the snapshot reference in the
+    # memo keeps it alive, so a freed-then-reused id() can't cause a false hit.
+    if memo is None or memo[0] is not snapshot:
+        by_slug: dict[str, frozenset] = {}
+        try:
+            groups = snapshot.get("groups", []) or []
+        except AttributeError:
+            return None
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            slug = str(group.get("provider_id") or "").strip().lower()
+            if not slug:
+                continue
+            # Union BOTH catalog buckets: a provider's models can be split across
+            # ``models`` (visible) and ``extra_models`` (overflow) by the picker,
+            # so an id the endpoint genuinely advertised may live in either. Only
+            # reading ``models`` would miss it and mis-resolve (e.g. leave the
+            # #433 bare id unstripped because it sits in extra_models).
+            ids = frozenset(
+                str(m.get("id"))
+                for bucket in ("models", "extra_models")
+                for m in (group.get(bucket) or [])
+                if isinstance(m, dict) and m.get("id")
+            )
+            by_slug[slug] = by_slug.get(slug, frozenset()) | ids
+        memo = (snapshot, by_slug)
+        _advertised_model_ids_memo = memo
+    slug = str(provider_id or "").strip().lower()
+    return memo[1].get(slug)
+
+
 # Hard wall-clock budget for a COLD live provider-catalog rebuild when it is
 # run from a foreground request path. The live rebuild does one network probe
 # per detected provider (Copilot token-exchange HTTPS, OpenRouter /v1/models,
@@ -4879,20 +5289,9 @@ def _static_models_catalog_without_live_probes() -> dict:
                         for key in ("api_key", "key_env", "base_url")
                     )
                     provider_models = provider_cfg.get("models")
-                    if isinstance(provider_models, dict):
-                        for model_id in provider_models:
-                            _append_model_id(canonical, model_id)
-                            has_local_signal = True
-                    elif isinstance(provider_models, list):
-                        for item in provider_models:
-                            if isinstance(item, dict):
-                                _append_model_id(
-                                    canonical,
-                                    item.get("id") or item.get("model") or item.get("name"),
-                                )
-                            else:
-                                _append_model_id(canonical, item)
-                            has_local_signal = True
+                    for model_id in _configured_model_ids(provider_models):
+                        _append_model_id(canonical, model_id)
+                        has_local_signal = True
                     if has_local_signal:
                         detected_providers.add(canonical)
 
@@ -4942,21 +5341,9 @@ def _static_models_catalog_without_live_probes() -> dict:
             model_id = str(entry.get("model") or "").strip()
             if model_id:
                 configured_ids.append(model_id)
-            raw_models = entry.get("models")
-            if isinstance(raw_models, dict):
-                for key in raw_models:
-                    if isinstance(key, str) and key.strip() and key.strip() not in configured_ids:
-                        configured_ids.append(key.strip())
-            elif isinstance(raw_models, list):
-                for item in raw_models:
-                    if isinstance(item, dict):
-                        candidate = str(
-                            item.get("id") or item.get("model") or item.get("name") or ""
-                        ).strip()
-                    else:
-                        candidate = str(item or "").strip()
-                    if candidate and candidate not in configured_ids:
-                        configured_ids.append(candidate)
+            for configured_id in _configured_model_ids(entry.get("models")):
+                if configured_id not in configured_ids:
+                    configured_ids.append(configured_id)
 
             for configured_id in configured_ids:
                 label = _get_label_for_model(configured_id, [])
@@ -5027,28 +5414,7 @@ def _static_models_catalog_without_live_probes() -> dict:
             provider_cfg = _get_provider_cfg(raw_key)
             raw_models = []
             if isinstance(provider_cfg, dict) and "models" in provider_cfg:
-                cfg_models = provider_cfg["models"]
-                if isinstance(cfg_models, dict):
-                    raw_models = [{"id": key, "label": key} for key in cfg_models.keys()]
-                elif isinstance(cfg_models, list):
-                    raw_models = []
-                    for item in cfg_models:
-                        if isinstance(item, dict):
-                            model_id = (
-                                item.get("id")
-                                or item.get("model")
-                                or item.get("name")
-                            )
-                            if not model_id:
-                                continue
-                            raw_models.append(
-                                {
-                                    "id": model_id,
-                                    "label": item.get("label", model_id),
-                                }
-                            )
-                        elif item:
-                            raw_models.append({"id": item, "label": item})
+                raw_models = _configured_model_options(provider_cfg["models"])
             if not raw_models:
                 raw_models = copy.deepcopy(_PROVIDER_MODELS.get(pid, []))
             # Plugin-only providers (e.g. 9router) are not in _PROVIDER_MODELS
@@ -5836,6 +6202,7 @@ def _get_fresh_memory_models_cache(now: float) -> dict | None:
         _available_models_cache_ts = 0.0
         _available_models_live_rebuild_ts = 0.0
         _available_models_cache_source_fingerprint = None
+        _sync_models_cache_provenance()
         return None
     if _is_valid_models_cache(_available_models_cache):
         return _annotate_fast_tier_model_groups(copy.deepcopy(_available_models_cache))
@@ -5843,6 +6210,7 @@ def _get_fresh_memory_models_cache(now: float) -> dict | None:
     _available_models_cache_ts = 0.0
     _available_models_live_rebuild_ts = 0.0
     _available_models_cache_source_fingerprint = None
+    _sync_models_cache_provenance()
     return None
 
 
@@ -5867,6 +6235,7 @@ def invalidate_models_cache():
         _available_models_cache_ts = 0.0
         _available_models_live_rebuild_ts = 0.0
         _available_models_cache_source_fingerprint = None
+        _sync_models_cache_provenance()
         _cache_build_in_progress = False
         _cache_build_cv.notify_all()
         # Clear the credential pool cache too (all profiles). Without this,
@@ -5926,6 +6295,7 @@ def invalidate_provider_models_cache(provider_id: str):
         _available_models_cache_ts = 0.0
         _available_models_live_rebuild_ts = 0.0
         _available_models_cache_source_fingerprint = None
+        _sync_models_cache_provenance()
         _provider_models_invalidated_ts[provider_id] = time.time()
         # Also evict the credential pool so the next cold path re-loads it.
         # Must evict both the original key and its canonical form (load_pool
@@ -6904,21 +7274,9 @@ def get_available_models(*, prefer_cache: bool = False, force_refresh: bool = Fa
                 _cp_model = _cp.get("model", "")
                 if _cp_model:
                     _cp_model_ids.append(_cp_model)
-                _cp_models_dict = _cp.get("models")
-                if isinstance(_cp_models_dict, dict):
-                    for _m_id in _cp_models_dict:
-                        if isinstance(_m_id, str) and _m_id.strip() and _m_id not in _cp_model_ids:
-                            _cp_model_ids.append(_m_id.strip())
-                elif isinstance(_cp_models_dict, list):
-                    for _item in _cp_models_dict:
-                        if isinstance(_item, str):
-                            _mid = _item.strip()
-                            if _mid and _mid not in _cp_model_ids:
-                                _cp_model_ids.append(_mid)
-                        elif isinstance(_item, dict):
-                            _mid = str(_item.get("id") or _item.get("model") or _item.get("name") or "").strip()
-                            if _mid and _mid not in _cp_model_ids:
-                                _cp_model_ids.append(_mid)
+                for _cp_model_id in _configured_model_ids(_cp.get("models")):
+                    if _cp_model_id not in _cp_model_ids:
+                        _cp_model_ids.append(_cp_model_id)
 
                 for _cp_model in _cp_model_ids:
                     _dedup_key = f"{_slug}:{_cp_model}" if _slug else _cp_model
@@ -7389,13 +7747,7 @@ def get_available_models(*, prefer_cache: bool = False, force_refresh: bool = Fa
                         and isinstance(provider_cfg, dict)
                         and "models" in provider_cfg
                     ):
-                        cfg_models = provider_cfg["models"]
-                        if isinstance(cfg_models, dict):
-                            raw_models = [{"id": k, "label": k} for k in cfg_models.keys()]
-                        elif isinstance(cfg_models, list):
-                            raw_models = [{"id": k["id"] if isinstance(k, dict) else k,
-                                            "label": k.get("label", k["id"]) if isinstance(k, dict) else k}
-                                           for k in cfg_models]
+                        raw_models = _configured_model_options(provider_cfg["models"])
 
                     if not raw_models:
                         if pid == "moa":
@@ -7673,6 +8025,7 @@ def get_available_models(*, prefer_cache: bool = False, force_refresh: bool = Fa
             _available_models_cache_ts = 0.0
             _available_models_live_rebuild_ts = 0.0
             _available_models_cache_source_fingerprint = None
+            _sync_models_cache_provenance()
             disk_groups = None
             stale_disk_groups = None
 
@@ -7723,6 +8076,7 @@ def get_available_models(*, prefer_cache: bool = False, force_refresh: bool = Fa
             _available_models_cache = disk_groups
             _available_models_cache_ts = now
             _available_models_cache_source_fingerprint = _models_cache_source_fingerprint()
+            _sync_models_cache_provenance()
             return copy.deepcopy(disk_groups)
 
         # ── prefer_cache: NEVER run the live provider rebuild ────────────────
@@ -7799,6 +8153,7 @@ def get_available_models(*, prefer_cache: bool = False, force_refresh: bool = Fa
                 _available_models_cache_ts = published_at
                 _available_models_live_rebuild_ts = published_at
                 _available_models_cache_source_fingerprint = _models_cache_source_fingerprint()
+                _sync_models_cache_provenance()
             try:
                 _save_models_cache_to_disk(result)
             finally:
@@ -7848,6 +8203,7 @@ def get_available_models(*, prefer_cache: bool = False, force_refresh: bool = Fa
                 _available_models_cache_source_fingerprint = (
                     _models_cache_source_fingerprint()
                 )
+                _sync_models_cache_provenance()
             try:
                 _save_models_cache_to_disk(result)
             except Exception:
@@ -7957,6 +8313,82 @@ def _models_cache_file_age_seconds(cache_path: Path, now: float) -> float | None
         return None
 
 
+def warm_models_catalog_provenance_if_cold() -> None:
+    """Best-effort, NON-BLOCKING, disk-only publish of catalog provenance.
+
+    The send path (``api/streaming.py``) resolves the wire model via
+    ``resolve_model_provider`` without ever building the models catalog, and the
+    #1855 chat/start fast path deliberately skips the catalog when a session
+    already carries a persisted model+provider — so "cold at send" is the
+    designed behaviour after any process restart, memory-TTL expiry, or cache
+    invalidation, not a rare race. In that state the custom-proxy provenance
+    signal (``_endpoint_advertised_model_ids``) is ``None`` and resolution falls
+    to the cold-preserve default; this helper restores the endpoint-advertised
+    signal from the durable disk cache so the #433 bare-only-strip stays exact.
+
+    Deliberately does NOT call ``get_available_models(prefer_cache=True)``: even
+    in prefer-cache mode that acquires ``_available_models_cache_lock`` and can
+    block up to ~60s waiting on an in-flight rebuild (unbounded in synchronous
+    rebuild mode) — unacceptable on the send hot path. Instead this:
+      * tries the cache lock NON-BLOCKING and returns immediately if it's busy
+        (a concurrent rebuild will publish provenance itself);
+      * reads ONLY the on-disk cache (no network, no live probe, no rebuild);
+      * publishes the snapshot + source fingerprint via the same globals the
+        real publish sites use, then ``_sync_models_cache_provenance()``.
+    Publishing the fingerprint from the CURRENT runtime is correct: the disk
+    cache is validated by schema/version/source-fingerprint on load
+    (``_is_loadable_disk_cache``), so a load success means it belongs to this
+    profile. Callers must not hold ``_cfg_lock`` (this reads config for the
+    fingerprint); the send worker satisfies that.
+
+    Profile isolation: the fast no-op is taken ONLY when the resident provenance
+    fingerprint matches the CURRENT profile's runtime fingerprint. The catalog
+    globals are process-wide, so a concurrently-active profile B could have left
+    its own (or a stale) provenance resident; an unconditional non-``None``
+    early return would let B's catalog block profile A from loading A's own valid
+    disk cache (A would then resolve against B's advertised ids). Comparing the
+    published fingerprint to the current one before short-circuiting closes that
+    hole — a mismatch falls through to load THIS profile's disk snapshot.
+    """
+    global _available_models_cache, _available_models_cache_ts
+    global _available_models_cache_source_fingerprint
+
+    def _provenance_is_current() -> bool:
+        prov = _models_cache_provenance
+        if prov is None:
+            return False
+        try:
+            return prov[1] == _models_cache_source_fingerprint()
+        except Exception:
+            return False
+
+    if _provenance_is_current():
+        return  # already warm for THIS profile — one global read, no work
+    got = _available_models_cache_lock.acquire(blocking=False)
+    if not got:
+        return  # a concurrent build/publish holds the lock; it will publish
+    try:
+        if _provenance_is_current():
+            return  # published for this profile while we waited for the lock
+        try:
+            disk_groups = _load_models_cache_from_disk()
+        except Exception:
+            disk_groups = None
+        if disk_groups is None:
+            return  # no durable cache for this profile → stay cold, preserve verbatim
+        _available_models_cache = disk_groups
+        _available_models_cache_ts = time.monotonic()
+        try:
+            _available_models_cache_source_fingerprint = _models_cache_source_fingerprint()
+        except Exception:
+            _available_models_cache_source_fingerprint = None
+        _sync_models_cache_provenance()
+    except Exception:
+        logger.debug("models catalog provenance warm failed", exc_info=True)
+    finally:
+        _available_models_cache_lock.release()
+
+
 def get_available_models_for_session_visit() -> dict:
     """Return /api/models with a short session-visit freshness horizon.
 
@@ -8012,6 +8444,7 @@ def get_available_models_for_session_visit() -> dict:
                 _available_models_cache = copy.deepcopy(disk_cached)
                 _available_models_cache_ts = time.monotonic()
                 _available_models_cache_source_fingerprint = _models_cache_source_fingerprint()
+                _sync_models_cache_provenance()
             _mark("disk_cache_returned")
             _maybe_log_slow_stages(_logger, _stagelog, _slow_threshold_ms, "models.session_visit")
             return copy.deepcopy(disk_cached)
@@ -8151,9 +8584,30 @@ class StreamChannel:
     # recoverable via the run journal by last_event_id. 8192 is generous enough
     # to hold a long multi-tool turn's backlog while capping worst-case memory to
     # a fixed number of small (event, data, id) tuples — deliberately far above
-    # SessionChannel's per-subscriber maxsize of 16 (that queue drops on a *slow*
-    # reader; this buffer must survive a legitimate reconnect gap).
+    # the per-subscriber queue cap below (that queue drops on a *slow* reader;
+    # this buffer must survive a legitimate reconnect gap).
     _OFFLINE_BUFFER_MAXLEN = 8192
+    # Per-subscriber queue cap (drop-oldest on full). Each connected tab gets its
+    # own queue; a slow/backpressured or backgrounded tab used to hold an
+    # UNBOUNDED queue.Queue that grew for the WHOLE turn (the producer is the
+    # agent token stream), an OOM risk with many tabs × long agentic turns. This
+    # caps the per-tab live-broadcast growth to a fixed bound.
+    #
+    # Bound is intentionally EQUAL to _OFFLINE_BUFFER_MAXLEN, not the much
+    # smaller SessionChannel per-subscriber cap of 16. StreamChannel carries the
+    # live chat token stream (thousands of frames per turn) and, unlike
+    # SessionChannel's low-frequency UI pings, has a reconnect-replay contract:
+    # a tab that briefly disconnected must receive the full retained offline
+    # tail on resubscribe. Capping below the offline buffer would truncate that
+    # replay and force every flaky-network reconnect through the run journal
+    # (disk reads) instead of the in-memory fast path. Matching the offline
+    # buffer bound preserves that contract while bounding live-broadcast memory
+    # to the SAME worst-case #4633 already accepted (a fixed number of small
+    # (event, data, id) tuples). The SSE write deadline
+    # (SSE_WRITE_DEADLINE_SECONDS) independently breaks a stuck socket within
+    # ~20s, so the overflow window is short; this cap bounds it by frame count
+    # too. Older frames stay recoverable via the run journal by last_event_id.
+    _SUBSCRIBER_QUEUE_MAXSIZE = _OFFLINE_BUFFER_MAXLEN
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -8174,6 +8628,9 @@ class StreamChannel:
         # Cumulative evictions over the channel's lifetime, never reset — for ops
         # visibility via diagnostic_snapshot().
         self._offline_dropped_total = 0
+        # Cumulative per-subscriber queue drops over the channel's lifetime
+        # (broadcast + replay paths), never reset — ops visibility for slow tabs.
+        self._subscriber_dropped_total = 0
         self._last_event_id: str | None = None
 
     def subscribe(self) -> queue.Queue:
@@ -8181,15 +8638,48 @@ class StreamChannel:
         return q
 
     def subscribe_with_snapshot(self) -> tuple[queue.Queue, dict[str, object]]:
-        q: queue.Queue = queue.Queue()
+        q: queue.Queue = queue.Queue(maxsize=self._SUBSCRIBER_QUEUE_MAXSIZE)
         with self._lock:
             # Replay buffered events to the new subscriber INSIDE the lock so a
             # concurrent put_nowait() can't broadcast a newer event before we
-            # finish replaying the older buffered tail. queue.Queue.put_nowait
-            # is non-blocking on an unbounded queue, so holding the lock here
-            # is safe. Per Opus advisor on stage-292.
+            # finish replaying the older buffered tail. The queue is bounded, so
+            # put_nowait raises queue.Full once the cap is reached — drop the
+            # OLDEST already-replayed frame and retry, keeping the most recent
+            # tail (a reconnecting tab needs the tail; older frames stay
+            # recoverable via the run journal by last_event_id). Holding the
+            # lock here is safe: no other put_nowait() can interleave. Per Opus
+            # advisor on stage-292.
+            replayed_dropped = 0
             for item in self._offline_buffer:
-                q.put_nowait(item)
+                while True:
+                    try:
+                        q.put_nowait(item)
+                        break
+                    except queue.Full:
+                        # Drop oldest to make room for the newer (more useful)
+                        # tail frame. The drained frame is the oldest in this
+                        # subscriber's replay window only.
+                        try:
+                            q.get_nowait()
+                        except queue.Empty:
+                            # A concurrent consumer drained the queue between
+                            # our Full and get_nowait — the queue now has space,
+                            # so retry the put instead of dropping `item`. This
+                            # path runs under self._lock with a freshly-created
+                            # queue (no concurrent consumer), so it is not
+                            # reached in practice, but `continue` is the
+                            # correct, race-safe rule (see the broadcast path).
+                            continue
+                        replayed_dropped += 1
+            if replayed_dropped:
+                self._subscriber_dropped_total += replayed_dropped
+                logger.debug(
+                    "StreamChannel subscriber replay dropped %d oldest frames "
+                    "(cap=%d) while catching up on %d buffered events",
+                    replayed_dropped,
+                    self._SUBSCRIBER_QUEUE_MAXSIZE,
+                    len(self._offline_buffer),
+                )
             first = self._offline_buffer[0] if self._offline_buffer else None
             snapshot = {
                 "offline_buffered_events": len(self._offline_buffer),
@@ -8250,8 +8740,42 @@ class StreamChannel:
             # reports and logs its own truncation, not a stale carry-over.
             self._offline_buffer.clear()
             self._offline_dropped = 0
+        # Broadcast outside the lock so a slow put_nowait doesn't block other
+        # subscribers or producers. The queue is bounded; on queue.Full drop the
+        # OLDEST frame and retry so a slow/backpressured tab keeps its most
+        # recent tail instead of growing unbounded for the whole turn. Older
+        # frames stay recoverable via the run journal by last_event_id. Mirrors
+        # SessionChannel.emit's drop-on-full contract.
+        broadcast_dropped = 0
         for q in subscribers:
-            q.put_nowait(item)
+            while True:
+                try:
+                    q.put_nowait(item)
+                    break
+                except queue.Full:
+                    try:
+                        q.get_nowait()
+                    except queue.Empty:
+                        # A concurrent consumer (the SSE handler thread)
+                        # drained the queue between our Full and get_nowait.
+                        # The queue now has space — retry the put so `item` is
+                        # delivered. `break` here would silently discard `item`,
+                        # and if `item` is a terminal frame (stream_end/error/
+                        # cancel) the subscriber never receives it and the client
+                        # stays attached indefinitely (spinner-forever). Having
+                        # space is exactly the condition we want, so continue.
+                        continue
+                    broadcast_dropped += 1
+        if broadcast_dropped:
+            with self._lock:
+                self._subscriber_dropped_total += broadcast_dropped
+            logger.debug(
+                "StreamChannel broadcast dropped %d oldest frames across %d "
+                "subscriber queue(s) (cap=%d)",
+                broadcast_dropped,
+                len(subscribers),
+                self._SUBSCRIBER_QUEUE_MAXSIZE,
+            )
 
     def diagnostic_snapshot(self) -> dict[str, object]:
         """Return non-sensitive stream observation counters for health checks."""
@@ -8262,6 +8786,9 @@ class StreamChannel:
                 # Cumulative over the channel lifetime (ops visibility), vs. the
                 # per-cycle count subscribe_with_snapshot() reports for truncation.
                 "offline_dropped_events": self._offline_dropped_total,
+                # Cumulative per-subscriber queue drops (replay + broadcast) over
+                # the channel lifetime — surfaces slow/backpressured tabs.
+                "subscriber_dropped_events": self._subscriber_dropped_total,
             }
 
 
