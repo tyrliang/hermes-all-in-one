@@ -1,7 +1,8 @@
+import { backendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { getProfiles, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
-import { queryClient } from '@/lib/query-client'
+import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import {
   arraysEqual,
   persistBoolean,
@@ -11,7 +12,8 @@ import {
   storedStringArray,
   storedStringRecord
 } from '@/lib/storage'
-import { $gateway, ensureGatewayForProfile } from '@/store/gateway'
+import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
+import { $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
 import { setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
@@ -176,8 +178,11 @@ $activeGatewayProfile.subscribe(value => {
   setApiRequestProfile(key)
 
   if (_lastRoutedProfile !== null && _lastRoutedProfile !== key) {
+    invalidateCronModelImpactScopeState()
     // Profile-scoped settings + the unified session list are now stale.
-    void queryClient.invalidateQueries()
+    // Narrowed so account/marketplace/onboarding caches don't refetch on
+    // every profile switch.
+    invalidateProfileScopedQueries()
     resetStarmapGraph()
   }
 
@@ -188,6 +193,39 @@ $activeGatewayProfile.subscribe(value => {
 // profile's backend), else null. Drives the chat's "waking up <profile>" loader
 // so a lazy spawn doesn't read as a hang. Single-profile users never swap.
 export const $gatewaySwapTarget = atom<string | null>(null)
+
+// ── Hover-intent backend pre-warm ───────────────────────────────────────────
+// A cold switch to a profile whose pool backend isn't running pays the full
+// spawn (Python boot + port announce + readiness probe — measured ~2.5-3s)
+// plus the socket connect before the sidebar can repopulate. The pointer
+// entering a profile square in the rail signals the switch a few hundred ms
+// before the click lands, so we run the same spawn + connect chain then
+// (openGatewayForProfile — without activating). `ensureBackend` in the
+// Electron main is idempotent (a pooled profile returns its existing
+// connectionPromise), so the real switch joins the in-flight work instead of
+// duplicating it — and a pre-warm for an already-open profile is a no-op.
+// Throttled per profile so drive-by hovers can't spam spawn attempts; failures
+// stay silent here and surface on the real switch, which owns retry/error UX.
+const PREWARM_MIN_INTERVAL_MS = 60_000
+
+const prewarmedAt = new Map<string, number>()
+
+export function prewarmProfileBackend(name: string): void {
+  const key = normalizeProfileKey(name)
+
+  if (key === normalizeProfileKey($activeGatewayProfile.get())) {
+    return
+  }
+
+  const now = Date.now()
+
+  if (now - (prewarmedAt.get(key) ?? 0) < PREWARM_MIN_INTERVAL_MS) {
+    return
+  }
+
+  prewarmedAt.set(key, now)
+  openGatewayForProfile(key).catch(() => undefined)
+}
 
 let gatewaySwitch: Promise<void> | null = null
 
@@ -270,6 +308,66 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
   }
 }
 
+// Registry-aware sibling of syncConnectionToActiveProfile: a connection-scoped
+// agent's descriptor comes from getConnectionFor (its SOURCE connection), not
+// getConnection (the local pool). Same best-effort contract.
+async function syncConnectionToActiveAgent(connectionId: string, profile: string): Promise<void> {
+  const getConnectionFor = window.hermesDesktop?.getConnectionFor
+
+  if (!getConnectionFor) {
+    return
+  }
+
+  try {
+    setConnection(await getConnectionFor({ connectionId, profile }))
+  } catch {
+    // Leave the prior connection in place; boot/reconnect resyncs it later.
+  }
+}
+
+// Activate a connection-scoped agent's gateway — the (connectionId, profile)
+// analogue of ensureGatewayProfile, and the door the SDK's ensureAgent goes
+// through. Two invariants the raw store call (ensureGatewayForAgent) does not
+// provide on its own:
+//  - Every activation moves $activeGatewayProfile and resyncs $connection,
+//    exactly like the profile path — otherwise activating an ALREADY-OPEN
+//    registry agent left both describing the previous backend, routing
+//    /api/fs, /api/media and image.attach to the wrong machine (the same
+//    class as #46651) and pointing newSessionInProfile at the stale profile.
+//  - Activations share the gatewaySwitch mutex with profile switches, so a
+//    rapid agent↔profile (or agent↔agent) interleave can't finish out of
+//    order and leave the EARLIER setActive() as the last write.
+// A local/null connectionId falls through to the profile path verbatim.
+export async function ensureGatewayAgent(connectionId: null | string, profile: string): Promise<void> {
+  const target = normalizeProfileKey(profile)
+  const connection = (connectionId ?? '').trim() || null
+
+  if (!connection || backendScopeKey(connection, target) === target) {
+    return ensureGatewayProfile(target)
+  }
+
+  // Serialize against any in-flight profile/agent switch (shared mutex).
+  if (gatewaySwitch) {
+    await gatewaySwitch.catch(() => undefined)
+  }
+
+  $gatewaySwapTarget.set(target)
+  gatewaySwitch = (async () => {
+    await ensureGatewayForAgent(connection, target)
+    $activeGatewayProfile.set(target)
+    // The active backend just changed; resync $connection so remote-aware
+    // paths (image.attach_bytes vs image.attach, /api/fs/*, /api/media) follow.
+    await syncConnectionToActiveAgent(connection, target)
+  })()
+
+  try {
+    await gatewaySwitch
+  } finally {
+    gatewaySwitch = null
+    $gatewaySwapTarget.set(null)
+  }
+}
+
 // ── Sidebar profile scope (the "workspace switcher" model) ─────────────────
 // Mirrors how Slack/VS Code/Linear do multi-context: you're "in" one profile at
 // a time and the sidebar shows only that profile's sessions (clean rows, no
@@ -277,6 +375,14 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 // fans every profile's sessions into one grouped, browsable list.
 
 export const ALL_PROFILES = '__all__'
+
+/** Normalize a sidebar scope to the profile key used by session and cron queries. */
+export const sidebarProfileForScope = (profileScope: string): string =>
+  profileScope === ALL_PROFILES ? 'all' : normalizeProfileKey(profileScope)
+
+/** Key a platform total by its Desktop profile route so counts cannot leak across profiles. */
+export const messagingTotalsKey = (messagingProfile: string, sourceId: string): string =>
+  `${messagingProfile}:${sourceId}`
 
 const SHOW_ALL_PROFILES_STORAGE_KEY = 'hermes.desktop.showAllProfiles'
 
