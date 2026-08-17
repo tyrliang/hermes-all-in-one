@@ -1,5 +1,5 @@
-0.9.1
-hermes-base=v2026.8.3
-agent-base=v2026.8.3
-webui-base=v0.52.41
+0.10.0
+hermes-base=v2026.8.16
+agent-base=v2026.8.16
+webui-base=v0.52.113
 vault-base=v0.21.0
