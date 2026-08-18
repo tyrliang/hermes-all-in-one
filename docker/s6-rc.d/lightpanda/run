@@ -32,8 +32,12 @@ if [ ! -x "$LP_BIN" ]; then
 fi
 if [ -z "$LP_BIN" ] || [ ! -x "$LP_BIN" ]; then
     echo "lightpanda binary not found (LIGHTPANDA_BIN=${LIGHTPANDA_BIN:-unset})" >&2
-    exit 1
+    echo "holding slot (sleep infinity) to avoid s6 crash-loop" >&2
+    exec sleep infinity
 fi
+
+# Lightpanda sends usage telemetry by default (see upstream README). Disable it.
+export LIGHTPANDA_DISABLE_TELEMETRY=true
 
 exec s6-setuidgid hermes "$LP_BIN" serve \
     --host 127.0.0.1 --port 9222 --log-level error

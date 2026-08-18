@@ -68,19 +68,22 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
     && rm -rf /var/lib/apt/lists/*
 
 # Lightpanda headless browser — baked into the image so the s6 service
-# (docker/s6-rc.d/lightpanda) works on a fresh volume. Nightly binary, pinned
-# by the release tag; update deliberately. glibc-linked: base image is Debian.
-# Served via browser.cdp_url=http://127.0.0.1:9222 (agent-browser --cdp attach;
-# the --engine lightpanda spawn path is broken upstream — "Multiple targets").
-ARG LIGHTPANDA_VERSION=nightly
+# (docker/s6-rc.d/lightpanda) works on a fresh volume. Pinned to a stable
+# release (not nightly); update deliberately. glibc-linked: base image is
+# Debian. Served via browser.cdp_url=http://127.0.0.1:9222 (agent-browser
+# --cdp attach; the --engine lightpanda spawn path is broken upstream —
+# "Multiple targets").
+ARG LIGHTPANDA_VERSION=0.3.7
+# SHA256 digests published on the GitHub release assets (per-arch).
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "$ARCH" in \
-         amd64) LP_ARCH="x86_64-linux" ;; \
-         arm64) LP_ARCH="aarch64-linux" ;; \
+         amd64) LP_ARCH="x86_64-linux"; LP_SHA256="895339b02205171a181dde743ae0068bb4564884076feac8482baca9c212aa5a" ;; \
+         arm64) LP_ARCH="aarch64-linux"; LP_SHA256="4c0ecb28b4fcfb6d5bce82ec86e15fc6cde89cea168cf3840494f0ee26755852" ;; \
          *) echo "unsupported architecture for lightpanda: $ARCH" >&2; exit 1 ;; \
        esac \
     && curl -fsSL -o /usr/local/bin/lightpanda \
         "https://github.com/lightpanda-io/browser/releases/download/${LIGHTPANDA_VERSION}/lightpanda-${LP_ARCH}" \
+    && echo "${LP_SHA256}  /usr/local/bin/lightpanda" | sha256sum -c - \
     && chmod 0755 /usr/local/bin/lightpanda \
     && /usr/local/bin/lightpanda version
 

@@ -673,6 +673,10 @@ Full scheduling docs: [hermes-agent.nousresearch.com/docs/user-guide/features/cr
 |----------|---------|-------------|
 | `LIGHTPANDA_ENABLED` | `0` | `1` = start the Lightpanda headless browser CDP server at boot (`127.0.0.1:9222`). Default **off** — the service holds its slot, so enabling is just an env change. Pair with Hermes config `browser.cdp_url: http://127.0.0.1:9222` to use it as the browser engine. |
 
+Lightpanda is pinned to a stable release (`0.3.7`) in the Dockerfile and its
+download is verified against the published SHA256 checksum. Telemetry is
+disabled (`LIGHTPANDA_DISABLE_TELEMETRY=true`).
+
 ### Internal paths (don't change these unless you know why)
 
 | Variable | Default |
