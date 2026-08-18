@@ -1,0 +1,30 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Lightpanda headless browser CDP server — serves the Hermes browser tool
+# via browser.cdp_url (agent-browser --cdp attach path).
+#
+# Why a persistent server instead of --engine lightpanda spawn:
+# agent-browser's spawn flow creates multiple CDP targets, which Lightpanda
+# rejects ("Multiple targets are not supported"). Attaching to a pre-started
+# `lightpanda serve` works for navigate/snapshot/click/type/scroll.
+#
+# Binary is baked into the image at /usr/local/bin/lightpanda (see Dockerfile).
+
+if [ "${TERMINAL_HOME_MODE:-}" = "real" ]; then
+    export HOME="/opt/data"
+else
+    export HOME="${HOME:-${HERMES_DATA_DIR:-/opt/data}/.hermes/home}"
+fi
+export PATH="/usr/local/bin:/opt/data/.local/bin:${PATH}"
+
+LP_BIN="${LIGHTPANDA_BIN:-/usr/local/bin/lightpanda}"
+if [ ! -x "$LP_BIN" ]; then
+    LP_BIN="$(command -v lightpanda 2>/dev/null || true)"
+fi
+if [ -z "$LP_BIN" ] || [ ! -x "$LP_BIN" ]; then
+    echo "lightpanda binary not found (LIGHTPANDA_BIN=${LIGHTPANDA_BIN:-unset})" >&2
+    exit 1
+fi
+
+exec s6-setuidgid hermes "$LP_BIN" serve \
+    --host 127.0.0.1 --port 9222 --log-level error

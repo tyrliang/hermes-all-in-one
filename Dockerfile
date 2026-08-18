@@ -67,6 +67,23 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# Lightpanda headless browser — baked into the image so the s6 service
+# (docker/s6-rc.d/lightpanda) works on a fresh volume. Nightly binary, pinned
+# by the release tag; update deliberately. glibc-linked: base image is Debian.
+# Served via browser.cdp_url=http://127.0.0.1:9222 (agent-browser --cdp attach;
+# the --engine lightpanda spawn path is broken upstream — "Multiple targets").
+ARG LIGHTPANDA_VERSION=nightly
+RUN ARCH="$(dpkg --print-architecture)" \
+    && case "$ARCH" in \
+         amd64) LP_ARCH="x86_64-linux" ;; \
+         arm64) LP_ARCH="aarch64-linux" ;; \
+         *) echo "unsupported architecture for lightpanda: $ARCH" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL -o /usr/local/bin/lightpanda \
+        "https://github.com/lightpanda-io/browser/releases/download/${LIGHTPANDA_VERSION}/lightpanda-${LP_ARCH}" \
+    && chmod 0755 /usr/local/bin/lightpanda \
+    && /usr/local/bin/lightpanda version
+
 # Hermes Vault — baked into the image as its own isolated venv (matches the
 # `uv tool install` isolation the persisted-volume install used, avoiding any
 # dependency collision with /opt/hermes/.venv's pinned versions). Bundling the
