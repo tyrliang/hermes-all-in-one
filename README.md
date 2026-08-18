@@ -667,6 +667,12 @@ Full scheduling docs: [hermes-agent.nousresearch.com/docs/user-guide/features/cr
 |----------|---------|-------------|
 | `HERMES_GATEWAY_AUTOSTART` | `auto` | `auto` = start when provider + channel ready; `off` = never autostart |
 
+### Lightpanda browser backend (optional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LIGHTPANDA_ENABLED` | `0` | `1` = start the Lightpanda headless browser CDP server at boot (`127.0.0.1:9222`). Default **off** — the service holds its slot, so enabling is just an env change. Pair with Hermes config `browser.cdp_url: http://127.0.0.1:9222` to use it as the browser engine. |
+
 ### Internal paths (don't change these unless you know why)
 
 | Variable | Default |

@@ -8,7 +8,16 @@
 # rejects ("Multiple targets are not supported"). Attaching to a pre-started
 # `lightpanda serve` works for navigate/snapshot/click/type/scroll.
 #
+# Toggle: LIGHTPANDA_ENABLED=1 starts the server at boot. Default OFF —
+# the service holds its slot (sleep infinity) so enabling is just an env
+# change, no redeploy of the service tree.
+#
 # Binary is baked into the image at /usr/local/bin/lightpanda (see Dockerfile).
+
+case "${LIGHTPANDA_ENABLED:-0}" in
+    1|true|TRUE|on|ON|yes|YES) ;;
+    *) exec sleep infinity ;;
+esac
 
 if [ "${TERMINAL_HOME_MODE:-}" = "real" ]; then
     export HOME="/opt/data"
