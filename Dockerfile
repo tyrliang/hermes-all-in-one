@@ -146,6 +146,7 @@ RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-w
     && chmod +x /etc/s6-overlay/s6-rc.d/control-plane/run \
     && chmod +x /etc/s6-overlay/s6-rc.d/hermes-webui/run \
     && chmod +x /etc/s6-overlay/s6-rc.d/tailscaled/run \
+    && chmod +x /etc/s6-overlay/s6-rc.d/lightpanda/run \
     && chmod +x /app/docker/scripts/gateway_autostart.py \
     && mkdir -p /etc/profile.d \
     && cp /app/docker/profile.d/force-real-home.sh /etc/profile.d/ \
