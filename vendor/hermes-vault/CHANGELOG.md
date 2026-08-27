@@ -1,6 +1,125 @@
 # Changelog
 
-## 0.21.0 -- Audit Assurance (unreleased)
+## 0.25.0 -- Feature: Desktop Mutation Surface (2026-08-10)
+
+### Added
+
+- **Bridge mutation methods** (`src/hermes_vault/desktop_bridge.py`): `add`, `rotate`, and `delete` NDJSON methods behind an explicit `--allow-mutations` flag (default off). Each method rejects renderer-supplied `agent_id`, validates `request_id`, routes through `Broker` → `VaultMutations` (the single audited write path), traps `AuditIntegrityError`, and returns metadata-only responses. Delete enforces a typed confirmation token (credential id or `service:alias`) before any write.
+- **Adapter mutation routes** (`plugins/hermes-vault-desktop/dashboard/plugin_api.py`): `POST /mutations/{add,rotate,delete}` gated behind `HERMES_VAULT_DESKTOP_MUTATIONS=1` (404 when unset). Bearer-only auth (no `?token=` fallback), pre-spawn body validation with an allowlist, `--allow-mutations` passed to the bridge child only on mutation routes, and R1 Host-header hardening on the adapter router.
+- **Desktop mutation UI** (`plugins/hermes-vault-desktop/desktop/plugin.js`): add / rotate / delete dialogs with masked secret fields, type-to-confirm delete, single-flight buttons, error-state taxonomy, and audit result display. Version-gated by the `/hello` `mutations` capability — read-only mode is preserved when the flag is off.
+- **Docs**: `docs/mutation-surface-rollback.md` — per-surface rollback procedures, recovery drill, lease impact, and known limits (risks R1–R9).
+- **Tests**: `tests/test_desktop_bridge_mutations.py` (13), `plugins/hermes-vault-desktop/tests/test_plugin_api_mutations.py` (39), plus same-mount React #310 phase-flip regression tests for `VaultPage` and `DeleteCredentialDialog`.
+
+### Security
+
+- Mutations are deny-by-default: operator agent only via the bridge, policy-gated for non-operator agents, every write audited through the protected audit chain.
+- `AuditIntegrityError` rolls back credential writes on add/rotate and returns HTTP 409 at the adapter; delete is destructive and documented as irreversible (backup reminder in the delete dialog).
+- Raw secrets are never serialized in any bridge/adapter response; renderer memory zeroization limitation (R6) is documented and accepted.
+
+### Fixed
+
+- React #310 on the real Hermes Desktop: `VaultPage` and `DeleteCredentialDialog` hook declarations hoisted above conditional early returns (same-mount loading→success phase-flip regression tests fail pre-fix with the exact #310).
+- Integration-caught drift: mutation calls no longer append query params (I6), delete confirmation token derives `service:alias` or full id (I2), hello/health restored to release bounded-query behavior.
+
+### Upgrade notes
+
+- The mutation surface is **opt-in**. Existing read-only desktop installs are unaffected until `HERMES_VAULT_DESKTOP_MUTATIONS=1` is set on the adapter environment AND the bridge is run with `--allow-mutations`. Rollback at any time by unsetting the flag (routes return 404) or restoring v0.24.0 files (`docs/mutation-surface-rollback.md`).
+- The desktop plugin remains operator-only for mutations; agent-scoped mutations are out of scope (R7).
+
+## 0.24.0 -- Feature: Hermes Desktop Integration (2026-08-06)
+
+### Added
+
+- **Desktop bridge (`desktop-bridge`)**: Vault-owned versioned NDJSON bridge with a `--no-banner desktop-bridge` CLI entry point. Strict protocol/request validation, UTF-8 byte-based request limits, recursion-safe JSON parsing, rejection of `NaN`/`Infinity`, bounded output with attacker-controlled IDs nulled on overflow, error redaction for paths/JWTs/bearer/hex tokens, read-only SQLite access, and no Hermes Agent imports or shell execution.
+- **Backend adapter (`plugins/hermes-vault-desktop/dashboard`)**: thin FastAPI plugin exposing only fixed GET routes (`hello`, `health`, `overview`, `credentials`, `leases`, `policy`, `requests`, `audit`, `integrity`). One short-lived bridge child per request, allowlisted child environment (`PYTHONPATH` and provider keys excluded), bounded request/response framing, timeouts, and sanitized error envelopes. Fails closed on timeout, EOF, malformed JSON, protocol mismatch, and output overflow.
+- **Desktop runtime (`plugins/hermes-vault-desktop/desktop/plugin.js`)**: native Hermes Desktop plugin page — vault overview cards, credential/lease/request metadata, audit trail, integrity verification, and 30s auto-refresh. Read-only by construction; no Vault mutation surface.
+- **Plugin tests**: `test_plugin_api.py` (route surface, query bounds, env allowlist, bridge error mapping) and `test_runtime_plugin.py` (structure, route registration, id consistency) run without a live Vault or Hermes process.
+
+### Changed
+
+- **Canonical-launcher requirement**: the adapter spawns `hermes-vault-canonical` (resolved from PATH) so the bridge unlocks from the 0600 passphrase file and runs with a cleared `PYTHONPATH`. The raw `hermes-vault` binary returns HTTP 423 `MISSING_PASSPHRASE` in the scrubbed child environment (the child env deliberately contains no passphrase).
+
+### Upgrade notes
+
+- No upgrade or migration steps required. The desktop integration is additive. Operators enabling the desktop plugin must have the canonical launcher (`hermes-vault-canonical`) on the Hermes service PATH.
+
+## 0.23.2 -- Patch: audit chain wedge + export fail-closed (2026-08-01)
+
+### Fixed
+
+- **Audit chain wedge (HIGH)**: six CLI write paths (`set-expiry`, `clear-expiry`, `backup-verify`, `restore --dry-run`, `rotate-master-key` pre-rotation logger, and `recovery drill`) constructed `AuditLogger` without a master key, so their audit rows were written through the legacy unprotected INSERT branch. The next integrity-protected append then failed with `AuditIntegrityError: An audit row is not protected by an integrity record`, wedging the entire chain so `delete`, `add`, lease issuance, and access requests crashed. All six sites now pass `master_key=vault.key` (matching `build_services`), keeping the chain protected after every operator action.
+- **Export fail-closed (MEDIUM)**: `export --with-secrets` with a wrong passphrase used to exit 0 and write `"secret": null` for every credential because decrypt exceptions were swallowed. It now fails with a clear error and non-zero exit instead of emitting null secrets.
+
+### Added
+
+- Regression tests (`tests/test_audit_chain_regression.py`) that reproduce the smoke-test sequence for each of the six commands — seed the chain with a protected `add`, run the command, then assert `audit-verify` stays healthy and a subsequent mutation still succeeds — plus fail-closed export coverage.
+
+### Upgrade notes
+
+- No upgrade or migration steps required. Users on 0.23.0/0.23.1 should reinstall as 0.23.2 (`uv tool install hermes-vault==0.23.2` or reinstall the git URL).
+
+## 0.23.1 -- Patch: mcp SDK cap (2026-08-01)
+
+### Fixed
+
+- **Cap mcp SDK below 2.0**: pin `mcp>=1.0.0,<2.0.0` in runtime and dev dependencies. mcp 2.0.0 removed `Server.list_tools`, which broke `import hermes_vault.mcp_server` (line 853, `@server.list_tools()`) on fresh pip installs of 0.23.0.
+
+### Upgrade notes
+
+- No upgrade or migration steps required. Users on 0.23.0 should reinstall as 0.23.1 (`uv tool install hermes-vault==0.23.1` or reinstall the git URL) so pip resolves mcp < 2.0.0.
+
+## 0.23.0 -- Maintenance & Docs (2026-08-01)
+
+### Fixed
+
+- **PYTHONPATH pollution guard**: `tests/conftest.py` now strips `sys.path` entries containing `hermes-agent` before test collection, so the Hermes agent venv's Python 3.11 pydantic can no longer leak into uv's Python 3.12 process and break collection with `ModuleNotFoundError: No module named 'pydantic_core._pydantic_core'`. Cherry-picked from `release/v0.22.0` (`a9057bd`).
+
+### Docs
+
+- Add independent post-release sanity verification record for the v0.21.0 release to `release-readiness/v0.21.0/readiness-report.md` (`ecc9947`).
+
+### Chore
+
+- Bump all version surfaces to 0.23.0 (package metadata, README, site, tests).
+
+### Upgrade notes
+
+- No upgrade or migration steps required. 0.23.0 contains no storage schema, encryption, key-derivation, or policy changes since v0.22.0.
+
+## 0.22.0 -- Vault Intelligence
+
+### Added
+
+- **Universal verification coverage**: 39 shipped YAML verifier configs for all 45 canonical service IDs, loaded from `src/hermes_vault/verifier_configs/`. Adding a new verifier now takes 4 lines of YAML.
+- **`--unverified` and `--stale` filters** on `hermes-vault list` to find credentials needing attention.
+- **`--service` and `--tag` filters** on `hermes-vault list` for targeted credential views.
+- **Verification coverage %** in `hermes-vault health` alongside registered verifier count.
+- **Health score (A-F)** in health reports and dashboard, based on coverage, staleness, and findings count.
+- **CSV import** via `hermes-vault import --from-csv` with custom column mapping.
+- **Filtered credential export**: `hermes-vault export --format json|csv|env` with `--service`, `--tag`, and `--unverified` filters.
+- **Tag management CLI**: `hermes-vault tag <target> --add|--remove|--set`.
+- **`hermes-vault catalog`**: lists all 45 canonical services with env vars, verifier status, and descriptions.
+- **`hermes-vault schedule-verify`**: generates systemd timer or cron templates for automated credential verification.
+- **`hermes-vault setup`**: interactive first-time vault setup wizard.
+- **Verifier.count_registered_services()** for programmatic coverage queries.
+- Shipped verifier configs are loaded before user overrides — operator YAML files in `$HERMES_VAULT_HOME/verifiers/` take precedence.
+
+### Fixed
+
+- **PR #45 merged**: TOCTOU race in `ensure_initialized` that left audit rows outside the integrity chain, plus non-atomic credential+audit writes that now roll back credentials on chain failure. (Thanks @doronkatz)
+
+### Changed
+
+- Health report now includes `verification_coverage`, `registered_verifiers`, and `health_score` fields.
+- `hermes-vault verify --all` now has 45 registered verifiers (up from 6).
+
+### Security
+
+- No changes to encryption, key derivation, or vault storage schema.
+- Verifier configs ship with well-known public API endpoints only — no secrets embedded.
+- Stub configs for undocumented services use httpbin.org as placeholder.
+
+## 0.21.0 -- Audit Assurance
 
 ### Added
 

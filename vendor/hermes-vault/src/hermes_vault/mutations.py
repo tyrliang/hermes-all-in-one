@@ -17,6 +17,7 @@ policy/audit semantics should always use this layer.
 from __future__ import annotations
 
 from hermes_vault.audit import AuditLogger
+from hermes_vault.audit_integrity.service import AuditIntegrityError
 from hermes_vault.models import (
     AccessLogRecord,
     AgentCapability,
@@ -33,6 +34,10 @@ from hermes_vault.vault import Vault
 # Special agent ID for operator CLI calls.
 # Operator mutations skip policy checks but still produce audit entries.
 OPERATOR_AGENT_ID = "operator"
+
+
+class AuditRollbackError(AuditIntegrityError):
+    """The protected audit append failed and its compensating write also failed."""
 
 
 class VaultMutations:
@@ -66,6 +71,7 @@ class VaultMutations:
         notes: str | None = None,
         replace_existing: bool = False,
         metadata: dict | None = None,
+        audit_metadata: dict | None = None,
     ) -> MutationResult:
         """Add a credential with policy check and audit."""
         service = normalize(service)
@@ -77,7 +83,8 @@ class VaultMutations:
             )
             if not cap_ok:
                 return self._record_mutation(
-                    agent_id, service, "add_credential", False, cap_reason
+                    agent_id, service, "add_credential", False, cap_reason,
+                    audit_metadata=audit_metadata,
                 )
             # Service must be in agent's policy and allow add_credential action.
             svc_ok, svc_reason = self._check_service_action(
@@ -85,8 +92,20 @@ class VaultMutations:
             )
             if not svc_ok:
                 return self._record_mutation(
-                    agent_id, service, "add_credential", False, svc_reason
+                    agent_id, service, "add_credential", False, svc_reason,
+                    audit_metadata=audit_metadata,
                 )
+
+        # Capture the before-image of an existing row so an audit-failure
+        # rollback can restore the original ciphertext instead of deleting
+        # the only copy (issue #56). Mirrors the lookup inside
+        # ``vault.add_credential`` (vault.py) for replace_existing=True.
+        before_image: CredentialRecord | None = None
+        if replace_existing:
+            try:
+                before_image = self.vault.resolve_credential(service, alias=alias)
+            except KeyError:
+                before_image = None
 
         try:
             record = self.vault.add_credential(
@@ -103,17 +122,44 @@ class VaultMutations:
             )
         except Exception as exc:
             return self._record_mutation(
-                agent_id, service, "add_credential", False, str(exc)
+                agent_id, service, "add_credential", False, str(exc),
+                audit_metadata=audit_metadata,
             )
 
-        return self._record_mutation(
-            agent_id,
-            service,
-            "add_credential",
-            True,
-            f"credential {record.id} added for service '{service}' alias '{alias}'",
-            record=record,
-        )
+        try:
+            return self._record_mutation(
+                agent_id,
+                service,
+                "add_credential",
+                True,
+                f"credential {record.id} added for service '{service}' alias '{alias}'",
+                record=record,
+                before_image=before_image,
+                audit_metadata=audit_metadata,
+            )
+        except AuditRollbackError as exc:
+            return MutationResult(
+                allowed=False,
+                service=service,
+                agent_id=agent_id,
+                action="add_credential",
+                reason=f"audit integrity: {exc}. ROLLBACK FAILED; the prior credential may be lost. Restore from a trusted backup.",
+                record=None,
+                metadata={},
+            )
+        except AuditIntegrityError as exc:
+            # The credential was committed but the integrity chain refused to seal
+            # the audit row. `_record_mutation` has already completed the
+            # compensating write. Surface a clean denial result.
+            return MutationResult(
+                allowed=False,
+                service=service,
+                agent_id=agent_id,
+                action="add_credential",
+                reason=f"audit integrity: {exc}. Run `hermes-vault audit-verify` to inspect the chain; the write was rolled back and any prior credential preserved.",
+                record=None,
+                metadata={},
+            )
 
     def rotate_credential(
         self,
@@ -121,6 +167,7 @@ class VaultMutations:
         service_or_id: str,
         new_secret: str,
         alias: str | None = None,
+        audit_metadata: dict | None = None,
     ) -> MutationResult:
         """Rotate a credential's secret with policy check and audit."""
         try:
@@ -132,6 +179,7 @@ class VaultMutations:
                 "rotate_credential",
                 False,
                 f"credential '{service_or_id}' not found",
+                audit_metadata=audit_metadata,
             )
 
         service = current.service
@@ -142,30 +190,56 @@ class VaultMutations:
             )
             if not svc_ok:
                 return self._record_mutation(
-                    agent_id, service, "rotate_credential", False, svc_reason
+                    agent_id, service, "rotate_credential", False, svc_reason,
+                    audit_metadata=audit_metadata,
                 )
 
         try:
             updated = self.vault.rotate(service_or_id, new_secret, alias=alias)
         except Exception as exc:
             return self._record_mutation(
-                agent_id, service, "rotate_credential", False, str(exc)
+                agent_id, service, "rotate_credential", False, str(exc),
+                audit_metadata=audit_metadata,
             )
 
-        return self._record_mutation(
-            agent_id,
-            service,
-            "rotate_credential",
-            True,
-            f"rotated credential for service '{service}' alias '{updated.alias}'",
-            record=updated,
-        )
+        try:
+            return self._record_mutation(
+                agent_id,
+                service,
+                "rotate_credential",
+                True,
+                f"rotated credential for service '{service}' alias '{updated.alias}'",
+                record=updated,
+                before_image=current,
+                audit_metadata=audit_metadata,
+            )
+        except AuditRollbackError as exc:
+            return MutationResult(
+                allowed=False,
+                service=service,
+                agent_id=agent_id,
+                action="rotate_credential",
+                reason=f"audit integrity: {exc}. ROLLBACK FAILED; the prior credential may be lost. Restore from a trusted backup.",
+                record=None,
+                metadata={},
+            )
+        except AuditIntegrityError as exc:
+            return MutationResult(
+                allowed=False,
+                service=service,
+                agent_id=agent_id,
+                action="rotate_credential",
+                reason=f"audit integrity: {exc}. Run `hermes-vault audit-verify` to inspect the chain; the rotated secret is unchanged.",
+                record=None,
+                metadata={},
+            )
 
     def delete_credential(
         self,
         agent_id: str,
         service_or_id: str,
         alias: str | None = None,
+        audit_metadata: dict | None = None,
     ) -> MutationResult:
         """Delete a credential with policy check and audit."""
         try:
@@ -177,6 +251,7 @@ class VaultMutations:
                 "delete_credential",
                 False,
                 f"credential '{service_or_id}' not found",
+                audit_metadata=audit_metadata,
             )
 
         service = current.service
@@ -187,7 +262,8 @@ class VaultMutations:
             )
             if not svc_ok:
                 return self._record_mutation(
-                    agent_id, service, "delete_credential", False, svc_reason
+                    agent_id, service, "delete_credential", False, svc_reason,
+                    audit_metadata=audit_metadata,
                 )
 
         record_id = current.id
@@ -195,7 +271,8 @@ class VaultMutations:
             deleted = self.vault.delete(service_or_id, alias=alias)
         except Exception as exc:
             return self._record_mutation(
-                agent_id, service, "delete_credential", False, str(exc)
+                agent_id, service, "delete_credential", False, str(exc),
+                audit_metadata=audit_metadata,
             )
 
         if not deleted:
@@ -205,16 +282,46 @@ class VaultMutations:
                 "delete_credential",
                 False,
                 "delete returned False (credential may not exist)",
+                audit_metadata=audit_metadata,
             )
 
-        return self._record_mutation(
-            agent_id,
-            service,
-            "delete_credential",
-            True,
-            f"deleted credential '{record_id}' for service '{service}'",
-            metadata={"credential_id": record_id},
-        )
+        try:
+            return self._record_mutation(
+                agent_id,
+                service,
+                "delete_credential",
+                True,
+                f"deleted credential '{record_id}' for service '{service}'",
+                metadata={"credential_id": record_id},
+                before_image=current,
+                audit_metadata={
+                    **(audit_metadata or {}),
+                    "credential_id": record_id,
+                },
+            )
+        except AuditRollbackError as exc:
+            return MutationResult(
+                allowed=False,
+                service=service,
+                agent_id=agent_id,
+                action="delete_credential",
+                reason=f"audit integrity: {exc}. ROLLBACK FAILED; the prior credential may be lost. Restore from a trusted backup.",
+                record=None,
+                metadata={},
+            )
+        except AuditIntegrityError as exc:
+            # The delete committed but the integrity chain refused to seal
+            # the audit row. `_record_mutation` completed the compensating
+            # write from its before-image. Surface a clean denial result.
+            return MutationResult(
+                allowed=False,
+                service=service,
+                agent_id=agent_id,
+                action="delete_credential",
+                reason=f"audit integrity: {exc}. Run `hermes-vault audit-verify` to inspect the chain; the credential was restored.",
+                record=None,
+                metadata={},
+            )
 
     def get_metadata(
         self,
@@ -275,17 +382,66 @@ class VaultMutations:
         reason: str,
         record: CredentialRecord | None = None,
         metadata: dict | None = None,
+        before_image: CredentialRecord | None = None,
+        audit_metadata: dict | None = None,
     ) -> MutationResult:
-        """Write the audit entry and build the result."""
-        self.audit.record(
-            AccessLogRecord(
-                agent_id=agent_id,
-                service=service,
-                action=action,
-                decision=Decision.allow if allowed else Decision.deny,
-                reason=reason,
+        """Write the audit entry and build the result.
+
+        Atomicity contract: when `record` is provided (a state-changing
+        mutation succeeded at the vault layer), the audit append is part
+        of the same logical operation. If the integrity chain refuses to
+        seal the audit row, the credential write is rolled back so the
+        vault never ends up in a desynced state (credential exists, audit
+        row missing).
+
+        The rollback restores ``before_image`` (the pre-mutation row,
+        captured by the caller) whenever one exists — rotate, replace, and
+        delete must preserve the prior ciphertext (issue #56). ``delete``
+        is only used for a genuine new-record add, where the row did not
+        exist before this mutation. The integrity exception is re-raised
+        as an :class:`AuditIntegrityError` with an operator-actionable
+        message.
+
+        ``audit_metadata`` is written into the access-log row's ``metadata``
+        column (e.g. a caller-supplied ``request_id``); it is never merged
+        into the returned :class:`MutationResult` metadata.
+        """
+        try:
+            self.audit.record(
+                AccessLogRecord(
+                    agent_id=agent_id,
+                    service=service,
+                    action=action,
+                    decision=Decision.allow if allowed else Decision.deny,
+                    reason=reason,
+                    metadata=audit_metadata or {},
+                )
             )
-        )
+        except AuditIntegrityError as exc:
+            # If a credential was just written, roll it back so the vault
+            # doesn't desync from its audit chain. This is best-effort: the
+            # vault connection has already committed, so we issue a
+            # compensating write — restore the before-image (rotate, replace,
+            # delete) or delete a brand-new row (genuine add).
+            if before_image is not None:
+                try:
+                    self.vault.restore_credential(before_image)
+                except Exception as rollback_exc:
+                    # Surface both errors so the operator knows the rollback failed
+                    raise AuditRollbackError(
+                        f"{exc}. Rollback of credential '{before_image.id}' also failed: {rollback_exc}"
+                    ) from exc
+            elif record is not None and action == "add_credential":
+                # Genuine new-record add: the row is new; deleting it undoes
+                # the write.
+                try:
+                    self.vault.delete(record.id)
+                except Exception as rollback_exc:
+                    # Surface both errors so the operator knows the rollback failed
+                    raise AuditRollbackError(
+                        f"{exc}. Rollback of credential '{record.id}' also failed: {rollback_exc}"
+                    ) from exc
+            raise
         return MutationResult(
             allowed=allowed,
             service=service,

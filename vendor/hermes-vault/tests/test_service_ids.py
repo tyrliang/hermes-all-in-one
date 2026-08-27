@@ -70,19 +70,6 @@ def test_get_env_var_map_unknown_falls_back_to_generic() -> None:
     assert "HERMES_VAULT_SECRET" in m
 
 
-def test_get_env_var_map_unknown_accepts_any_requested_name() -> None:
-    # Custom/self-hosted services have no canonical env-var name to
-    # validate against, so the caller's configured binding name must be
-    # honored, not forced onto the shared generic name (regression: a
-    # prior version rejected any name other than HERMES_VAULT_SECRET for
-    # non-canonical services, breaking custom secrets.hermes_vault.env
-    # mappings such as HINDSIGHT_API_KEY -> hv://hindsight).
-    m = get_env_var_map("hindsight")
-    assert "HINDSIGHT_API_KEY" in m
-    assert m["HINDSIGHT_API_KEY"].format(secret="s3cr3t") == "s3cr3t"
-    assert "ANY_OTHER_NAME" in m
-
-
 def test_new_common_services_are_canonical() -> None:
     for service in [
         "openrouter",
@@ -101,6 +88,26 @@ def test_new_common_services_are_canonical() -> None:
         "gemini",
         "perplexity",
         "serpapi",
+        "deepseek",
+        "fireworks",
+        "commandcode",
+        "inception",
+        "kilocode",
+        "kimi",
+        "kimi-coding",
+        "nahcrof-dedicated",
+        "neuralwatt",
+        "synthetic",
+        "trinity",
+        "venice",
+        "xiaomi",
+        "zai",
+        "crof-ai",
+        "voyage",
+        "mistral",
+        "serper",
+        "bailian",
+        "ninerouter",
     ]:
         assert is_canonical(service) is True
         assert normalize(service) == service
@@ -135,6 +142,26 @@ def test_get_env_var_map_new_services() -> None:
         "gemini": ["GEMINI_API_KEY"],
         "perplexity": ["PERPLEXITY_API_KEY"],
         "serpapi": ["SERPAPI_API_KEY"],
+        "deepseek": ["DEEPSEEK_API_KEY"],
+        "fireworks": ["FIREWORKS_API_KEY"],
+        "commandcode": ["COMMANDCODE_API_KEY"],
+        "inception": ["INCEPTION_API_KEY"],
+        "kilocode": ["KILOCODE_API_KEY"],
+        "kimi": ["KIMI_API_KEY"],
+        "kimi-coding": ["KIMI_CODING_API_KEY"],
+        "nahcrof-dedicated": ["NAHCROF_DEDICATED_API_KEY"],
+        "neuralwatt": ["NEURALWATT_API_KEY"],
+        "synthetic": ["SYNTHETIC_API_KEY"],
+        "trinity": ["TRINITY_API_KEY"],
+        "venice": ["VENICE_API_KEY"],
+        "xiaomi": ["XIAOMI_API_KEY"],
+        "zai": ["ZAI_API_KEY"],
+        "crof-ai": ["CROF_AI_API_KEY"],
+        "voyage": ["VOYAGE_API_KEY"],
+        "mistral": ["MISTRAL_API_KEY"],
+        "serper": ["SERPER_API_KEY"],
+        "bailian": ["BAILIAN_API_KEY"],
+        "ninerouter": ["NINEROUTER_API_KEY"],
     }
     for service, env_names in expected.items():
         mapping = get_env_var_map(service)

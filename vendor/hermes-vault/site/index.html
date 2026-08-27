@@ -42,7 +42,7 @@
     <!-- Hero Section -->
     <section class="hero section-pad reveal hero-reveal-1">
       <div class="hero-copy">
-        <p class="eyebrow">v0.21.0 &bull; Audit Assurance &bull; signed audit continuity</p>
+        <p class="eyebrow">v0.25.0 &bull; Feature &bull; Desktop mutation surface shipped</p>
         <h1>From <span>.env</span> to safe agent access.</h1>
         <p class="lede">
           Bootstrap a messy plaintext env file into an encrypted local vault, explain every access decision, route approvals through an audit trail, bind env handoffs to leases, and prove recovery before the incident. Less key sprawl, fewer auth lies, fewer agent mistakes.
@@ -63,8 +63,8 @@
         <div class="hero-metrics" aria-label="Release and platform notes">
           <div class="metric-card">
             <span>Current Release</span>
-            <strong>0.21.0</strong>
-            <small>Mapped startup secrets through `hermes_vault`, with protected bootstrap passphrases, redacted errors, and MCP still handling in-loop access.</small>
+            <strong>0.25.0</strong>
+            <small>Feature release shipping the opt-in Desktop mutation surface: bridge <code>add</code>/<code>rotate</code>/<code>delete</code>, adapter <code>POST /mutations/*</code> routes, and native Desktop dialogs — deny-by-default, Bearer-only, audited, metadata-only. Read-only surface unchanged when the flag is off. <a href="https://github.com/asimons81/hermes-vault/releases/tag/v0.25.0" target="_blank" rel="noreferrer noopener">View release</a></small>
           </div>
           <div class="metric-card">
             <span>Operator Loop</span>
@@ -284,7 +284,7 @@
           </figure>
         </div>
         <p class="gallery-note">
-          The published screenshot set below reflects the v0.18.0 console baseline and preserves the local-only, token-guarded boundary. The v0.20.0 release keeps this archive until a fresh capture set lands.
+          The published screenshot set below reflects the v0.18.0 console baseline and preserves the local-only, token-guarded boundary. The v0.21.0 release keeps this archive until a fresh capture set lands.
         </p>
       </div>
     </section>
@@ -376,7 +376,7 @@
                 <span>Production Install</span>
                 <button class="copy-button" type="button" data-copy-target="users-code">Copy</button>
               </div>
-              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.21.0
+              <pre><code id="users-code">uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.25.0
 hermes-vault bootstrap --from-env .env --agent hermes --dry-run
 hermes-vault audit-verify
 hermes-vault audit-checkpoint show

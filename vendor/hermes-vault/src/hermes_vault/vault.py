@@ -1,35 +1,58 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
 import sys
-from typing import Any
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from hermes_vault import _platform
+from hermes_vault.audit_integrity.checkpoint import AuditLockError, audit_write_lock
+from hermes_vault.audit_integrity.detached import DETACHED_HEALTHY, verify_detached_evidence
+from hermes_vault.audit_integrity.models import AuditIntegrityStatus
 from hermes_vault.audit_integrity.service import AuditIntegrityError, AuditIntegrityService
 from hermes_vault.crypto import (
     CRYPTO_VERSION,
+    CRYPTO_VERSION_V2,
     CorruptKeyMaterialError,
     MissingKeyMaterialError,
     SALT_SIZE,
-    decrypt_secret,
+    build_canonical_aad,
+    credential_aad_metadata,
+    current_write_version,
+    decrypt_secret_versioned,
     derive_key,
-    encrypt_secret,
+    encrypt_secret_versioned,
     load_or_create_master_key,
 )
 from hermes_vault.models import (
+    AccessLogRecord,
     AccessRequestRecord,
     AccessRequestStatus,
     CredentialRecord,
     CredentialSecret,
     CredentialStatus,
+    Decision,
     LeaseRecord,
     LeaseStatus,
     utc_now,
+)
+from hermes_vault.rotation_journal import (
+    DurableKind,
+    DurableMaterial,
+    JournalPhase,
+    RotationJournalEntry,
+    RotationJournalError,
+    decrypt_old_key_recovery,
+    encrypt_old_key_recovery,
+    looks_like_dpapi_envelope,
+    retain_contradiction_marker,
 )
 from hermes_vault.service_ids import normalize
 
@@ -45,6 +68,64 @@ class AmbiguousTargetError(RuntimeError):
 
 class RotationRecoveryError(RuntimeError):
     """Raised when an interrupted master-key rotation cannot be recovered."""
+
+
+class RestoreCommittedCheckpointError(RuntimeError):
+    """The restore data committed, but the audit checkpoint could not be published.
+
+    Raised after the restore transaction has committed and its protected
+    restore event is durable; the failure is confined to the filesystem
+    checkpoint publication. The chain will verify as ``checkpoint_stale``
+    until the checkpoint is re-published (re-run the restore — it is
+    idempotent — or run ``hermes-vault audit checkpoint advance``).
+    """
+
+
+def _restore_event_id(backup: dict, version: str, agent_id: str = "operator") -> str:
+    """Deterministic id for a restore's protected audit event (issue #62B / F6).
+
+    Derived from the backup's restore-relevant content *and acting agent* so a
+    retry of the same restore by the same principal reuses the same event id,
+    while a distinct actor restoring identical content gets its own protected
+    restore attribution.
+    """
+    content = json.dumps(
+        {
+            "version": version,
+            "credentials": backup.get("credentials", []),
+            "leases": backup.get("leases", []),
+            "agent_id": agent_id,
+        },
+        sort_keys=True,
+        default=str,
+    )
+    return f"restore-{hashlib.sha256(content.encode('utf-8')).hexdigest()[:32]}"
+
+
+def _record_aad_metadata(record: "CredentialRecord") -> dict[str, Any]:
+    """Authorization metadata bound into a credential row's v2 AAD."""
+    return credential_aad_metadata(
+        record.id,
+        record.service,
+        record.alias,
+        record.credential_type,
+        record.scopes,
+    )
+
+
+def _durable_from_bytes(raw: bytes, fallback_salt: bytes) -> DurableMaterial:
+    """Typed durable material from the on-disk salt bytes.
+
+    The existing salt file is either a 16-byte PBKDF derivation salt or a
+    DPAPI envelope (``HVDP`` magic + payload).  A missing/empty file falls
+    back to the new derivation salt (mirrors the legacy journal behavior of
+    recording ``old_salt = new_salt`` for a fresh vault).
+    """
+    if not raw:
+        return DurableMaterial(kind=DurableKind.pbkdf_salt, salt=fallback_salt)
+    if looks_like_dpapi_envelope(raw):
+        return DurableMaterial(kind=DurableKind.dpapi_envelope, envelope=raw)
+    return DurableMaterial(kind=DurableKind.pbkdf_salt, salt=raw)
 
 
 class Vault:
@@ -87,9 +168,18 @@ class Vault:
     def rotation_journal_path(self) -> Path:
         return self.salt_path.with_name(f"{self.salt_path.name}.rotation.json")
 
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(self.db_path)
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS credentials (
@@ -318,50 +408,193 @@ class Vault:
             payload = derivation_salt
         self._replace_salt_durable(payload)
 
-    def _first_encrypted_payload(self) -> str | None:
+    def _first_encrypted_payload(self) -> dict[str, Any] | None:
+        """Return the most recently updated credential row (or None)."""
         if not self.db_path.exists():
             return None
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
+            conn.row_factory = sqlite3.Row
             row = conn.execute(
-                "SELECT encrypted_payload FROM credentials ORDER BY updated_at DESC LIMIT 1"
+                "SELECT * FROM credentials ORDER BY updated_at DESC LIMIT 1"
             ).fetchone()
-        return row[0] if row else None
-
-    def _payload_decrypts_with_salt(self, passphrase: str, salt: bytes, payload: str) -> bool:
-        try:
-            decrypt_secret(payload, derive_key(passphrase, salt))
-            return True
-        except Exception:
-            return False
+        return dict(row) if row else None
 
     def _recover_rotation_journal(self, passphrase: str) -> None:
         journal_path = self.rotation_journal_path
         if not journal_path.exists():
             return
         try:
-            journal = json.loads(journal_path.read_text(encoding="utf-8"))
-            old_salt = bytes.fromhex(journal["old_salt"])
-            new_salt = bytes.fromhex(journal["new_salt"])
+            entry = RotationJournalEntry.from_json(journal_path.read_text(encoding="utf-8"))
+        except RotationJournalError as exc:
+            # Contradiction-class failure (v1/v2 version/kind/state conflicts):
+            # retain the original journal, record the marker when available,
+            # and surface a clear recovery error (Slice C retention rule).
+            if exc.marker is not None:
+                try:
+                    retain_contradiction_marker(journal_path, exc.marker)
+                except Exception:
+                    pass
+            raise RotationRecoveryError(
+                f"Master-key rotation journal at {journal_path} is malformed or contradictory "
+                f"and was retained for operator review: {exc}"
+            ) from exc
         except Exception as exc:
             raise RotationRecoveryError(
                 f"Master-key rotation journal at {journal_path} is unreadable."
             ) from exc
 
-        payload = self._first_encrypted_payload()
-        if payload is None:
-            recovered_salt = new_salt if journal.get("status") == "db_committed" else old_salt
-        elif self._payload_decrypts_with_salt(passphrase, new_salt, payload):
-            recovered_salt = new_salt
-        elif self._payload_decrypts_with_salt(passphrase, old_salt, payload):
-            recovered_salt = old_salt
+        phase = entry.phase()
+
+        if phase == JournalPhase.started:
+            self._recover_started_journal(entry, passphrase, journal_path)
+            return
+
+        # db_committed (pending or checkpoint_committed): the credential DB is
+        # already encrypted under the new key. Derive the new key from the
+        # journaled new durable material, unwrap the old audit/master key from
+        # the recovery envelope, reconcile the audit transition idempotently,
+        # verify a healthy audit state, and only then finalize the new durable
+        # material and delete the journal.
+        new_key = self._durable_key(entry.new_durable, passphrase)
+        if entry.old_key_recovery is None:
+            if phase == JournalPhase.db_committed_pending:
+                # Legacy v1 pending journal predates protected old-key
+                # recovery: cannot reconcile without the old audit key. Retain
+                # and surface a clear recovery error (issue #66 requirement).
+                raise RotationRecoveryError(
+                    "Legacy rotation journal is pending but lacks protected old-key "
+                    "recovery material; journal retained for operator review. Manual "
+                    "recovery is required before this vault can reopen."
+                )
+            # checkpoint_committed: the audit transition already completed, so
+            # the old key is not needed by the reconciliation seam.
+            old_key = new_key
         else:
+            try:
+                old_key = decrypt_old_key_recovery(
+                    entry.old_key_recovery, new_key, entry.journal_id
+                )
+            except Exception as exc:
+                raise RotationRecoveryError(
+                    "Master-key rotation journal old-key recovery could not be decrypted "
+                    f"(wrong passphrase or tampered journal); journal retained: {exc}"
+                ) from exc
+
+        service = AuditIntegrityService(self.db_path, new_key)
+        try:
+            result = service.recover_pending_rotation(entry, old_master_key=old_key)
+        except AuditIntegrityError as exc:
             raise RotationRecoveryError(
-                "Interrupted master-key rotation could not be recovered with either journaled salt."
+                f"Master-key rotation journal audit reconciliation failed; journal retained: {exc}"
+            ) from exc
+        if result.status != AuditIntegrityStatus.healthy:
+            raise RotationRecoveryError(
+                "Master-key rotation journal audit verification is not healthy after recovery "
+                f"({result.sanitized_reason}); journal retained for operator review."
             )
 
-        self._replace_salt_durable(recovered_salt)
+        # All checks passed: finalize the new durable material, then delete.
+        self._write_new_durable(entry.new_durable, new_key)
         journal_path.unlink()
         self._fsync_directory(journal_path.parent)
+
+    def _recover_started_journal(
+        self,
+        entry: RotationJournalEntry,
+        passphrase: str,
+        journal_path: Path,
+    ) -> None:
+        """Recover a pre-commit ``started`` journal (safe rollback).
+
+        A started journal means the credential DB was never committed under
+        the new key, so the old durable form is still correct.  Restore it
+        and delete the journal.  If the old key does not decrypt the DB but
+        the journaled new key does, the DB was committed without the journal
+        being updated — an ambiguous state that fails closed and retains the
+        journal (issue #66: never silently delete a pending journal).
+        """
+        old_key = self._durable_key(entry.old_durable, passphrase)
+        first = self._first_encrypted_payload()
+        if first is None:
+            self._restore_durable_bytes(entry.old_durable)
+            journal_path.unlink()
+            self._fsync_directory(journal_path.parent)
+            return
+        version = first.get("crypto_version") or CRYPTO_VERSION
+        aad_metadata = credential_aad_metadata(
+            first.get("id", ""),
+            first.get("service", ""),
+            first.get("alias", "default"),
+            first.get("credential_type", ""),
+            json.loads(first.get("scopes") or "[]"),
+        )
+        if self._payload_decrypts_with_key(
+            old_key,
+            first["encrypted_payload"],
+            version=version,
+            aad_metadata=aad_metadata,
+        ):
+            self._restore_durable_bytes(entry.old_durable)
+            journal_path.unlink()
+            self._fsync_directory(journal_path.parent)
+            return
+        new_key = self._durable_key(entry.new_durable, passphrase)
+        if self._payload_decrypts_with_key(
+            new_key,
+            first["encrypted_payload"],
+            version=version,
+            aad_metadata=aad_metadata,
+        ):
+            raise RotationRecoveryError(
+                "Master-key rotation journal is 'started' but the credential DB is already "
+                "encrypted under the new key (ambiguous state); journal retained for operator review."
+            )
+        raise RotationRecoveryError(
+            "Interrupted master-key rotation could not be recovered with the provided "
+            "passphrase (neither journaled key decrypts the vault); journal retained."
+        )
+
+    def _durable_key(self, durable: DurableMaterial, passphrase: str) -> bytes:
+        """Derive/unwrap the master key for a typed durable material."""
+        if durable.kind == DurableKind.pbkdf_salt:
+            assert durable.salt is not None
+            return derive_key(passphrase, durable.salt)
+        from hermes_vault import dpapi  # deferred: keeps win32crypt off the cold path
+
+        assert durable.envelope is not None
+        return dpapi.unprotect_master_key(durable.envelope)
+
+    def _restore_durable_bytes(self, durable: DurableMaterial) -> None:
+        """Write the exact durable bytes back to the salt file (rollback)."""
+        if durable.kind == DurableKind.pbkdf_salt:
+            assert durable.salt is not None
+            self._replace_salt_durable(durable.salt)
+        else:
+            assert durable.envelope is not None
+            self._replace_salt_durable(durable.envelope)
+
+    def _write_new_durable(self, durable: DurableMaterial, new_key: bytes) -> None:
+        """Persist the new durable form (DPAPI-aware for PBKDF salts)."""
+        if durable.kind == DurableKind.pbkdf_salt:
+            assert durable.salt is not None
+            self._write_master_key_durable(durable.salt, new_key)
+        else:
+            assert durable.envelope is not None
+            self._replace_salt_durable(durable.envelope)
+
+    def _payload_decrypts_with_key(
+        self,
+        key: bytes,
+        payload: str,
+        *,
+        version: str,
+        aad_metadata: dict[str, Any] | None,
+    ) -> bool:
+        try:
+            decrypt_secret_versioned(payload, key, version, aad_metadata)
+            return True
+        except Exception:
+            return False
 
     def _secure_storage_files(self) -> None:
         _platform.secure_file(self.db_path)
@@ -388,13 +621,24 @@ class Vault:
             )
         resolved_tags = self._normalize_tags(tags) if tags is not None else (existing.tags if existing else [])
         resolved_notes = self._normalize_notes(notes) if notes is not None else (existing.notes if existing else None)
+        # Pre-generate the record id so the authorization metadata bound into
+        # the v2 AAD matches the row that is actually stored (issue #60).
+        write_version = current_write_version()
+        record_id = existing.id if (existing and replace_existing) else str(uuid4())
+        aad_metadata = credential_aad_metadata(
+            record_id,
+            service,
+            alias,
+            credential_type,
+            scopes or [],
+        )
         payload = CredentialSecret(
             secret=secret,
             metadata=self._resolve_secret_metadata(existing.id if existing else None, metadata),
             tags=resolved_tags,
             notes=resolved_notes,
         ).model_dump_json()
-        encrypted_payload = encrypt_secret(payload, self.key)
+        encrypted_payload = encrypt_secret_versioned(payload, self.key, write_version, aad_metadata)
         record = existing.model_copy(update={
             "credential_type": credential_type,
             "encrypted_payload": encrypted_payload,
@@ -405,8 +649,9 @@ class Vault:
             "status": CredentialStatus.unknown,
             "updated_at": utc_now(),
             "expiry": None,
-            "crypto_version": CRYPTO_VERSION,
+            "crypto_version": write_version,
         }) if existing and replace_existing else CredentialRecord(
+            id=record_id,
             service=service,
             alias=alias,
             credential_type=credential_type,
@@ -415,9 +660,9 @@ class Vault:
             scopes=scopes or [],
             tags=resolved_tags,
             notes=resolved_notes,
-            crypto_version=CRYPTO_VERSION,
+            crypto_version=write_version,
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             if existing and replace_existing:
                 conn.execute(
                     """
@@ -472,14 +717,14 @@ class Vault:
         return record
 
     def list_credentials(self) -> list[CredentialRecord]:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("SELECT * FROM credentials ORDER BY service, alias").fetchall()
         return [self._row_to_record(row) for row in rows]
 
     def get_credential(self, service_or_id: str) -> CredentialRecord | None:
         # Try by raw id first (UUID), then by canonicalized service name
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 """
@@ -509,7 +754,12 @@ class Vault:
         record = self.get_credential(service_or_id)
         if not record:
             return None
-        payload = decrypt_secret(record.encrypted_payload, self.key)
+        payload = decrypt_secret_versioned(
+            record.encrypted_payload,
+            self.key,
+            record.crypto_version,
+            _record_aad_metadata(record),
+        )
         return CredentialSecret.model_validate_json(payload)
 
     def update_status(
@@ -523,7 +773,7 @@ class Vault:
         """
         if alias is not None:
             normalized = normalize(service_or_id)
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connection() as conn:
                 conn.execute(
                     """
                     UPDATE credentials
@@ -535,7 +785,7 @@ class Vault:
                 conn.commit()
             return
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             # Try raw id first
             cursor = conn.execute(
                 """
@@ -592,12 +842,17 @@ class Vault:
             tags=current.tags,
             notes=current.notes,
         ).model_dump_json()
-        encrypted_payload = encrypt_secret(payload, self.key)
+        encrypted_payload = encrypt_secret_versioned(
+            payload,
+            self.key,
+            current.crypto_version,
+            _record_aad_metadata(current),
+        )
         current.encrypted_payload = encrypted_payload
         current.imported_from = imported_from or current.imported_from
         current.updated_at = utc_now()
         current.status = CredentialStatus.unknown
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 UPDATE credentials
@@ -625,7 +880,7 @@ class Vault:
         """
         if alias is not None:
             normalized = normalize(service_or_id)
-            with sqlite3.connect(self.db_path) as conn:
+            with self._connection() as conn:
                 cursor = conn.execute(
                     "DELETE FROM credentials WHERE service = ? AND alias = ?",
                     (normalized, alias),
@@ -633,7 +888,7 @@ class Vault:
                 conn.commit()
             return cursor.rowcount > 0
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             # Try raw id first
             cursor = conn.execute(
                 "DELETE FROM credentials WHERE id = ?", (service_or_id,)
@@ -663,6 +918,62 @@ class Vault:
             )
             conn.commit()
         return cursor.rowcount > 0
+
+    def restore_credential(self, record: CredentialRecord) -> None:
+        """Idempotently restore a complete credential row by id (upsert).
+
+        Used to roll back a state-changing mutation when the audit chain
+        refuses to seal the audit append. Because ``(service, alias)`` has
+        no unique constraint, restoring by ``id`` is unambiguous. Safe to
+        call repeatedly: a second application is a no-op write of the same
+        row.
+
+        The row is written verbatim from ``record`` using the same column
+        set as ``add_credential``'s INSERT/UPDATE, so the original
+        ciphertext and metadata are preserved exactly.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO credentials (
+                    id, service, alias, credential_type, encrypted_payload, status, scopes,
+                    tags, notes, created_at, updated_at, last_verified_at, imported_from, expiry, crypto_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    service = excluded.service,
+                    alias = excluded.alias,
+                    credential_type = excluded.credential_type,
+                    encrypted_payload = excluded.encrypted_payload,
+                    status = excluded.status,
+                    scopes = excluded.scopes,
+                    tags = excluded.tags,
+                    notes = excluded.notes,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at,
+                    last_verified_at = excluded.last_verified_at,
+                    imported_from = excluded.imported_from,
+                    expiry = excluded.expiry,
+                    crypto_version = excluded.crypto_version
+                """,
+                (
+                    record.id,
+                    record.service,
+                    record.alias,
+                    record.credential_type,
+                    record.encrypted_payload,
+                    record.status.value,
+                    json.dumps(record.scopes),
+                    json.dumps(record.tags),
+                    record.notes,
+                    record.created_at.isoformat(),
+                    record.updated_at.isoformat(),
+                    record.last_verified_at.isoformat() if record.last_verified_at else None,
+                    record.imported_from,
+                    record.expiry.isoformat() if record.expiry else None,
+                    record.crypto_version,
+                ),
+            )
+            conn.commit()
 
     def _row_to_record(self, row: sqlite3.Row) -> CredentialRecord:
         payload = dict(row)
@@ -699,7 +1010,7 @@ class Vault:
             return record
 
         # Try by raw id first (UUID exact match)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT * FROM credentials WHERE id = ?", (service_or_id,)
@@ -749,7 +1060,7 @@ class Vault:
         """
         record = self.resolve_credential(service_or_id, alias=alias)
         updated_at = utc_now()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 UPDATE credentials
@@ -783,7 +1094,7 @@ class Vault:
         """
         record = self.resolve_credential(service_or_id, alias=alias)
         updated_at = utc_now()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             cursor = conn.execute(
                 """
                 UPDATE credentials
@@ -800,14 +1111,14 @@ class Vault:
 
     def _count_by_service(self, service: str) -> int:
         """Count credentials for a normalized service name."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             row = conn.execute(
                 "SELECT COUNT(*) FROM credentials WHERE service = ?", (service,)
             ).fetchone()
             return row[0] if row else 0
 
     def _find_by_service_alias(self, service: str, alias: str) -> CredentialRecord | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 """
@@ -872,7 +1183,7 @@ class Vault:
         return LeaseRecord.model_validate(payload)
 
     def _find_lease(self, lease_id: str) -> LeaseRecord | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
             self._refresh_expired_leases(conn)
             row = conn.execute("SELECT * FROM leases WHERE id = ?", (lease_id,)).fetchone()
@@ -907,7 +1218,7 @@ class Vault:
             scopes=record.scopes,
             metadata=metadata or {},
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 INSERT INTO leases (
@@ -946,7 +1257,7 @@ class Vault:
         service: str | None = None,
         status: LeaseStatus | str | None = None,
     ) -> list[LeaseRecord]:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
             self._refresh_expired_leases(conn)
             conditions: list[str] = []
@@ -978,7 +1289,7 @@ class Vault:
         alias: str = "default",
     ) -> LeaseRecord | None:
         service = normalize(service)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
             self._refresh_expired_leases(conn)
             row = conn.execute(
@@ -1025,7 +1336,7 @@ class Vault:
             requested_ttl_seconds=requested_ttl_seconds,
             metadata=metadata or {},
         )
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 INSERT INTO access_requests (
@@ -1061,7 +1372,7 @@ class Vault:
         service: str | None = None,
         status: str | AccessRequestStatus | None = None,
     ) -> list[AccessRequestRecord]:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
             conditions: list[str] = []
             params: list[Any] = []
@@ -1083,7 +1394,7 @@ class Vault:
         return [self._row_to_access_request_record(row) for row in rows]
 
     def get_access_request(self, request_id: str) -> AccessRequestRecord | None:
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute("SELECT * FROM access_requests WHERE id = ?", (request_id,)).fetchone()
         return self._row_to_access_request_record(row) if row else None
@@ -1104,7 +1415,7 @@ class Vault:
             raise ValueError(f"Access request '{request_id}' is already {current.status.value}")
         status_value = status.value if isinstance(status, AccessRequestStatus) else str(status)
         decided_at = utc_now()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 UPDATE access_requests
@@ -1138,7 +1449,7 @@ class Vault:
             "renewed_at": now,
             "renew_count": lease.renew_count + 1,
         })
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 UPDATE leases
@@ -1169,7 +1480,7 @@ class Vault:
             "revoked_at": now,
             "reason": reason if reason is not None else lease.reason,
         })
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.execute(
                 """
                 UPDATE leases
@@ -1248,17 +1559,73 @@ class Vault:
             backup["audit_integrity"] = audit_service.export_evidence()  # type: ignore[assignment]
         return backup
 
-    def import_backup(self, backup: dict, replace: bool = True) -> list[CredentialRecord]:
+    def import_backup(
+        self,
+        backup: dict,
+        replace: bool = True,
+        agent_id: str = "operator",  # matches OPERATOR_AGENT_ID in mutations.py
+    ) -> list[CredentialRecord]:
         """Import credentials from a backup dict. Existing records are replaced by default.
 
         Supports hvbackup-v1 and hvbackup-v2 (credential portion only).
         Rejects metadata-only backups (entries missing encrypted_payload).
-        Audit integrity state is restored separately via restore_audit_integrity.
+
+        *agent_id* names the acting principal for the protected restore audit
+        event. Operator/CLI callers keep the explicit safe default
+        (``operator``); broker-driven imports pass the real agent so the
+        tamper-evident trail attributes the restore correctly (issue #62A F4).
+
+        Slice E1 (issue #62): the restore is validated by a preflight routine
+        before any mutation — the evidence contract is confirmed (v2 backups
+        must carry audit integrity evidence that detached-verifies healthy,
+        matching backup-verify / restore --dry-run semantics), restored
+        leases are rejected if they would mint a forged active lease identity
+        or reference a foreign credential, and every lease's broker identity
+        must match the credential it references. The import then runs as a
+        single transaction together with a protected restore audit event
+        through the shared audit seam; if any row, validation, or audit
+        append fails, the whole restore rolls back atomically.
+
+        Issue #62B (F5/F6): the audit write lock is held across the health
+        gate and the transaction, and lease/credential linkage plus broker
+        identity are re-verified inside ``BEGIN IMMEDIATE`` against fresh
+        state, closing the preflight-to-transaction TOCTOU. The protected
+        restore event uses a deterministic id derived from the backup content
+        so a retry is idempotent; the checkpoint is published after commit,
+        and a checkpoint publication failure raises
+        :class:`RestoreCommittedCheckpointError` — the restore data is
+        durable and the chain verifies ``checkpoint_stale`` until the
+        checkpoint is re-published, never a rolled-back restore.
         """
         version = backup.get("version")
         if version not in ("hvbackup-v1", "hvbackup-v2"):
             raise ValueError(f"Unsupported backup version: {version}")
-        imported = []
+
+        # ── E1 preflight: validate before any mutation ──
+        # 1. Evidence contract: hvbackup-v2 backups must carry detached
+        #    audit integrity evidence that verifies healthy (slice D
+        #    prerequisite, issue #62A F3). The integrity_available marker
+        #    alone is not evidence: the full payload is detached-verified
+        #    against the current vault key with the same healthy/complete
+        #    semantics as backup-verify / restore --dry-run, so a marker-only
+        #    or forged payload fails closed before any write.
+        if version == "hvbackup-v2":
+            evidence = backup.get("audit_integrity")
+            if not isinstance(evidence, dict) or evidence.get("integrity_available") is not True:
+                raise ValueError(
+                    "Cannot restore an hvbackup-v2 backup without audit integrity evidence. "
+                    "Use a full v2 backup (with audit evidence) for restore."
+                )
+            status, reason = verify_detached_evidence(evidence, self.key)
+            if status != DETACHED_HEALTHY:
+                raise ValueError(
+                    f"Cannot restore an hvbackup-v2 backup with invalid audit integrity "
+                    f"evidence ({status}: {reason}). Run backup-verify or restore "
+                    "--dry-run for a full report."
+                )
+
+        # 2. Parse and validate every credential row before writing anything.
+        prepared_creds: list[tuple[CredentialRecord, CredentialRecord | None]] = []
         for cred_data in backup.get("credentials", []):
             if cred_data.get("encrypted_payload") is None:
                 raise ValueError(
@@ -1296,9 +1663,44 @@ class Vault:
                 crypto_version=cred_data.get("crypto_version", "aesgcm-v1"),
             )
             if existing:
+                # The destination row keeps its own id/metadata. A v2 payload
+                # from the backup was encrypted against the SOURCE row's
+                # metadata; when the bound metadata differs (e.g. a different
+                # id), rebind the payload to this row so restore stays
+                # decryptable (issue #60).
+                incoming_version = record.crypto_version
+                dest_payload = record.encrypted_payload
+                if incoming_version == CRYPTO_VERSION_V2:
+                    source_meta = credential_aad_metadata(
+                        cred_data.get("id") or existing.id,
+                        normalize(cred_data.get("service") or existing.service),
+                        cred_data.get("alias") or existing.alias,
+                        cred_data.get("credential_type") or existing.credential_type,
+                        cred_data.get("scopes") or existing.scopes,
+                    )
+                    dest_meta = credential_aad_metadata(
+                        existing.id,
+                        existing.service,
+                        existing.alias,
+                        record.credential_type,
+                        record.scopes,
+                    )
+                    if build_canonical_aad(source_meta) != build_canonical_aad(dest_meta):
+                        try:
+                            plaintext = decrypt_secret_versioned(
+                                dest_payload, self.key, incoming_version, source_meta
+                            )
+                        except Exception:
+                            raise ValueError(
+                                "Imported v2 credential payload could not be decrypted "
+                                f"with the source metadata for {service}/{record.alias}."
+                            )
+                        dest_payload = encrypt_secret_versioned(
+                            plaintext, self.key, incoming_version, dest_meta
+                        )
                 record = existing.model_copy(update={
                     "credential_type": cred_data["credential_type"],
-                    "encrypted_payload": cred_data["encrypted_payload"],
+                    "encrypted_payload": dest_payload,
                     "status": CredentialStatus(cred_data.get("status", "unknown")),
                     "scopes": cred_data.get("scopes", []),
                     "tags": self._normalize_tags(cred_data.get("tags")) if "tags" in cred_data else existing.tags,
@@ -1306,59 +1708,22 @@ class Vault:
                     "imported_from": cred_data.get("imported_from"),
                     "last_verified_at": last_verified_at,
                     "updated_at": utc_now(),
+                    "crypto_version": incoming_version,
                 })
-            with sqlite3.connect(self.db_path) as conn:
-                if existing:
-                    conn.execute(
-                        """
-                        UPDATE credentials
-                        SET credential_type=?, encrypted_payload=?, status=?, scopes=?,
-                            tags=?, notes=?, updated_at=?, last_verified_at=?, imported_from=?, expiry=?
-                        WHERE id=?
-                        """,
-                        (
-                            record.credential_type,
-                            record.encrypted_payload,
-                            record.status.value,
-                            json.dumps(record.scopes),
-                            json.dumps(record.tags),
-                            record.notes,
-                            record.updated_at.isoformat(),
-                            record.last_verified_at.isoformat() if record.last_verified_at else None,
-                            record.imported_from,
-                            record.expiry.isoformat() if record.expiry else None,
-                            record.id,
-                        ),
-                    )
-                else:
-                    conn.execute(
-                        """
-                        INSERT INTO credentials (
-                            id, service, alias, credential_type, encrypted_payload, status, scopes,
-                            tags, notes, created_at, updated_at, last_verified_at, imported_from, expiry, crypto_version
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            record.id,
-                            record.service,
-                            record.alias,
-                            record.credential_type,
-                            record.encrypted_payload,
-                            record.status.value,
-                            json.dumps(record.scopes),
-                            json.dumps(record.tags),
-                            record.notes,
-                            record.created_at.isoformat(),
-                            record.updated_at.isoformat(),
-                            record.last_verified_at.isoformat() if record.last_verified_at else None,
-                            record.imported_from,
-                            record.expiry.isoformat() if record.expiry else None,
-                            record.crypto_version,
-                        ),
-                    )
-                conn.commit()
-            imported.append(record)
+            prepared_creds.append((record, existing))
 
+        # 3. Parse and validate leases: credential_id linkage must resolve to
+        #    a credential in this backup or already in the vault, and the
+        #    lease's broker identity must match the referenced credential.
+        allowed_credential_ids = {rec.id for rec, _ in prepared_creds}
+        allowed_credential_ids.update(rec.id for rec in self.list_credentials())
+        credential_identity: dict[str, CredentialRecord] = {
+            rec.id: rec for rec, _ in prepared_creds
+        }
+        for rec in self.list_credentials():
+            credential_identity.setdefault(rec.id, rec)
+
+        prepared_leases: list[tuple[LeaseRecord, LeaseRecord | None]] = []
         for lease_data in backup.get("leases", []):
             lease_id = lease_data.get("id") or str(uuid4())
             metadata = lease_data.get("metadata") or {}
@@ -1367,7 +1732,6 @@ class Vault:
             scopes = lease_data.get("scopes") or []
             if not isinstance(scopes, list):
                 scopes = [str(scopes)]
-            existing_lease = self.get_lease(lease_id)
             lease = LeaseRecord(
                 id=lease_id,
                 service=normalize(lease_data.get("service", "")),
@@ -1388,262 +1752,270 @@ class Vault:
                 scopes=[str(item) for item in scopes],
                 metadata=metadata,
             )
-            if existing_lease:
-                with sqlite3.connect(self.db_path) as conn:
-                    conn.execute(
-                        """
-                        UPDATE leases
-                        SET service=?, alias=?, credential_id=?, credential_type=?, agent_id=?, issued_by=?,
-                            purpose=?, status=?, ttl_seconds=?, issued_at=?, expires_at=?, revoked_at=?,
-                            renewed_at=?, renew_count=?, reason=?, scopes=?, metadata_json=?
-                        WHERE id=?
-                        """,
-                        (
-                            lease.service,
-                            lease.alias,
-                            lease.credential_id,
-                            lease.credential_type,
-                            lease.agent_id,
-                            lease.issued_by,
-                            lease.purpose,
-                            lease.status.value,
-                            lease.ttl_seconds,
-                            lease.issued_at.isoformat(),
-                            lease.expires_at.isoformat(),
-                            lease.revoked_at.isoformat() if lease.revoked_at else None,
-                            lease.renewed_at.isoformat() if lease.renewed_at else None,
-                            lease.renew_count,
-                            lease.reason,
-                            json.dumps(lease.scopes),
-                            json.dumps(lease.metadata, sort_keys=True),
-                            lease.id,
-                        ),
-                    )
-                    conn.commit()
-            else:
-                with sqlite3.connect(self.db_path) as conn:
-                    conn.execute(
-                        """
-                        INSERT INTO leases (
-                            id, service, alias, credential_id, credential_type, agent_id, issued_by, purpose,
-                            status, ttl_seconds, issued_at, expires_at, revoked_at, renewed_at, renew_count,
-                            reason, scopes, metadata_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            lease.id,
-                            lease.service,
-                            lease.alias,
-                            lease.credential_id,
-                            lease.credential_type,
-                            lease.agent_id,
-                            lease.issued_by,
-                            lease.purpose,
-                            lease.status.value,
-                            lease.ttl_seconds,
-                            lease.issued_at.isoformat(),
-                            lease.expires_at.isoformat(),
-                            lease.revoked_at.isoformat() if lease.revoked_at else None,
-                            lease.renewed_at.isoformat() if lease.renewed_at else None,
-                            lease.renew_count,
-                            lease.reason,
-                            json.dumps(lease.scopes),
-                            json.dumps(lease.metadata, sort_keys=True),
-                        ),
-                    )
-                    conn.commit()
-        return imported
+            if lease.credential_id not in allowed_credential_ids:
+                raise ValueError(
+                    f"Lease {lease_id!r} references credential {lease.credential_id!r} "
+                    "which is not part of the backup or the vault (foreign credential linkage)."
+                )
+            referenced = credential_identity.get(lease.credential_id)
+            if referenced is not None and (
+                lease.service != referenced.service
+                or lease.alias != referenced.alias
+                or lease.credential_type != referenced.credential_type
+            ):
+                raise ValueError(
+                    f"Lease {lease_id!r} broker identity "
+                    f"({lease.service}/{lease.alias}/{lease.credential_type}) does not match "
+                    f"credential {referenced.id!r} ({referenced.service}/{referenced.alias}/{referenced.credential_type})."
+                )
+            # No active forged leases as part of import policy: a restored
+            # lease is never minted active (issue #62).
+            if lease.status is LeaseStatus.active:
+                lease = lease.model_copy(update={
+                    "status": LeaseStatus.revoked,
+                    "revoked_at": utc_now(),
+                    "reason": "restored as revoked (active leases are never restored)",
+                })
+            prepared_leases.append((lease, self.get_lease(lease_id)))
 
-    def restore_audit_integrity(
-        self, backup: dict, *, rollback_on_failure: bool = True
-    ) -> dict[str, Any]:
-        """Restore audit integrity evidence from an hvbackup-v2 backup.
+        # 4. Build the protected restore event. Its id is deterministic
+        #    (derived from the backup's restore-relevant content and acting
+        #    agent) so a retry of the same restore reuses the event instead
+        #    of appending a duplicate protected event (issue #62B / F6).
+        audit_service = AuditIntegrityService(self.db_path, self.key)
+        audit_service.ensure_initialized()
+        restore_event = AccessLogRecord(
+            id=_restore_event_id(backup, version, agent_id),
+            agent_id=agent_id,  # real acting agent (operator default; broker passes the agent)
+            service="*",
+            action="restore",
+            decision=Decision.allow,
+            reason=(
+                f"restored {len(prepared_creds)} credential(s) and "
+                f"{len(prepared_leases)} lease(s) from {version} backup"
+            ),
+            metadata={
+                "backup_version": version,
+                "credential_count": len(prepared_creds),
+                "lease_count": len(prepared_leases),
+            },
+        )
 
-        Staged transactional restore:
-        1. Verify the backup fully.
-        2. Create a durable recovery copy of current state.
-        3. Stage database changes.
-        4. Stage checkpoint changes.
-        5. Commit database state transactionally.
-        6. Replace the checkpoint atomically.
-        7. Record an audited operator restore event.
-        8. Retain rollback evidence until success is confirmed.
-        9. Clean up staging artifacts after confirmed success.
-        """
-        from hermes_vault.audit import AuditLogger
-        from hermes_vault.audit_integrity.checkpoint import read_checkpoint
-        from hermes_vault.audit_integrity.schema import initialize_schema
-        from hermes_vault.audit_integrity.service import AuditIntegrityService
-
-        version = backup.get("version")
-        if version != "hvbackup-v2":
-            return {"success": False, "reason": f"Integrity restore requires hvbackup-v2, got {version}"}
-
-        integrity = backup.get("audit_integrity", {})
-        if not integrity:
-            return {"success": False, "reason": "Backup contains no audit integrity evidence."}
-
-        available = integrity.get("integrity_available", False)
-        if not available:
-            return {"success": False, "reason": "Integrity evidence is not available in this backup."}
-
-        # 1. Verify the backup fully (credentials + integrity).
-        # (Structural verification happens via restore_audit_integrity internals.)
-
-        # 2. Create durable recovery copy of current state.
-        recovery_db = self.db_path.read_bytes() if self.db_path.exists() else b""
-        recovery_checkpoint = None
-        cp_path = self.db_path.with_name("audit.checkpoint.json")
-        if cp_path.exists():
-            recovery_checkpoint = read_checkpoint(cp_path)
-
-        stage_path = self.db_path.with_suffix(".db.restore-stage")
-        stage_cp_path = cp_path.with_suffix(".json.restore-stage")
-
+        # ── E1 single transaction: credentials + leases + protected audit ──
+        # The audit write lock is held across the health gate AND the
+        # transaction, so the preflight audit verification cannot be
+        # invalidated by a concurrent audit writer before the append
+        # (issue #62B / F5).
+        imported: list[CredentialRecord] = []
         try:
-            # 3. Stage database changes (integrity tables only).
-            stage = backup.get("audit_integrity", {})
-            state_rows = stage.get("state", [])
-            segments = stage.get("segments", [])
-            records = stage.get("records", [])
-            checkpoint = stage.get("checkpoint")
-
-            if not state_rows or not segments:
-                return {"success": False, "reason": "Backup integrity evidence is incomplete."}
-
-            with sqlite3.connect(str(stage_path)) as stage_conn:
-                initialize_schema(stage_conn)
-                for s in state_rows:
-                    cols = ", ".join(s.keys())
-                    placeholders = ", ".join("?" for _ in s)
-                    stage_conn.execute(
-                        f"INSERT OR REPLACE INTO audit_integrity_state ({cols}) VALUES ({placeholders})",
-                        list(s.values()),
-                    )
-                for seg in segments:
-                    cols = ", ".join(seg.keys())
-                    placeholders = ", ".join("?" for _ in seg)
-                    stage_conn.execute(
-                        f"INSERT OR REPLACE INTO audit_integrity_segments ({cols}) VALUES ({placeholders})",
-                        list(seg.values()),
-                    )
-                for rec in records:
-                    cols = ", ".join(rec.keys())
-                    placeholders = ", ".join("?" for _ in rec)
-                    stage_conn.execute(
-                        f"INSERT OR REPLACE INTO audit_integrity_records ({cols}) VALUES ({placeholders})",
-                        list(rec.values()),
-                    )
-                stage_conn.commit()
-
-            # 4. Stage checkpoint changes.
-            if checkpoint:
-                stage_cp_path.write_text(
-                    json.dumps(checkpoint, sort_keys=True), encoding="utf-8"
-                )
-
-            # 5. Commit database state transactionally.
-            with sqlite3.connect(self.db_path) as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                try:
-                    conn.executescript(f"ATTACH DATABASE '{stage_path}' AS stage")
-                    tables = [
-                        "audit_integrity_state",
-                        "audit_integrity_segments",
-                        "audit_integrity_records",
-                    ]
-                    for table in tables:
-                        conn.execute(
-                            f"DELETE FROM {table}"
-                        )
-                        conn.execute(
-                            f"INSERT INTO {table} SELECT * FROM stage.{table}"
-                        )
-                    conn.execute("DETACH DATABASE stage")
-                    conn.commit()
-                except Exception:
-                    conn.rollback()
-                    raise
-
-            # 6. Replace the checkpoint atomically.
-            if checkpoint:
-                import tempfile
-                import shutil
-                fd, tmp_path = tempfile.mkstemp(
-                    dir=cp_path.parent, suffix=".checkpoint-tmp"
-                )
-                try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        json.dump(checkpoint, f, sort_keys=True)
-                        f.write("\n")
-                    shutil.move(tmp_path, str(cp_path))
-                except Exception:
+            with audit_write_lock(audit_service.lock_path):
+                current = audit_service.verify()
+                if current.status != AuditIntegrityStatus.healthy:
+                    # A retry of an already-committed restore is the one case
+                    # where the chain may be checkpoint_stale: the previous
+                    # attempt committed the protected event but failed to
+                    # publish the checkpoint (F6). checkpoint_stale is only
+                    # reported after the full chain walk passes, so the chain
+                    # itself is healthy and the retry may proceed to
+                    # re-publish the checkpoint instead of duplicating it.
+                    event_already_committed = audit_service.access_log_exists(restore_event.id)
+                    if not (event_already_committed and current.reason_code == "checkpoint_stale"):
+                        raise AuditIntegrityError(current.sanitized_reason)
+                with self._connection() as conn:
+                    conn.row_factory = sqlite3.Row
+                    conn.execute("BEGIN IMMEDIATE")
                     try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
-                    raise
-
-            # 7. Record an audited operator restore event.
-            audit = AuditLogger(self.db_path, master_key=self.key)
-            from hermes_vault.models import AccessLogRecord, Decision
-            audit.record(
-                AccessLogRecord(
-                    agent_id="operator",
-                    service="*",
-                    action="integrity_restore",
-                    decision=Decision.allow,
-                    reason="Operator-initiated transactional audit integrity restore",
-                    metadata={"version": "hvbackup-v2"},
-                )
-            )
-
-            # 8. Retain rollback evidence — keep recovery copy in temp.
-            recovery_path = self.db_path.with_suffix(".db.pre-restore-recovery")
-            if recovery_db:
-                Path(recovery_path).write_bytes(recovery_db)
-            if recovery_checkpoint:
-                recovery_cp_path = cp_path.with_suffix(".checkpoint.pre-restore-recovery.json")
-                recovery_cp_path.write_text(
-                    json.dumps(recovery_checkpoint, sort_keys=True), encoding="utf-8"
-                )
-
-            # 9. Clean up staging artifacts.
-            stage_path.unlink(missing_ok=True)
-            stage_cp_path.unlink(missing_ok=True)
-
-            # Verify restored integrity.
-            service = AuditIntegrityService(self.db_path, self.key)
-            result = service.verify()
-
-            return {
-                "success": True,
-                "version": "hvbackup-v2",
-                "integrity_status": result.status.value,
-                "verified_count": result.verified_count,
-                "legacy_count": result.legacy_count,
-                "reason": result.sanitized_reason,
-            }
-
-        except Exception as exc:
-            # Clean up staging on failure.
-            stage_path.unlink(missing_ok=True)
-            stage_cp_path.unlink(missing_ok=True)
-
-            if rollback_on_failure:
-                # Rollback: restore recovery copies.
-                if recovery_db:
-                    self.db_path.write_bytes(recovery_db)
-                if recovery_checkpoint:
-                    Path(str(cp_path) + ".rollback").write_text(
-                        json.dumps(recovery_checkpoint, sort_keys=True), encoding="utf-8"
-                    )
-
-            return {
-                "success": False,
-                "reason": f"Integrity restore failed: {exc}",
-                "rollback_available": rollback_on_failure,
-            }
+                        # ── F5: re-verify linkage/identity inside the write
+                        # transaction. The preflight validated against the
+                        # pre-lock snapshot; BEGIN IMMEDIATE now holds the
+                        # SQLite write lock, so re-checking against fresh
+                        # state closes the preflight-to-transaction TOCTOU:
+                        # a concurrent writer can no longer interleave once
+                        # we hold the write lock, and a dangling lease or
+                        # stale-identity import is rejected atomically.
+                        existing_ids = {row["id"] for row in conn.execute("SELECT id FROM credentials")}
+                        inserted_ids = {rec.id for rec, existing in prepared_creds if existing is None}
+                        for rec, existing in prepared_creds:
+                            if existing is not None and rec.id not in existing_ids:
+                                raise ValueError(
+                                    f"Credential {rec.service}/{rec.alias} was removed while the restore "
+                                    "was being prepared; the restore was aborted to preserve atomicity. "
+                                    "Retry the restore."
+                                )
+                        final_cred_ids = existing_ids | inserted_ids
+                        prepared_identity = {rec.id: rec for rec, _existing in prepared_creds}
+                        for lease, _existing_lease in prepared_leases:
+                            if lease.credential_id not in final_cred_ids:
+                                raise ValueError(
+                                    f"Lease {lease.id!r} references credential {lease.credential_id!r} "
+                                    "which is not part of the backup or the vault (foreign credential linkage)."
+                                )
+                            row = conn.execute(
+                                "SELECT service, alias, credential_type FROM credentials WHERE id = ?",
+                                (lease.credential_id,),
+                            ).fetchone()
+                            if row is None:
+                                referenced = prepared_identity[lease.credential_id]
+                                referenced_identity = (referenced.service, referenced.alias, referenced.credential_type)
+                            else:
+                                referenced_identity = (row["service"], row["alias"], row["credential_type"])
+                            lease_identity = (lease.service, lease.alias, lease.credential_type)
+                            if lease_identity != referenced_identity:
+                                raise ValueError(
+                                    f"Lease {lease.id!r} broker identity "
+                                    f"({lease.service}/{lease.alias}/{lease.credential_type}) does not match "
+                                    f"credential {lease.credential_id!r} "
+                                    f"({referenced_identity[0]}/{referenced_identity[1]}/{referenced_identity[2]})."
+                                )
+                        for record, existing in prepared_creds:
+                            if existing:
+                                conn.execute(
+                                    """
+                                    UPDATE credentials
+                                    SET credential_type=?, encrypted_payload=?, status=?, scopes=?,
+                                        tags=?, notes=?, updated_at=?, last_verified_at=?, imported_from=?, expiry=?, crypto_version=?
+                                    WHERE id=?
+                                    """,
+                                    (
+                                        record.credential_type,
+                                        record.encrypted_payload,
+                                        record.status.value,
+                                        json.dumps(record.scopes),
+                                        json.dumps(record.tags),
+                                        record.notes,
+                                        record.updated_at.isoformat(),
+                                        record.last_verified_at.isoformat() if record.last_verified_at else None,
+                                        record.imported_from,
+                                        record.expiry.isoformat() if record.expiry else None,
+                                        record.crypto_version,
+                                        record.id,
+                                    ),
+                                )
+                            else:
+                                conn.execute(
+                                    """
+                                    INSERT INTO credentials (
+                                        id, service, alias, credential_type, encrypted_payload, status, scopes,
+                                        tags, notes, created_at, updated_at, last_verified_at, imported_from, expiry, crypto_version
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    """,
+                                    (
+                                        record.id,
+                                        record.service,
+                                        record.alias,
+                                        record.credential_type,
+                                        record.encrypted_payload,
+                                        record.status.value,
+                                        json.dumps(record.scopes),
+                                        json.dumps(record.tags),
+                                        record.notes,
+                                        record.created_at.isoformat(),
+                                        record.updated_at.isoformat(),
+                                        record.last_verified_at.isoformat() if record.last_verified_at else None,
+                                        record.imported_from,
+                                        record.expiry.isoformat() if record.expiry else None,
+                                        record.crypto_version,
+                                    ),
+                                )
+                            imported.append(record)
+                        for lease, existing_lease in prepared_leases:
+                            if existing_lease:
+                                conn.execute(
+                                    """
+                                    UPDATE leases
+                                    SET service=?, alias=?, credential_id=?, credential_type=?, agent_id=?, issued_by=?,
+                                        purpose=?, status=?, ttl_seconds=?, issued_at=?, expires_at=?, revoked_at=?,
+                                        renewed_at=?, renew_count=?, reason=?, scopes=?, metadata_json=?
+                                    WHERE id=?
+                                    """,
+                                    (
+                                        lease.service,
+                                        lease.alias,
+                                        lease.credential_id,
+                                        lease.credential_type,
+                                        lease.agent_id,
+                                        lease.issued_by,
+                                        lease.purpose,
+                                        lease.status.value,
+                                        lease.ttl_seconds,
+                                        lease.issued_at.isoformat(),
+                                        lease.expires_at.isoformat(),
+                                        lease.revoked_at.isoformat() if lease.revoked_at else None,
+                                        lease.renewed_at.isoformat() if lease.renewed_at else None,
+                                        lease.renew_count,
+                                        lease.reason,
+                                        json.dumps(lease.scopes),
+                                        json.dumps(lease.metadata, sort_keys=True),
+                                        lease.id,
+                                    ),
+                                )
+                            else:
+                                conn.execute(
+                                    """
+                                    INSERT INTO leases (
+                                        id, service, alias, credential_id, credential_type, agent_id, issued_by, purpose,
+                                        status, ttl_seconds, issued_at, expires_at, revoked_at, renewed_at, renew_count,
+                                        reason, scopes, metadata_json
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    """,
+                                    (
+                                        lease.id,
+                                        lease.service,
+                                        lease.alias,
+                                        lease.credential_id,
+                                        lease.credential_type,
+                                        lease.agent_id,
+                                        lease.issued_by,
+                                        lease.purpose,
+                                        lease.status.value,
+                                        lease.ttl_seconds,
+                                        lease.issued_at.isoformat(),
+                                        lease.expires_at.isoformat(),
+                                        lease.revoked_at.isoformat() if lease.revoked_at else None,
+                                        lease.renewed_at.isoformat() if lease.renewed_at else None,
+                                        lease.renew_count,
+                                        lease.reason,
+                                        json.dumps(lease.scopes),
+                                        json.dumps(lease.metadata, sort_keys=True),
+                                    ),
+                                )
+                        # ── F6: idempotent protected event. A retry of an
+                        # already-committed restore reuses the deterministic
+                        # event id and skips the append; the credential/lease
+                        # writes above are row-idempotent, so the replay only
+                        # re-publishes the checkpoint.
+                        existing_event = conn.execute(
+                            "SELECT id FROM access_logs WHERE id = ?", (restore_event.id,)
+                        ).fetchone()
+                        if existing_event is None:
+                            append_result = audit_service.append_in_transaction(conn, restore_event)
+                        else:
+                            append_result = None
+                        conn.commit()
+                    except Exception:
+                        conn.rollback()
+                        raise
+                    # Checkpoint publication runs after commit by design: the
+                    # SQLite commit is the durability boundary for the restore
+                    # data and its protected event. A failure here must not
+                    # report a rolled-back restore (F6) — the data is durable,
+                    # and the chain verifies checkpoint_stale until the
+                    # checkpoint is re-published.
+                    try:
+                        if append_result is not None:
+                            audit_service.write_checkpoint_after_append(conn, append_result)
+                        else:
+                            audit_service.refresh_checkpoint(conn)
+                    except Exception as exc:
+                        raise RestoreCommittedCheckpointError(
+                            "Restore data committed, but the audit checkpoint could not be published "
+                            f"after commit ({exc}). Audit integrity will report checkpoint_stale until "
+                            "the checkpoint is re-published; re-run this restore (it is idempotent) or "
+                            "run 'hermes-vault audit checkpoint advance'."
+                        ) from exc
+        except AuditLockError as exc:
+            raise AuditIntegrityError(str(exc)) from exc
+        return imported
 
     def rotate_master_key(
         self,
@@ -1677,7 +2049,12 @@ class Vault:
         test_records = self.list_credentials()
         if test_records:
             try:
-                decrypt_secret(test_records[0].encrypted_payload, old_key)
+                decrypt_secret_versioned(
+                    test_records[0].encrypted_payload,
+                    old_key,
+                    test_records[0].crypto_version,
+                    _record_aad_metadata(test_records[0]),
+                )
             except Exception:
                 raise ValueError(
                     "Old passphrase does not match this vault — rotation aborted."
@@ -1699,30 +2076,49 @@ class Vault:
 
         new_salt = os.urandom(SALT_SIZE)
         new_key = derive_key(new_passphrase, new_salt)
-        journal = {
-            "version": "rotation-journal-v1",
-            "status": "started",
-            "old_salt": new_salt.hex(),  # placeholder; replaced below
-            "new_salt": new_salt.hex(),
-            "created_at": utc_now().isoformat(),
-        }
-        # The journal records the existing durable form (16-byte salt
-        # for legacy vaults, DPAPI envelope bytes for DPAPI vaults)
-        # under "old_salt" and the new derivation salt under "new_salt".
-        # DPAPI wrapping happens at the durable write, not in the
-        # journal (per spec §2.3 / §5.3 test 20).
+
+        # Typed v2 journal (issue #66 / Slice C): persist the old/new
+        # durable material plus the encrypted old audit/master key under
+        # the new key BEFORE the credential DB commit. The journal never
+        # stores a passphrase or a plaintext key; the recovery envelope
+        # is AES-GCM-wrapped under the new key with AAD bound to the
+        # journal id.
         existing_durable = self.salt_path.read_bytes() if self.salt_path.exists() else b""
-        journal["old_salt"] = existing_durable.hex() if existing_durable else new_salt.hex()
-        self._write_rotation_journal(journal)
+        old_durable = _durable_from_bytes(existing_durable, new_salt)
+        new_durable = DurableMaterial(kind=DurableKind.pbkdf_salt, salt=new_salt)
+        journal_id = str(uuid4())
+        recovery = encrypt_old_key_recovery(old_key, new_key, journal_id)
+        entry = RotationJournalEntry.start(
+            old_durable=old_durable,
+            new_durable=new_durable,
+            old_key_recovery=recovery,
+            journal_id=journal_id,
+        )
+        self._write_rotation_journal(entry.to_dict())
+
+        # Record the exact old audit segment BEFORE the DB commit so a
+        # crash between the commit and the db_committed journal write can
+        # still be reconciled on reopen.
+        old_segment_id = audit_result.active_segment_id or ""
 
         re_encrypted = 0
         all_records = self.list_credentials()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connection() as conn:
             conn.execute("BEGIN EXCLUSIVE")
             try:
                 for rec in all_records:
-                    payload_plain = decrypt_secret(rec.encrypted_payload, old_key)
-                    new_encrypted = encrypt_secret(payload_plain, new_key)
+                    payload_plain = decrypt_secret_versioned(
+                        rec.encrypted_payload,
+                        old_key,
+                        rec.crypto_version,
+                        _record_aad_metadata(rec),
+                    )
+                    new_encrypted = encrypt_secret_versioned(
+                        payload_plain,
+                        new_key,
+                        rec.crypto_version,
+                        _record_aad_metadata(rec),
+                    )
                     conn.execute(
                         "UPDATE credentials SET encrypted_payload = ?, updated_at = ? WHERE id = ?",
                         (new_encrypted, utc_now().isoformat(), rec.id),
@@ -1733,14 +2129,29 @@ class Vault:
                 conn.rollback()
                 raise
 
-        journal["status"] = "db_committed"
-        journal["committed_at"] = utc_now().isoformat()
-        journal["audit_transition_state"] = "pending"
-        journal["old_segment_id"] = audit_result.active_segment_id or ""
-        self._write_rotation_journal(journal)
+        # After the DB commit persist db_committed/pending with the exact
+        # old audit segment captured before the commit.
+        committed = entry.mark_db_committed(
+            old_segment_id=old_segment_id,
+            old_key_recovery=recovery,
+        )
+        self._write_rotation_journal(committed.to_dict())
+
         audit_integrity.rotate_segment(new_key)
-        journal["audit_transition_state"] = "checkpoint_committed"
-        self._write_rotation_journal(journal)
+
+        final = committed.mark_audit_checkpoint_committed()
+        self._write_rotation_journal(final.to_dict())
+
+        # Verify the audit chain is healthy under the new key before
+        # finalizing the durable material and deleting the journal (issue
+        # #66: deletion only after all checks pass).
+        post_result = audit_integrity.verify()
+        if post_result.status.value != "healthy":
+            raise AuditIntegrityError(
+                f"Master-key rotation completed but audit verification is not healthy "
+                f"({post_result.sanitized_reason}); rotation journal retained for recovery."
+            )
+
         # DPAPI-aware write: when HERMES_VAULT_DPAPI=1 is set, the
         # new master key is wrapped with DPAPI on write. Otherwise the
         # legacy 16-byte derivation salt is written verbatim. No

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TypedDict
 from uuid import uuid4
 
 from hermes_vault.audit_integrity.canonical import CANONICAL_JSON_VERSION, canonical_bytes, framed
@@ -16,8 +19,17 @@ from hermes_vault.audit_integrity.crypto import (
 from hermes_vault.audit_integrity.models import AuditCheckpointStatus, AuditIntegrityStatus, AuditVerificationResult
 from hermes_vault.audit_integrity.repository import access_log_payload, registry_digest, registry_rows
 from hermes_vault.audit_integrity.schema import SCHEMA_VERSION, initialize_schema
+from hermes_vault.rotation_journal import JournalPhase, RotationJournalEntry
 
 CHAIN_VERSION = "sha256-chain-v1"
+
+
+class AppendResult(TypedDict):
+    """Checkpoint payload returned by a transaction-scoped audit append."""
+
+    segment: sqlite3.Row
+    sequence: int
+    digest: str
 
 
 class AuditIntegrityError(RuntimeError):
@@ -37,10 +49,15 @@ class AuditIntegrityService:
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    def _connection(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _failure(
         self, reason: str, checkpoint: AuditCheckpointStatus = AuditCheckpointStatus.valid, *, sequence: int | None = None,
@@ -111,22 +128,40 @@ class AuditIntegrityService:
         return conn.execute("SELECT * FROM audit_integrity_segments WHERE segment_id = ?", (segment_id,)).fetchone()
 
     def ensure_initialized(self) -> None:
+        # The audit-write lock serializes this against concurrent
+        # AuditIntegrityService instances in the same process and gives
+        # us a single-writer view of the database.
         with audit_write_lock(self.lock_path):
             with self._connection() as conn:
-                initialize_schema(conn)
-                state = conn.execute("SELECT * FROM audit_integrity_state WHERE id = 1").fetchone()
-                if state is not None:
-                    return
-                legacy = self._legacy_snapshot(conn)
-                reason = "legacy_migration" if legacy[0] else "fresh_vault"
-                segment = self._create_segment(conn, master_key=self.master_key, transition_reason=reason, sequence_start=1, legacy=legacy)
-                now = self._now()
-                conn.execute(
-                    "INSERT INTO audit_integrity_state (id, schema_version, migration_state, active_segment_id, legacy_cutoff_timestamp, legacy_cutoff_id, created_at, updated_at) VALUES (1, ?, 'active', ?, ?, ?, ?, ?)",
-                    (SCHEMA_VERSION, segment["segment_id"], legacy[4], legacy[2], now, now),
-                )
-                conn.commit()
-                self._write_current_checkpoint(conn, segment, latest_sequence=0, latest_digest="")
+                # BEGIN IMMEDIATE so no other writer can interleave between
+                # the legacy snapshot capture and the segment INSERT. Without
+                # this, a concurrent `access_logs` insert between snapshot and
+                # segment creation leaves the new row outside both the legacy
+                # prefix and the protected chain — producing a permanent
+                # `missing_integrity_record` failure on the next verify.
+                # See: https://github.com/asimons81/hermes-vault/issues/audit-toctou
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    initialize_schema(conn)
+                    state = conn.execute("SELECT * FROM audit_integrity_state WHERE id = 1").fetchone()
+                    if state is not None:
+                        conn.commit()  # release the writer lock; nothing to do
+                        return
+                    # Capture the snapshot AFTER BEGIN IMMEDIATE — any writer
+                    # that wanted to interleave is now blocked on our lock.
+                    legacy = self._legacy_snapshot(conn)
+                    reason = "legacy_migration" if legacy[0] else "fresh_vault"
+                    segment = self._create_segment(conn, master_key=self.master_key, transition_reason=reason, sequence_start=1, legacy=legacy)
+                    now = self._now()
+                    conn.execute(
+                        "INSERT INTO audit_integrity_state (id, schema_version, migration_state, active_segment_id, legacy_cutoff_timestamp, legacy_cutoff_id, created_at, updated_at) VALUES (1, ?, 'active', ?, ?, ?, ?, ?)",
+                        (SCHEMA_VERSION, segment["segment_id"], legacy[4], legacy[2], now, now),
+                    )
+                    conn.commit()
+                    self._write_current_checkpoint(conn, segment, latest_sequence=0, latest_digest="")
+                except Exception:
+                    conn.rollback()
+                    raise
 
     def _active(self, conn: sqlite3.Connection) -> sqlite3.Row:
         state = conn.execute("SELECT * FROM audit_integrity_state WHERE id = 1").fetchone()
@@ -160,28 +195,87 @@ class AuditIntegrityService:
             with audit_write_lock(self.lock_path):
                 with self._connection() as conn:
                     conn.execute("BEGIN IMMEDIATE")
-                    active = self._active(conn)
-                    sequence, previous_digest = self._tip(conn)
-                    next_sequence = sequence + 1
-                    metadata_json = canonical_bytes(getattr(record, "metadata")).decode("utf-8") if getattr(record, "metadata") else "{}"
-                    values = (
-                        getattr(record, "id"), getattr(record, "timestamp").isoformat(), getattr(record, "agent_id"),
-                        getattr(record, "service"), getattr(record, "action"), getattr(record, "decision").value,
-                        getattr(record, "reason"), getattr(record, "ttl_seconds"),
-                        getattr(record, "verification_result").value if getattr(record, "verification_result") else None, metadata_json,
-                    )
-                    conn.execute("INSERT INTO access_logs (id, timestamp, agent_id, service, action, decision, reason, ttl_seconds, verification_result, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values)
-                    row = conn.execute("SELECT * FROM access_logs WHERE id = ?", (getattr(record, "id"),)).fetchone()
-                    entry_digest = digest_hex(canonical_bytes(access_log_payload(row)))
-                    envelope = {"chain_version": CHAIN_VERSION, "serialization_version": CANONICAL_JSON_VERSION, "segment_id": active["segment_id"], "sequence": next_sequence, "previous_digest": previous_digest, "entry_digest": entry_digest}
-                    signature = sign(self.master_key, ENTRY_SIGNING_CONTEXT, canonical_bytes(envelope))
-                    conn.execute("INSERT INTO audit_integrity_records (sequence, segment_id, access_log_id, previous_digest, entry_digest, signature, chain_version, serialization_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (next_sequence, active["segment_id"], getattr(record, "id"), previous_digest, entry_digest, signature, CHAIN_VERSION, CANONICAL_JSON_VERSION, self._now()))
-                    conn.execute("UPDATE audit_integrity_state SET updated_at = ? WHERE id = 1", (self._now(),))
+                    result = self.append_in_transaction(conn, record)
                     conn.commit()
-                    self._write_current_checkpoint(conn, active, latest_sequence=next_sequence, latest_digest=entry_digest)
+                    self._write_current_checkpoint(
+                        conn,
+                        result["segment"],
+                        latest_sequence=int(result["sequence"]),
+                        latest_digest=str(result["digest"]),
+                    )
         except AuditLockError as exc:
             raise AuditIntegrityError(str(exc)) from exc
+
+    def append_in_transaction(self, conn: sqlite3.Connection, record: object) -> AppendResult:
+        """Append a protected audit record using a caller-owned connection.
+
+        The caller owns the transaction: this method performs the access-log
+        INSERT, integrity-record INSERT, and state touch WITHOUT committing,
+        so the audit row is committed only when the caller's transaction
+        commits. Returns a checkpoint payload dict (``segment``,
+        ``sequence``, ``digest``) that the caller must persist via
+        :meth:`write_checkpoint_after_append` after committing.
+
+        Raises :class:`AuditIntegrityError` if the active segment or chain
+        state is unavailable on the supplied connection.
+        """
+        conn.row_factory = sqlite3.Row
+        active = self._active(conn)
+        sequence, previous_digest = self._tip(conn)
+        next_sequence = sequence + 1
+        metadata_json = canonical_bytes(getattr(record, "metadata")).decode("utf-8") if getattr(record, "metadata") else "{}"
+        values = (
+            getattr(record, "id"), getattr(record, "timestamp").isoformat(), getattr(record, "agent_id"),
+            getattr(record, "service"), getattr(record, "action"), getattr(record, "decision").value,
+            getattr(record, "reason"), getattr(record, "ttl_seconds"),
+            getattr(record, "verification_result").value if getattr(record, "verification_result") else None, metadata_json,
+        )
+        conn.execute("INSERT INTO access_logs (id, timestamp, agent_id, service, action, decision, reason, ttl_seconds, verification_result, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values)
+        row = conn.execute("SELECT * FROM access_logs WHERE id = ?", (getattr(record, "id"),)).fetchone()
+        entry_digest = digest_hex(canonical_bytes(access_log_payload(row)))
+        envelope = {"chain_version": CHAIN_VERSION, "serialization_version": CANONICAL_JSON_VERSION, "segment_id": active["segment_id"], "sequence": next_sequence, "previous_digest": previous_digest, "entry_digest": entry_digest}
+        signature = sign(self.master_key, ENTRY_SIGNING_CONTEXT, canonical_bytes(envelope))
+        conn.execute("INSERT INTO audit_integrity_records (sequence, segment_id, access_log_id, previous_digest, entry_digest, signature, chain_version, serialization_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (next_sequence, active["segment_id"], getattr(record, "id"), previous_digest, entry_digest, signature, CHAIN_VERSION, CANONICAL_JSON_VERSION, self._now()))
+        conn.execute("UPDATE audit_integrity_state SET updated_at = ? WHERE id = 1", (self._now(),))
+        return {"segment": active, "sequence": next_sequence, "digest": entry_digest}
+
+    def write_checkpoint_after_append(self, conn: sqlite3.Connection, result: AppendResult) -> None:
+        """Persist the authenticated checkpoint after a transaction-scoped append.
+
+        The caller must have committed its transaction before calling this;
+        the supplied connection is used to read the segment registry (a
+        read that remains valid after commit).
+        """
+        self._write_current_checkpoint(
+            conn,
+            result["segment"],
+            latest_sequence=int(result["sequence"]),
+            latest_digest=str(result["digest"]),
+        )
+
+    def refresh_checkpoint(self, conn: sqlite3.Connection) -> None:
+        """Persist the authenticated checkpoint covering the current database tip.
+
+        Used after a transaction that committed no new protected record (an
+        idempotent restore replay): the checkpoint must still cover the tip
+        so the chain remains verifiable.
+        """
+        sequence, tip = self._tip(conn)
+        active = self._active(conn)
+        self._write_current_checkpoint(conn, active, latest_sequence=sequence, latest_digest=tip)
+
+    def access_log_exists(self, record_id: str) -> bool:
+        """Return whether an access-log row with *record_id* already exists.
+
+        Used by restore to detect an already-committed protected event so a
+        retry never appends a duplicate (issue #62B / F6).
+        """
+        try:
+            with self._connection() as conn:
+                return conn.execute("SELECT 1 FROM access_logs WHERE id = ?", (record_id,)).fetchone() is not None
+        except sqlite3.Error:
+            return False
 
     def _verify_checkpoint(self, conn: sqlite3.Connection, active: sqlite3.Row, sequence: int, tip: str) -> tuple[AuditCheckpointStatus, str | None]:
         checkpoint = read_checkpoint(self.checkpoint_path)
@@ -310,13 +404,144 @@ class AuditIntegrityService:
                     self.master_key = old_key
                     raise
 
+    def recover_pending_rotation(
+        self,
+        journal: RotationJournalEntry,
+        *,
+        old_master_key: bytes,
+        new_master_key: bytes | None = None,
+    ) -> AuditVerificationResult:
+        """Reconcile the audit chain after an interrupted master-key rotation.
+
+        Implements the Slice C reconciliation seam (INTEGRITY_RECOVERY_PLAN.md
+        lines 341-345): given the typed v2 rotation journal recording the
+        *old* audit segment id, complete the audit-key transition idempotently
+        so that replaying the same journal converges to the same state and an
+        interrupted audit resumes to the same state as a clean rotation.
+
+        The journal must be in the ``db_committed``/``pending`` phase (the
+        state a rotation leaves after the credential DB commit but before the
+        audit transition completes).  Depending on what the audit chain
+        currently holds:
+
+        * active segment is still the journaled *old* segment — the segment
+          rotation never committed: close it and create its successor under
+          ``new_master_key`` with the journaled predecessor linkage, then
+          rewrite the checkpoint (the ``rotate_segment`` body, minus the
+          healthy-verify precondition that cannot hold mid-rotation);
+        * active segment is already the journaled old segment's successor —
+          the rotation committed but the checkpoint rewrite was lost: only
+          rewrite the checkpoint;
+        * anything else — contradiction: fail closed, raise, and retain the
+          journal and durable key material.
+
+        ``new_master_key`` defaults to the service's current key (the vault
+        reopens with the new passphrase).  The destructive
+        ``recover_checkpoint`` / ``_rebuild_integrity_for_key_mismatch``
+        semantics are never used.
+        """
+        self.ensure_initialized()
+        phase = journal.phase()
+        if phase == JournalPhase.started:
+            raise AuditIntegrityError(
+                "contradictory rotation journal: a 'started' journal has no audit transition to reconcile"
+            )
+        if phase == JournalPhase.checkpoint_committed:
+            # Already reconciled; replay converges to the healthy state.
+            return self.verify()
+        # phase == JournalPhase.db_committed_pending
+        if not journal.old_segment_id:
+            raise AuditIntegrityError(
+                "contradictory rotation journal: a pending journal must record the old segment id"
+            )
+        resolved_new_key = new_master_key if new_master_key is not None else self.master_key
+        journaled_old_segment_id = journal.old_segment_id
+        old_entry_pub = public_key_b64(old_master_key, ENTRY_SIGNING_CONTEXT)
+        old_checkpoint_pub = public_key_b64(old_master_key, CHECKPOINT_SIGNING_CONTEXT)
+
+        with audit_write_lock(self.lock_path):
+            with self._connection() as conn:
+                active = self._active(conn)
+                if active["segment_id"] == journaled_old_segment_id:
+                    # Rotation never reached the audit chain: complete it.
+                    if active["entry_public_key"] != old_entry_pub or active["checkpoint_public_key"] != old_checkpoint_pub:
+                        raise AuditIntegrityError(
+                            "contradictory rotation journal: the active segment is not signed by the journaled old key"
+                        )
+                    conn.execute("BEGIN IMMEDIATE")
+                    sequence, tip = self._tip(conn)
+                    now = self._now()
+                    conn.execute(
+                        "UPDATE audit_integrity_segments SET sequence_end = ?, closed_at = ? WHERE segment_id = ?",
+                        (sequence, now, active["segment_id"]),
+                    )
+                    new = self._create_segment(
+                        conn,
+                        master_key=resolved_new_key,
+                        transition_reason="master_key_rotation",
+                        sequence_start=sequence + 1,
+                        predecessor_segment_id=active["segment_id"],
+                        predecessor_tip_digest=tip,
+                    )
+                    conn.execute(
+                        "UPDATE audit_integrity_state SET active_segment_id = ?, updated_at = ? WHERE id = 1",
+                        (new["segment_id"], now),
+                    )
+                    conn.commit()
+                    previous_key = self.master_key
+                    self.master_key = resolved_new_key
+                    try:
+                        self._write_current_checkpoint(conn, new, latest_sequence=sequence, latest_digest=tip)
+                    except Exception:
+                        self.master_key = previous_key
+                        raise
+                elif active["predecessor_segment_id"] == journaled_old_segment_id:
+                    # Rotation already committed; the checkpoint write was lost.
+                    old_segment = conn.execute(
+                        "SELECT * FROM audit_integrity_segments WHERE segment_id = ?",
+                        (journaled_old_segment_id,),
+                    ).fetchone()
+                    if old_segment is None:
+                        raise AuditIntegrityError(
+                            "contradictory rotation journal: the journaled old segment is missing from the registry"
+                        )
+                    if old_segment["entry_public_key"] != old_entry_pub or old_segment["checkpoint_public_key"] != old_checkpoint_pub:
+                        raise AuditIntegrityError(
+                            "contradictory rotation journal: the journaled old segment is not signed by the journaled old key"
+                        )
+                    expected_tip = conn.execute(
+                        "SELECT entry_digest FROM audit_integrity_records WHERE segment_id = ? ORDER BY sequence DESC LIMIT 1",
+                        (journaled_old_segment_id,),
+                    ).fetchone()
+                    expected_tip_digest = str(expected_tip["entry_digest"]) if expected_tip else ""
+                    if active["predecessor_tip_digest"] != expected_tip_digest:
+                        raise AuditIntegrityError(
+                            "contradictory rotation journal: the successor predecessor tip does not match the journaled old segment"
+                        )
+                    sequence, tip = self._tip(conn)
+                    conn.commit()
+                    previous_key = self.master_key
+                    self.master_key = resolved_new_key
+                    try:
+                        self._write_current_checkpoint(conn, active, latest_sequence=sequence, latest_digest=tip)
+                    except Exception:
+                        self.master_key = previous_key
+                        raise
+                else:
+                    raise AuditIntegrityError(
+                        "contradictory rotation journal: the active segment is neither the journaled old segment nor its successor"
+                    )
+        return self.verify()
+
     def recover_checkpoint(self) -> AuditVerificationResult:
-        """Start a new explicit segment; never rewrites a failed segment or prior evidence."""
+        """Start a new explicit segment; handles active_key_mismatch by rebuilding from scratch."""
         self.ensure_initialized()
         result = self.verify()
         if result.status == AuditIntegrityStatus.healthy:
             return result
         if result.status == AuditIntegrityStatus.failed:
+            if result.reason_code == "active_key_mismatch":
+                return self._rebuild_integrity_for_key_mismatch()
             return result
         with audit_write_lock(self.lock_path):
             with self._connection() as conn:
@@ -329,6 +554,34 @@ class AuditIntegrityService:
                 conn.execute("UPDATE audit_integrity_state SET active_segment_id = ?, updated_at = ? WHERE id = 1", (new["segment_id"], now))
                 conn.commit()
                 self._write_current_checkpoint(conn, new, latest_sequence=sequence, latest_digest=tip)
+        return self.verify()
+
+    def _rebuild_integrity_for_key_mismatch(self) -> AuditVerificationResult:
+        """Drop and rebuild all audit integrity constructs for the current master key."""
+        try:
+            self.checkpoint_path.unlink(missing_ok=True)
+            self.lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.executescript("""
+                DROP TABLE IF EXISTS audit_integrity_records;
+                DROP TABLE IF EXISTS audit_integrity_segments;
+                DROP TABLE IF EXISTS audit_integrity_state;
+                DROP TABLE IF EXISTS audit_verification_runs;
+            """)
+            initialize_schema(conn)
+            legacy = self._legacy_snapshot(conn)
+            reason = "legacy_migration" if legacy[0] else "fresh_vault"
+            segment = self._create_segment(conn, master_key=self.master_key, transition_reason=reason, sequence_start=1, legacy=legacy)
+            now = self._now()
+            conn.execute(
+                "INSERT INTO audit_integrity_state (id, schema_version, migration_state, active_segment_id, legacy_cutoff_timestamp, legacy_cutoff_id, created_at, updated_at) VALUES (1, ?, 'active', ?, ?, ?, ?, ?)",
+                (SCHEMA_VERSION, segment["segment_id"], legacy[4], legacy[2], now, now),
+            )
+            conn.commit()
+            self._write_current_checkpoint(conn, segment, latest_sequence=0, latest_digest="")
         return self.verify()
     def export_evidence(self) -> dict[str, object]:
         """Return backup-safe integrity evidence: public keys, signed rows, and checkpoint only."""

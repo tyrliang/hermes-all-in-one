@@ -120,6 +120,20 @@ class Broker:
                     ttl_seconds=effective_ttl,
                     metadata={"lease_required": True, "alias": record.alias},
                 )
+            # E1 (#62): the lease must reference the same credential identity
+            # being served. A lease whose credential_id no longer matches the
+            # resolved credential (e.g. tampered/relabeled row) is a forged
+            # identity and must be denied instead of serving the raw secret.
+            if lease.credential_id != record.id:
+                return self._deny(
+                    agent_id,
+                    canonical,
+                    "get_ephemeral_env",
+                    f"lease credential identity mismatch: lease {lease.id} references "
+                    f"credential {lease.credential_id} but resolved credential is {record.id}",
+                    ttl_seconds=effective_ttl,
+                    metadata={"lease_required": True, "lease_id": lease.id},
+                )
             remaining = int((lease.expires_at - datetime.now(timezone.utc)).total_seconds())
             if remaining <= 0:
                 return self._deny(
@@ -137,7 +151,18 @@ class Broker:
                 "lease_expires_at": lease.expires_at.isoformat(),
                 "lease_purpose": lease.purpose,
             }
-        secret = self.vault.get_secret(record.id)
+        try:
+            secret = self.vault.get_secret(record.id)
+        except Exception:
+            # Relabeled/tampered v2 row or unsupported version label: fail
+            # closed as a clean denial. Never leak the raw secret (issue #60).
+            return self._deny(
+                agent_id,
+                canonical,
+                "get_ephemeral_env",
+                "credential metadata mismatch — secret could not be decrypted",
+                ttl_seconds=effective_ttl,
+            )
         if not secret:
             return self._deny(agent_id, canonical, "get_ephemeral_env", "credential not found in vault", ttl_seconds=effective_ttl)
         # ── OAuth freshness check ────────────────────────────────────────
@@ -159,7 +184,16 @@ class Broker:
             )
         if freshness_result.get("re_resolve"):
             record = self.vault.resolve_credential(canonical, alias=alias)
-            secret = self.vault.get_secret(record.id)
+            try:
+                secret = self.vault.get_secret(record.id)
+            except Exception:
+                return self._deny(
+                    agent_id,
+                    canonical,
+                    "get_ephemeral_env",
+                    "credential metadata mismatch — secret could not be decrypted after OAuth refresh",
+                    ttl_seconds=effective_ttl,
+                )
             if not secret:
                 return self._deny(agent_id, canonical, "get_ephemeral_env", "credential not found after OAuth refresh", ttl_seconds=effective_ttl)
         env_template = get_env_var_map(canonical)
@@ -577,11 +611,16 @@ class Broker:
         )
 
     def import_credentials(self, agent_id: str, backup: dict, replace: bool = True) -> BrokerDecision:
-        """Import credentials from a backup dict.  Gated on ``import_credentials`` capability."""
+        """Import credentials from a backup dict.  Gated on ``import_credentials`` capability.
+
+        The real *agent_id* is passed through to the vault so the protected
+        (tamper-evident) restore audit event records the acting agent, not
+        the operator default (issue #62A F4).
+        """
         cap_ok, cap_reason = self.policy.can_capability(agent_id, AgentCapability.import_credentials)
         if not cap_ok:
             return self._deny(agent_id, "n/a", "import_credentials", cap_reason)
-        imported = self.vault.import_backup(backup, replace=replace)
+        imported = self.vault.import_backup(backup, replace=replace, agent_id=agent_id)
         self.audit.record(
             AccessLogRecord(
                 agent_id=agent_id,
@@ -614,6 +653,7 @@ class Broker:
         imported_from: str | None = None,
         scopes: list[str] | None = None,
         replace_existing: bool = False,
+        audit_metadata: dict | None = None,
     ) -> MutationResult:
         """Add a credential through the centralized mutation path."""
         return self._mutations.add_credential(
@@ -625,6 +665,7 @@ class Broker:
             imported_from=imported_from,
             scopes=scopes,
             replace_existing=replace_existing,
+            audit_metadata=audit_metadata,
         )
 
     def rotate_credential(
@@ -633,6 +674,7 @@ class Broker:
         service_or_id: str,
         new_secret: str,
         alias: str | None = None,
+        audit_metadata: dict | None = None,
     ) -> MutationResult:
         """Rotate a credential through the centralized mutation path."""
         return self._mutations.rotate_credential(
@@ -640,6 +682,7 @@ class Broker:
             service_or_id=service_or_id,
             new_secret=new_secret,
             alias=alias,
+            audit_metadata=audit_metadata,
         )
 
     def delete_credential(
@@ -647,12 +690,14 @@ class Broker:
         agent_id: str,
         service_or_id: str,
         alias: str | None = None,
+        audit_metadata: dict | None = None,
     ) -> MutationResult:
         """Delete a credential through the centralized mutation path."""
         return self._mutations.delete_credential(
             agent_id=agent_id,
             service_or_id=service_or_id,
             alias=alias,
+            audit_metadata=audit_metadata,
         )
 
     def get_metadata(

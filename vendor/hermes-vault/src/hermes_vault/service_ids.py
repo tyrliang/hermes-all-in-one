@@ -24,30 +24,50 @@ from __future__ import annotations
 CANONICAL_IDS: frozenset[str] = frozenset(
     {
         "anthropic",
+        "bailian",
         "brave-search",
         "cloudflare",
+        "commandcode",
+        "crof-ai",
+        "deepseek",
         "elevenlabs",
         "evolink",
         "fal",
+        "fireworks",
         "gemini",
         "generic",
         "github",
         "google",
         "groq",
         "huggingface",
+        "inception",
+        "kilocode",
+        "kimi",
+        "kimi-coding",
         "minimax",
+        "mistral",
+        "nahcrof-dedicated",
         "netlify",
+        "neuralwatt",
+        "ninerouter",
         "openai",
         "openrouter",
         "perplexity",
         "replicate",
         "resend",
         "serpapi",
+        "serper",
         "supabase",
+        "synthetic",
         "tavily",
         "telegram",
+        "trinity",
+        "venice",
         "vercel",
+        "voyage",
         "xai",
+        "xiaomi",
+        "zai",
     }
 )
 
@@ -114,35 +134,10 @@ def is_canonical(service: str) -> bool:
     return service.strip().lower() in CANONICAL_IDS
 
 
-class _AnyNameTemplate(dict):
-    """Env-var template that accepts any binding name, passthrough value.
-
-    Used for custom/self-hosted services that have no fixed canonical
-    env-var name to validate against. Matches this module's own design
-    contract above: custom services "are not rejected outright" -- they
-    should not be forced onto a single shared ``HERMES_VAULT_SECRET``
-    name when the caller has configured a specific one (e.g.
-    ``HINDSIGHT_API_KEY`` for a self-hosted ``hindsight`` service).
-    """
-
-    def __contains__(self, key: object) -> bool:
-        return True
-
-    def __getitem__(self, key: str) -> str:
-        return "{secret}"
-
-
 def get_env_var_map(service: str) -> dict[str, str]:
-    """Return the environment-variable template for a service.
+    """Return the environment-variable template for a canonical service.
 
-    Canonical services (see ``CANONICAL_IDS``) validate against their
-    fixed, well-known env-var name(s) -- this catches typos/drift for
-    services Hermes Vault knows about by name. Custom/self-hosted
-    services (anything not in ``CANONICAL_IDS``) accept whatever
-    binding name the caller configured; there is no canonical name to
-    validate against, so restricting them to a single generic
-    ``HERMES_VAULT_SECRET`` name would make per-service env mappings
-    (``secrets.hermes_vault.env`` in Hermes config) unusable for them.
+    Unknown services get the generic ``HERMES_VAULT_SECRET`` mapping.
     """
     mapping: dict[str, dict[str, str]] = {
         "openai": {"OPENAI_API_KEY": "{secret}"},
@@ -169,9 +164,25 @@ def get_env_var_map(service: str) -> dict[str, str]:
         "gemini": {"GEMINI_API_KEY": "{secret}"},
         "perplexity": {"PERPLEXITY_API_KEY": "{secret}"},
         "serpapi": {"SERPAPI_API_KEY": "{secret}"},
+        "deepseek": {"DEEPSEEK_API_KEY": "{secret}"},
+        "fireworks": {"FIREWORKS_API_KEY": "{secret}"},
+        "commandcode": {"COMMANDCODE_API_KEY": "{secret}"},
+        "inception": {"INCEPTION_API_KEY": "{secret}"},
+        "kilocode": {"KILOCODE_API_KEY": "{secret}"},
+        "kimi": {"KIMI_API_KEY": "{secret}"},
+        "kimi-coding": {"KIMI_CODING_API_KEY": "{secret}"},
+        "nahcrof-dedicated": {"NAHCROF_DEDICATED_API_KEY": "{secret}"},
+        "neuralwatt": {"NEURALWATT_API_KEY": "{secret}"},
+        "synthetic": {"SYNTHETIC_API_KEY": "{secret}"},
+        "trinity": {"TRINITY_API_KEY": "{secret}"},
+        "venice": {"VENICE_API_KEY": "{secret}"},
+        "xiaomi": {"XIAOMI_API_KEY": "{secret}"},
+        "zai": {"ZAI_API_KEY": "{secret}"},
+        "crof-ai": {"CROF_AI_API_KEY": "{secret}"},
+        "voyage": {"VOYAGE_API_KEY": "{secret}"},
+        "mistral": {"MISTRAL_API_KEY": "{secret}"},
+        "serper": {"SERPER_API_KEY": "{secret}"},
+        "bailian": {"BAILIAN_API_KEY": "{secret}"},
+        "ninerouter": {"NINEROUTER_API_KEY": "{secret}"},
     }
-    if service in mapping:
-        return mapping[service]
-    if is_canonical(service):
-        return {"HERMES_VAULT_SECRET": "{secret}"}
-    return _AnyNameTemplate()
+    return mapping.get(service, {"HERMES_VAULT_SECRET": "{secret}"})
