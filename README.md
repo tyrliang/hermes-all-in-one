@@ -920,11 +920,11 @@ This repo uses **two version fields**: your all-in-one release semver (`x.y.z`) 
 ### `VERSION` file
 
 ```text
-0.7.2
-hermes-base=v2026.7.7.2
-agent-base=v2026.7.7.2
-webui-base=v0.52.41
-vault-base=v0.21.0
+0.11.0
+hermes-base=v2026.8.27
+agent-base=v2026.8.27
+webui-base=v0.52.113
+vault-base=v0.25.0
 ```
 
 | Line | Field | Meaning |

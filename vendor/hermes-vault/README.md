@@ -4,21 +4,60 @@
 
 Hermes Vault is a local-first credential broker and encrypted vault for Hermes agents. It scans for risky plaintext secrets, stores credentials locally, verifies them before re-auth claims, and turns agent access into explainable, lease-aware operator workflows.
 
-v0.21.0 is the **Audit Assurance** release. Hermes Vault now provides signed, verifiable audit continuity with authenticated checkpoints, backup integrity, and read-only verification through CLI, dashboard, and MCP surfaces.
+v0.25.0 is the current release — the **Desktop Mutation Surface** release on the **Vault Intelligence** line. It extends the Hermes Desktop plugin (`hermes-vault-desktop`) with operator-only add / rotate / delete credential workflows behind an explicit opt-in flag: a mutation-capable `desktop-bridge` plus adapter POST routes and native Desktop dialogs, all deny-by-default, Bearer-only, audited through the protected integrity chain, and metadata-only in every response. The read-only surface from v0.24.0 is unchanged when the mutation flag is off. Hermes Vault keeps its credential health intelligence: 45 built-in verifiers, verification coverage metrics, A-F health scores, bulk import/export/filtering, and the setup wizard.
 
-## What's New in 0.21.0
+## What's New in 0.25.0
 
-v0.21.0 adds cryptographic audit integrity assurance to Hermes Vault's existing protection surface.
+v0.25.0 is a feature release shipping the **Desktop mutation surface** (opt-in).
 
-- Every audit append generates a signed, chain-authenticated integrity record using HKDF-derived Ed25519 signatures.
-- An authenticated checkpoint outside the audit table protects the verification boundary.
-- Legacy v0.20 audit history is preserved and anchored without destructive migration.
-- `hvbackup-v2` backup format includes audit integrity evidence, segments, and verification summary.
-- Transactional restore stages database and checkpoint changes atomically.
-- `hermes-vault audit-verify`, `audit-checkpoint`, and `audit-export --with-integrity` provide operator visibility.
-- The dashboard exposes read-only integrity status via `GET /api/audit-integrity`.
-- MCP exposes metadata-only integrity status through `vault://audit-integrity` and a summary in `vault://status`.
-- Backward-compatible with v0.20 vaults, policies, and cloud provider configs.
+- **Bridge mutations**: `add` / `rotate` / `delete` NDJSON methods behind `--allow-mutations` (default off). Renderer-supplied `agent_id` rejected, `request_id` validated, every write routed through the single audited `VaultMutations` path; delete requires a typed confirmation token.
+- **Adapter mutation routes**: `POST /mutations/{add,rotate,delete}` gated by `HERMES_VAULT_DESKTOP_MUTATIONS=1` (404 when unset), Bearer-only auth, pre-spawn body allowlist, `--allow-mutations` passed to the bridge child only on mutation routes.
+- **Desktop mutation UI**: add / rotate / delete dialogs with masked secret fields, type-to-confirm delete, single-flight buttons, and audit result display; version-gated by the `/hello` `mutations` capability.
+- **Hardening**: R1 Host-header validation on the adapter router; `AuditIntegrityError` rolls back credential writes (HTTP 409); no raw secret ever serialized in bridge/adapter responses.
+- **Rollback docs**: `docs/mutation-surface-rollback.md` — per-surface rollback, recovery drill, lease impact, known limits.
+
+## What's New in 0.24.0
+
+v0.24.0 is a feature release shipping the **Hermes Desktop integration**.
+
+- **Desktop bridge (`desktop-bridge`)**: Vault-owned versioned NDJSON bridge with a `--no-banner desktop-bridge` CLI entry point. Strict request validation, UTF-8 byte limits, recursion-safe JSON parsing, rejection of `NaN`/`Infinity`, bounded output, error redaction for paths/JWTs/bearer/hex tokens, read-only SQLite access, and no Hermes Agent imports
+- **Backend adapter (`plugins/hermes-vault-desktop/dashboard`)**: thin FastAPI plugin exposing only fixed GET routes (`hello`, `health`, `overview`, `credentials`, `leases`, `policy`, `requests`, `audit`, `integrity`); one short-lived bridge child per request with an allowlisted environment; fails closed on timeout, EOF, malformed JSON, protocol mismatch, and output overflow
+- **Desktop runtime (`plugins/hermes-vault-desktop/desktop/plugin.js`)**: native Hermes Desktop page for vault overview cards, credential/lease/request metadata, audit trail, and integrity verification, with 30s auto-refresh
+- **Canonical-launcher requirement**: the adapter spawns `hermes-vault-canonical` (PATH-resolved) so the bridge unlocks from the 0600 passphrase file; the raw `hermes-vault` binary returns HTTP 423 `MISSING_PASSPHRASE` in the scrubbed child environment
+
+## What's New in 0.23.2
+
+v0.23.2 is a patch release fixing an audit chain wedge and a fail-open export.
+
+- **Audit chain wedge (HIGH)**: `set-expiry`, `clear-expiry`, `backup-verify`, `restore --dry-run`, `rotate-master-key`, and `recovery drill` now pass the master key to their audit loggers, so every audit row stays protected and the chain never wedges (previously the next protected write crashed with `AuditIntegrityError`)
+- **Export fail-closed (MEDIUM)**: `export --with-secrets` with a wrong passphrase now fails with a clear error instead of exiting 0 with `"secret": null` for every credential
+
+## What's New in 0.23.1
+
+v0.23.1 is a patch release fixing the MCP SDK constraint.
+
+- Cap `mcp>=1.0.0,<2.0.0` (runtime + dev deps): mcp 2.0.0 removed `Server.list_tools`, which broke `import hermes_vault.mcp_server` on fresh pip installs of 0.23.0
+
+## What's New in 0.23.0
+
+v0.23.0 is a maintenance and documentation release.
+
+- Independent post-release sanity verification recorded for the v0.21.0 line
+- Draft release notes for the 0.23.0 line, including the unmerged PYTHONPATH guard fix flagged for cherry-pick review
+
+## What's New in 0.22.0
+
+v0.22.0 adds universal credential health intelligence to Hermes Vault.
+
+- 45 built-in verifiers covering every canonical service — adding a new one takes 4 lines of YAML
+- `hermes-vault verify --all` now covers 45 services (up from 6), with coverage metrics and A-F health scores
+- Filtered credential listing: `--unverified`, `--stale`, `--service`, `--tag`
+- Bulk import from CSV/env/JSON and filtered export to JSON/CSV/env
+- Tag management CLI: `hermes-vault tag <target> --add|--remove|--set`
+- `hermes-vault catalog` lists all 45 canonical services with env vars and descriptions
+- `hermes-vault schedule-verify` generates cron or systemd timer templates
+- `hermes-vault setup` interactive first-time wizard
+- `hermes-vault export --format json|csv|env` with `--service`, `--tag`, `--unverified` filters
 
 ## What It Does
 
@@ -51,10 +90,10 @@ Hermes Vault runs natively on Windows -- no WSL required.
 
 ```powershell
 # Install with uv (recommended)
-uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.20.0
+uv tool install git+https://github.com/asimons81/hermes-vault.git@v0.25.0
 
 # Or with pipx
-pipx install git+https://github.com/asimons81/hermes-vault.git@v0.20.0
+pipx install git+https://github.com/asimons81/hermes-vault.git@v0.25.0
 
 # Or with pip (editable dev install)
 python -m venv .venv
@@ -201,7 +240,7 @@ When `--redact-source` is used, only successfully imported env lines are comment
 
 ## Hermes Vault Console
 
-Hermes Vault Console, introduced in v0.8.0 and expanded through v0.20.0, is the local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, agent context, access requests, recovery posture, and safe operations without turning the browser into a secret viewer.
+Hermes Vault Console, introduced in v0.8.0 and expanded through v0.24.0, is the local dashboard for the credential broker. It gives operators one browser view of vault health, credential metadata, policy drift, audit activity, MCP binding, agent context, access requests, recovery posture, and safe operations without turning the browser into a secret viewer.
 
 Launch it from the same machine that owns the vault:
 
@@ -231,7 +270,7 @@ Screenshot set captured with a temporary demo vault and fake/demo credentials on
 - [Recovery Posture view](docs/assets/v0.8.0-dashboard/dashboard-recovery-posture.png)
 - [Operations Panel view](docs/assets/v0.8.0-dashboard/dashboard-operations.png)
 
-The screenshots and launch notes above are the legacy v0.8.0 baseline. They still document the local-only, token-guarded safety boundary, but the dashboard has grown since then and the v0.20.0 launch visuals need a fresh screenshot set before publishing updated images.
+The screenshots and launch notes above are the legacy v0.8.0 baseline. They still document the local-only, token-guarded safety boundary, but the dashboard has grown since then and the v0.22.0 launch visuals need a fresh screenshot set before publishing updated images.
 
 ## MCP Server
 

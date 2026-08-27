@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-vault"
-version = "0.21.0"
+version = "0.25.0"
 description = "Hermes-native local-first credential broker, scanner, and encrypted vault."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,7 +14,7 @@ authors = [
 license = "MIT"
 dependencies = [
   "cryptography>=42.0.0",
-  "mcp>=1.0.0",
+  "mcp>=1.0.0,<2.0.0",
   "pydantic>=2.7.0",
   "PyYAML>=6.0.0",
   "rich>=13.7.0",
@@ -26,7 +26,12 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0.0",
-  "mcp>=1.0.0",
+  "mcp>=1.0.0,<2.0.0",
+  # The hermes-vault-desktop plugin adapter and its tests import FastAPI
+  # (the dashboard plugin runtime); httpx is required by Starlette's
+  # TestClient used in test_plugin_api.py.
+  "fastapi>=0.100.0",
+  "httpx>=0.24.0",
 ]
 # DPAPI support. Required at runtime for Windows DPAPI; absent on
 # POSIX installs. The import is deferred (see hermes_vault/dpapi.py)
@@ -66,4 +71,4 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-hermes_vault = ["dashboard_static/*", "dashboard_static/assets/*"]
+hermes_vault = ["dashboard_static/*", "dashboard_static/assets/*", "verifier_configs/*.yaml"]

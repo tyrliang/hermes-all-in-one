@@ -5,7 +5,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from hermes_vault.crypto import decrypt_secret
+from hermes_vault.crypto import (
+    CRYPTO_VERSION,
+    credential_aad_metadata,
+    decrypt_secret_versioned,
+)
 from hermes_vault.models import utc_now
 from hermes_vault.vault import Vault
 
@@ -126,9 +130,16 @@ def _classify_v2_integrity(integrity: dict[str, Any], vault: Vault) -> tuple[str
                 return BACKUP_INTEGRITY_INCOMPLETE, "record_missing_required_fields"
 
     # Legacy anchor check.
-    if state.get("migration_state") == "active":
-        return BACKUP_INTEGRITY_HEALTHY, None
-    return BACKUP_INTEGRITY_LEGACY, "migration_not_active"
+    if state.get("migration_state") != "active":
+        return BACKUP_INTEGRITY_LEGACY, "migration_not_active"
+
+    # Detached cryptographic verification over the exported evidence (Slice D,
+    # #59). No live-DB reads: recompute registry/entry digests, verify record
+    # signatures and continuity, checkpoint signature/tip, access-log bindings,
+    # and segment key material. Never report healthy unless this passes.
+    from hermes_vault.audit_integrity.detached import verify_detached_evidence
+
+    return verify_detached_evidence(integrity, vault.key)
 
 
 def _verify_v1_backup(report: BackupVerificationReport, backup: dict[str, Any], vault: Vault) -> BackupVerificationReport:
@@ -148,7 +159,18 @@ def _verify_v1_backup(report: BackupVerificationReport, backup: dict[str, Any], 
     decryptable_count = 0
     for entry in credentials:
         try:
-            decrypt_secret(entry["encrypted_payload"], vault.key)
+            decrypt_secret_versioned(
+                entry["encrypted_payload"],
+                vault.key,
+                entry.get("crypto_version") or CRYPTO_VERSION,
+                credential_aad_metadata(
+                    entry.get("id", ""),
+                    entry.get("service", ""),
+                    entry.get("alias", "default"),
+                    entry.get("credential_type", ""),
+                    entry.get("scopes") or [],
+                ),
+            )
         except Exception:
             service = entry.get("service", "?")
             alias = entry.get("alias", "default")
