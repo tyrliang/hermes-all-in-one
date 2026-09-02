@@ -30,7 +30,7 @@ PROVIDER_MAP: dict[str, str] = {
     "moonshotai":  "Moonshot",
     "x-ai":        "xAI",
     "minimax":     "MiniMax",
-    "z-ai":        "ZAI",
+    "z-ai":        "Z.AI",
     "xiaomi":      "Xiaomi",
     "nvidia":      "NVIDIA",
     "mistralai":   "Mistral",

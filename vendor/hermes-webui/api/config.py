@@ -1147,6 +1147,9 @@ _FALLBACK_MODELS = [
     {"provider": "MiniMax",   "id": "minimax/MiniMax-M2.7",             "label": "MiniMax M2.7"},
     {"provider": "MiniMax",   "id": "minimax/MiniMax-M2.7-highspeed",   "label": "MiniMax M2.7 Highspeed"},
     # Z.AI / GLM
+    {"provider": "Z.AI", "id": "z-ai/glm-5.2", "label": "GLM 5.2"},
+    {"provider": "Z.AI", "id": "z-ai/glm-5.3-flash", "label": "GLM 5.3 Flash"},
+    {"provider": "Z.AI", "id": "z-ai/glm-5.3", "label": "GLM 5.3"},
     {"provider": "Z.AI",      "id": "zai/glm-5.2",                      "label": "GLM-5.2"},
     {"provider": "Z.AI",      "id": "zai/glm-5.1",                      "label": "GLM-5.1"},
     {"provider": "Z.AI",      "id": "zai/glm-5",                        "label": "GLM-5"},
