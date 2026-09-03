@@ -1,50 +1,190 @@
 <img src="assets/banner.svg" width="900" alt="Hermes All-in-One · WebUI + Admin + Gateway">
 
-# Hermes All-in-One | WebUI + Admin Panel + Gateway — No Terminal Setup
+# Hermes All-in-One — WebUI + Admin Panel + Gateway in one container
 
-> **Browser-based setup at `/admin` — no terminal, no config files.**
-> One container, one shared agent identity across WebUI, Telegram, Discord, and Slack. Persistent memory, built-in skills, cron automations ready on deploy.
+One container that runs [Hermes Agent](https://github.com/NousResearch/hermes-agent) with a browser chat UI, a browser setup panel, and a multi-channel gateway (Telegram / Discord / Slack / Email) sharing **one** agent identity, memory, skills, and `SOUL.md`.
 
-Built on the official [`nousresearch/hermes-agent`](https://github.com/NousResearch/hermes-agent) image with **s6-overlay** supervision (control plane, WebUI, and gateway as managed services). Mount one volume at **`/opt/data`**; agent config and memory live in **`/opt/data/.hermes`**.
+No terminal setup. Deploy it, open `/admin`, paste an API key, connect a channel.
+
+| | |
+|---|---|
+| **Package version** | `0.12.0` |
+| **Base image** | `nousresearch/hermes-agent:v2026.8.31` |
+| **Vendored** | agent `v2026.8.31` · webui `v0.52.113` · vault `v0.25.0` |
+| **Published image** | `ghcr.io/tyrliang/hermes-all-in-one:v0.12.0` / `:latest` |
+| **Volume mount** | `/opt/data` (required) |
+| **Public port** | `$PORT` (Railway-injected) or `8787` |
+
+**Two audiences, two sections:**
+
+- **[For agents](#for-agents)** — operating contract, invariants, deterministic setup and verification commands. Read this if you are an AI agent asked to deploy, operate, or modify this repo.
+- **[For humans](#for-humans)** — first-time setup walkthrough with screenshots, provider/channel guides, first prompts, troubleshooting.
+
+Shared reference used by both: **[Environment variable reference](#environment-variable-reference)** · **[Data on the volume](#data-on-the-volume)** · **[Architecture](#architecture)** · **[Releases & versioning](#releases--versioning)**
 
 ---
+---
 
-## ⚡ First time here? Go to `/admin` — not `/`
+# For agents
 
-When you deploy this, your app opens at `/`. That's the Hermes WebUI — but it needs a password and a configured AI provider to work. **You must configure it first at `/admin`.**
+Deterministic operating contract. Every statement here is verifiable in-tree. Do not infer beyond it.
+
+## Ground truth
+
+| Fact | Value | Source |
+|---|---|---|
+| What this repo is | Deployment wrapper: control plane + WebUI proxy + s6 service definitions. Agent logic is upstream, vendored, **not** authored here. | `Dockerfile`, `control_plane/` |
+| Base image | `nousresearch/hermes-agent` pinned by `ARG HERMES_IMAGE` | `Dockerfile:7` |
+| PID 1 | `/init` (s6-overlay), inherited ENTRYPOINT; `CMD ["sleep","infinity"]` holds the tree | `Dockerfile:181-183` |
+| Public listener | `uvicorn control_plane.server:app` on `${CONTROL_PLANE_HOST}:${PORT:-8787}` | `docker/s6-rc.d/control-plane/run:25-27` |
+| Internal WebUI | `vendor/hermes-webui/server.py` on `127.0.0.1:8788`, loopback only, reverse-proxied | `docker/s6-rc.d/hermes-webui/run:22-26`, `control_plane/proxy.py` |
+| Gateway | s6 slot `/run/service/gateway-default`, driven by `hermes gateway start\|stop` | `control_plane/gateway_manager.py:19`, `control_plane/s6_ops.py:69-81` |
+| Volume | `/opt/data` = `HERMES_DATA_DIR`; agent state in `/opt/data/.hermes` | `Dockerfile:165-166` |
+| Supervision switch | s6 mode iff `CONTROL_PLANE_RUNTIME=s6`; otherwise control plane subprocess-manages children | `control_plane/runtime_mode.py:6-7` |
+| Config writes | provider → `config.yaml` (`model.*`) + `.env` (api key); channels → `.env` only | `control_plane/config.py:189-224`, `319-323` |
+
+## Repo map
+
+| Path | Role | Edit here when |
+|---|---|---|
+| `control_plane/` | Starlette app: `/admin`, `/admin/api/*`, `/health`, catch-all WebUI proxy | Admin UI, auth, provider/channel persistence, gateway control |
+| `docker/cont-init.d/` | One-shot boot scripts `03`→`06` (volume bootstrap, tailscale env, PATH, ssh keys) | Volume layout, env fan-out into `/run/s6/container_environment` |
+| `docker/s6-rc.d/` | Longrun definitions: `control-plane`, `hermes-webui`, `tailscaled`, `lightpanda`, `healthwatch` | Service lifecycle, ports, boot deps |
+| `docker/scripts/` | `hermes-with-vault` (gateway pre-exec shim), `hermes-vault-env-inject.py`, `gateway_autostart.py` | Vault secret injection |
+| `docker/sshd/`, `docker/profile.d/` | sshd config (loopback:22), `HOME=/opt/data` forcing | SSH / interactive-shell behavior |
+| `scripts/` | Version + release + vendor-sync + smoke tooling | Release mechanics |
+| `vendor/` | `git subtree` copies of hermes-agent, hermes-webui, hermes-vault | **Never hand-edit**; only via sync tooling |
+| `tests/` | `unittest`-style tests for control plane + vault inject | Behavior changes in `control_plane/` or vault shim |
+
+## Invariants — do not break these
+
+1. **`/opt/data` is the only durable state.** No feature may depend on anything outside it surviving a redeploy. Wiping it destroys agent memory, Tailscale node identity, TLS certs, SSH keys, and the admin signing key.
+2. **The internal WebUI stays on `127.0.0.1:8788`.** It is unauthenticated at the socket level; the control plane is the only intended ingress. Binding it to `0.0.0.0` is a security regression.
+3. **Never set `PORT` in Railway variables.** The platform injects it (usually `8080`); hardcoding desyncs routing. `8787` is a code default for local use only.
+4. **Vendor trees are read-only.** Refresh via `scripts/sync-upstreams.sh` or the `sync-upstreams` workflow. A local patch to a vendor tree must be re-applied after every sync and recorded in the sync commit message (precedent: `b3c09890db`).
+5. **`hermes` on `PATH` inside the image is the vault shim**, not the stock console script. Stock is preserved at `/opt/hermes/.venv/bin/hermes.stock.bak` (`Dockerfile:135-136`). Do not overwrite the shim without preserving the pre-exec inject.
+6. **`TERMINAL_HOME_MODE=real` is forced** at the s6 container-environment level (`docker/cont-init.d/05-hermes-path:27`). Upstream defaults to an isolated fake home at `${HERMES_HOME}/home`, which scatters pip/npm state and loses it on rebuild. Do not revert to isolated mode.
+7. **Minor version bumps are reserved for upstream base advances.** See [Releases & versioning](#releases--versioning). Everything else is a patch, no matter how large.
+8. **`git tag` is manual.** No workflow auto-tags on `VERSION` change. Pushing to `main` publishes nothing.
+
+## Deterministic setup — Railway
+
+```
+1. Create service from this repo (Dockerfile + railway.toml auto-detected).
+2. Volumes tab → mount persistent volume at exactly /opt/data.
+3. Variables tab → set:
+     HERMES_WEBUI_PASSWORD=<strong>
+     HERMES_ADMIN_PASSWORD=<different-strong>
+   Do NOT set PORT. Do NOT set CONTROL_PLANE_HOST.
+4. Deploy. /health returns 200 within ~30s of container start.
+5. Open https://<service>.railway.app/admin → log in with HERMES_ADMIN_PASSWORD.
+6. Providers → provider + model + API key → Save.
+7. Channels → channel token → Save.
+8. Gateway autostarts once a provider AND a channel are both valid.
+9. Users → approve the pairing code the bot DMs to the first unknown user.
+```
+
+Failure mode to expect if step 3 is skipped: `HERMES_ADMIN_PASSWORD` empty **and** `HERMES_WEBUI_PASSWORD` empty ⇒ `admin_auth_enabled()` is false ⇒ `/admin` is fully open to the internet (`control_plane/auth.py:45-46`, `94-97`).
+
+## Deterministic setup — local
+
+```bash
+cp .env.example .env
+# set at minimum HERMES_WEBUI_PASSWORD and HERMES_ADMIN_PASSWORD
+docker compose up -d --build
+```
+
+- Compose publishes `8787:8787`, bind-mounts `./.hermes-data:/opt/data`, and defaults both passwords to `test` (`docker-compose.yml:17-22`).
+- `docker-compose.yml` only forwards the two password variables. To exercise Tailscale locally you must create `docker-compose.override.yml` yourself — it is **gitignored** (`.gitignore:27`), not shipped.
+- `start.sh` is a non-image dev fallback: it defaults to `/data`, not `/opt/data`, does **not** set `CONTROL_PLANE_RUNTIME=s6`, and runs no s6, tailscaled, lightpanda, or healthwatch (`start.sh:6-16`). Prefer compose.
+
+## Verification
+
+Never claim a deploy works without one of these.
+
+```bash
+# 1. Liveness + readiness. /health is ALWAYS HTTP 200; readiness is the JSON status field.
+curl -s http://127.0.0.1:8787/health | python3 -m json.tool
+#   {"status":"ok"|"degraded","service":"hermes-control-plane",
+#    "webui":{...},"gateway":{"running":bool,"healthy":bool}}
+#   status == "ok" iff the internal WebUI answered 2xx on /health within 2s.
+
+# 2. Admin auth gate is armed (must be 401, not 200).
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/admin/api/status
+
+# 3. Full authenticated status (paths, supervisors, autostart eligibility).
+curl -s -c /tmp/c -b /tmp/c -d 'password=<admin>' http://127.0.0.1:8787/admin/login >/dev/null
+curl -s -b /tmp/c http://127.0.0.1:8787/admin/api/status | python3 -m json.tool
+
+# 4. Service state (s6 binaries are only on PATH inside supervised processes).
+docker compose exec hermes /command/s6-svstat /run/service/control-plane
+docker compose exec hermes /command/s6-svstat /run/service/hermes-webui
+docker compose exec hermes /command/s6-svstat /run/service/gateway-default
+
+# 5. Full build + runtime contract (what CI runs).
+./scripts/smoke.sh                 # SMOKE_SKIP_BUILD=1 to reuse an existing image
+```
+
+`scripts/smoke.sh` asserts, among other things: `/health` shape and `status == "ok"`, WebUI `supervisor == "s6"`, the `/admin` 401 gate, `/admin/api/status` paths equal to the `/opt/data/.hermes/*` contract, pairing APIs returning lists, vault tooling present, and that `/opt/data/.admin_signing_key` survives a container restart (`scripts/smoke.sh:141-292`).
+
+Python tests:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+## Change protocol
+
+| Change | Touch | Gate |
+|---|---|---|
+| Admin UI / API / auth | `control_plane/` (+ `tests/test_control_plane.py`) | `python3 -m unittest discover -s tests`, then `./scripts/smoke.sh` |
+| Boot / volume layout | `docker/cont-init.d/*` | `dash -n` **and** `shellcheck` clean; smoke covers volume bootstrap |
+| Service lifecycle / ports | `docker/s6-rc.d/<svc>/{type,run,dependencies.d}` + `user/contents.d/<svc>` marker | `dash -n`, smoke |
+| Vault injection | `docker/scripts/hermes-with-vault`, `hermes-vault-env-inject.py` (+ `tests/test_vault_gateway_inject.py`) | unittest + smoke |
+| New env var | consume it in code, **then** add it to `.env.example` **and** the [reference table](#environment-variable-reference) | both, or it is undocumented drift |
+| Upstream bump | `./scripts/bump-hermes.sh <tag>` (writes `hermes-base`, `agent-base`, and `Dockerfile` `ARG HERMES_IMAGE`) | CI + manual tag |
+| Anything else | `./scripts/bump-patch.sh` (patch only, never touches the Dockerfile) | CI + manual tag |
+
+CI required checks are the exact job names **`vendor syntax`** and **`smoke`** (`.github/workflows/ci.yml:26-27,61-62`); branch protection is strict, so a PR must be up to date with `main`.
+
+## Known traps
+
+| Trap | Reality |
+|---|---|
+| `HERMES_ADMIN_USERNAME` | Read into `ADMIN_USERNAME` and then **never used**. Admin login is password-only. `control_plane/config.py:28` |
+| `HERMES_GATEWAY_AUTOSTART=1` | Does **not** force a start. `1/true/yes/on/enabled` and the default `auto` follow the same path: both still require a valid provider **and** a configured channel. Only `0/false/no/off/disabled` changes behavior. `control_plane/config.py:306-317` |
+| Saving a Telegram/Discord token in `/admin` | Clears `TELEGRAM_ALLOWED_USERS` / `DISCORD_ALLOWED_USERS` unless the same request also sends them. Deliberate: the image steers to pairing, not static allowlists. `control_plane/server.py:277-280` |
+| Admin sessions | In-process dict, not persisted. Any control-plane restart logs every admin out. `control_plane/auth.py:19,62-64` |
+| `/health` status code | Always 200, by design, so Railway liveness never flaps. Degradation is in the body only. `control_plane/server.py:129-148` |
+| Red lines in Railway logs | s6, cont-init and Tailscale write informational output to **stderr**, so Railway tags it `severity: error`. Look for non-zero exits, crash loops, HTTP 5xx — not colored lines. |
+| `scripts/sync-upstreams.sh` and the vault | The **script** syncs only `vendor/hermes-agent` + `vendor/hermes-webui` and advances no pins. Only the **workflow** syncs the vault and writes `*_base` pins. `scripts/sync-upstreams.sh:71-72` vs `.github/workflows/sync-upstreams.yml:64-147` |
+| `.github/workflows/test.yml` | A `workflow_dispatch`-only `echo hello` stub. Not a test suite. |
+| `check-upstream` workflow | Needs `secrets.SYNC_PAT`; there is no `GITHUB_TOKEN` fallback, so the PR step fails silently-ish without it. `sync-upstreams` does fall back. |
+| `git tag --list 'v0.*'` | ~1340 tags, mostly dragged in by vendored subtrees (`v0.52.*` = webui, `v2026.*` = agent). Resolve this repo's releases with `git tag --merged HEAD`. |
+| tailscaled dependency | `control-plane` depends on the tailscaled **slot**, which holds open via `sleep infinity` when `TAILSCALE_AUTH_KEY` is unset. It does not wait for a live tailnet join. |
+
+---
+---
+
+# For humans
+
+## First time here? Go to `/admin`, not `/`
+
+Your deploy opens at `/`. That is the Hermes chat UI, and it needs a password plus a configured AI provider before it does anything. Configure it first:
 
 ```
 https://your-app.railway.app/admin
 ```
 
-Log in with `HERMES_ADMIN_PASSWORD` (or `HERMES_WEBUI_PASSWORD` if admin password isn't set). This is where you set your API key, connect Telegram, and start the gateway.
-
----
-
-## What is this?
-
-[Hermes Agent](https://github.com/NousResearch/hermes-agent) is a self-improving AI agent from NousResearch — it can use tools, remember things, and talk to you over multiple channels. This repo packages it into a single deployable container with:
+Log in with `HERMES_ADMIN_PASSWORD` (or `HERMES_WEBUI_PASSWORD` if you only set that one). That is where you set your API key, connect channels, approve users, and control the gateway.
 
 | Surface | URL | What it is |
-|---------|-----|-----------|
+|---|---|---|
 | **WebUI** | `/` | Hermes chat interface in the browser |
-| **Control Plane** | `/admin` | Provider + channel setup, gateway controls, logs |
-| **Health** | `/health` | Liveness check (`railway.toml` / load balancers) |
+| **Control Plane** | `/admin` | Provider + channel setup, gateway controls, user pairing, logs |
+| **Health** | `/health` | Liveness JSON for `railway.toml` and load balancers |
 
-Everything shares one Hermes identity — the same memory, skills, config, and SOUL file — whether you're talking on Telegram or in the browser.
-
-### Terminal Home Isolation
-
-This image forces `TERMINAL_HOME_MODE=real` at the s6 container environment level (see `docker/cont-init.d/05-hermes-path`). 
-
-**Why:** The upstream `nousresearch/hermes-agent` image defaults to an isolated fake home at `${HERMES_HOME}/home` (`/opt/data/.hermes/home`) for subprocesses. This causes Python (`pip`/`uv`), npm, and other tools to scatter packages across multiple locations, leading to duplication and loss of state on rebuilds.
-
-By setting the mode to `real`, all supervised services and their children consistently use the persistent user home (`/opt/data`). This eliminates package sprawl while still keeping Hermes state under `/opt/data/.hermes`.
-
-The setting is also exported in generated profile scripts so interactive shells (`docker exec`, Railway SSH) behave the same way.
-
----
-## Screenshots
+Everything shares one Hermes identity — same memory, skills, config and `SOUL.md` — whether you talk on Telegram or in the browser.
 
 **Admin Control Plane** — `/admin`
 
@@ -54,767 +194,366 @@ The setting is also exported in generated profile scripts so interactive shells 
 
 ![Hermes WebUI](assets/hermeswebui.png)
 
----
+## 1. Deploy
 
-## Quick Start
+### Railway (recommended)
+
+Create a new Railway service from this repo. `Dockerfile` and `railway.toml` are picked up automatically.
+
+**a. Add a volume.** Railway → your service → **Volumes** → mount at exactly **`/opt/data`**.
+
+> Without a volume, every redeploy wipes your agent's memory, config, credentials, Tailscale identity and SSH keys.
+
+**b. Set the two required variables.** Railway → **Variables**:
+
+```
+HERMES_WEBUI_PASSWORD=your-secure-password
+HERMES_ADMIN_PASSWORD=a-different-secure-password
+```
+
+Both should be set **before** the service becomes publicly reachable. If both are empty, `/admin` has no password at all.
+
+**c. Deploy.** `/admin` is ready roughly 30 seconds after the container starts.
+
+Railway networking rules:
+
+- **Do not set `PORT`.** Railway injects it (often `8080`).
+- The public listener is the control plane on `0.0.0.0:$PORT`. The WebUI deliberately binds `127.0.0.1:8788` and is reached through the control-plane proxy — that loopback bind is correct.
+- `CONTROL_PLANE_HOST=0.0.0.0` is already baked into the image; you do not need to set it.
+- Mount at `/opt/data`, not `/data`.
 
 ### Local (Docker Compose)
 
-Fastest way to try the stack on your machine:
-
 ```bash
-cp .env.example .env   # set HERMES_WEBUI_PASSWORD and HERMES_ADMIN_PASSWORD
+cp .env.example .env    # set HERMES_WEBUI_PASSWORD and HERMES_ADMIN_PASSWORD
 docker compose up -d --build
 ```
 
 | Surface | URL |
-|---------|-----|
+|---|---|
 | WebUI | http://127.0.0.1:8787/ |
 | Admin | http://127.0.0.1:8787/admin |
 | Health | http://127.0.0.1:8787/health |
 
-Data persists in `./.hermes-data` (bind-mounted at `/opt/data`; agent files under `.hermes/` inside that directory). Configure your provider at `/admin`, same as production.
+State lives in `./.hermes-data` (bind-mounted at `/opt/data`, agent files under `.hermes/`). Configure your provider at `/admin` exactly as in production.
 
-To build and run the image directly:
+Useful commands:
 
 ```bash
-docker build -t hermes-all-in-one .
+docker compose logs -f hermes
+docker compose exec hermes zsh          # interactive shell as root
+docker compose exec --user hermes hermes zsh   # as the user the app runs as
+docker compose down                     # stop and remove
+docker compose up -d --build            # rebuild after Dockerfile changes
+```
+
+### Pre-built image
+
+```bash
 docker run -d --name hermes-all-in-one \
   -p 8787:8787 \
   -e HERMES_WEBUI_PASSWORD=your-password \
   -e HERMES_ADMIN_PASSWORD=your-admin-password \
   -v "$(pwd)/.hermes-data:/opt/data" \
-  hermes-all-in-one
+  ghcr.io/tyrliang/hermes-all-in-one:latest
 ```
 
-Pre-built images are on GHCR (`ghcr.io/<owner>/hermes-all-in-one:v0.x.z`). See [Releases & versioning](#releases--versioning) for how tags relate to the upstream Hermes Agent base.
+## 2. Pick an AI provider
 
-### Container shell & useful commands
+`/admin` → **Providers** → choose → paste key → **Save**. Four setups are supported in the browser:
 
-Compose names the container **`hermes-all-in-one`** (service name `hermes`). From the repo root:
+| Provider | Env key written | Default model offered | Notes |
+|---|---|---|---|
+| **OpenRouter** | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4.6` | Best starting point — one key, hundreds of models |
+| **Anthropic** | `ANTHROPIC_API_KEY` | `claude-sonnet-4.6` | Key from [console.anthropic.com](https://console.anthropic.com) |
+| **OpenAI** | `OPENAI_API_KEY` | `gpt-4o` | Base URL defaults to `https://api.openai.com/v1` |
+| **Custom OpenAI-compatible** | `OPENAI_API_KEY` | `gpt-4o-mini` | Base URL **required**. Ollama, LM Studio, vLLM, Together, Groq… |
 
-**Shell (interactive)**
+The API key is written to `/opt/data/.hermes/.env`; `model.provider`, `model.default` and optional `model.base_url` go to `/opt/data/.hermes/config.yaml`. The key is never displayed again — re-entering it is required on every save.
+
+**Not available in the browser:** OAuth and subscription flows — OpenAI Codex / ChatGPT login, Nous Portal, GitHub Copilot. Those are terminal-first:
 
 ```bash
-# Compose (recommended)
-docker compose exec hermes sh
+# Railway
+npm install -g @railway/cli && railway login && railway ssh
+# or locally: docker compose exec --user hermes hermes zsh
 
-# Same container, direct docker exec
-docker exec -it hermes-all-in-one sh
-
-# Drop to the hermes user (how the app and gateway run)
-docker exec -it --user hermes hermes-all-in-one sh
+hermes auth login      # credentials land under /opt/data/.hermes
 ```
 
-`s6` binaries live under `/command/` and are on `PATH` only inside supervised processes. For manual `s6-svc` / `s6-svstat`, use the full path, e.g. `/command/s6-svstat /run/service/gateway-default`.
+Afterwards the provider shows as configured in `/admin`.
 
-**TUI over SSH (`hermes --tui`)**
+## 3. Connect a channel
 
-Node 22 is baked into the image at `/usr/local/bin/node`. Some shells (notably `railway ssh`) start with a minimal `PATH` that omits `/usr/local/bin`, which makes `hermes --tui` prompt to install Node and then fail. After v0.3.3+, cont-init fixes this for new deploys. If you still see it, run:
+`/admin` → **Channels**. Four are configurable from the browser; WhatsApp only shows status if it was enabled externally.
+
+| Channel | Fields in the UI | Env keys |
+|---|---|---|
+| **Telegram** | Bot token | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS` |
+| **Discord** | Bot token | `DISCORD_BOT_TOKEN`, `DISCORD_ALLOWED_USERS` |
+| **Slack** | Bot token + app token | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` |
+| **Email** | Address + password | `EMAIL_ADDRESS`, `EMAIL_PASSWORD` |
+| **WhatsApp** | status chip only | `WHATSAPP_ENABLED` |
+
+Telegram in three steps:
+
+1. DM [@BotFather](https://t.me/BotFather), send `/newbot`, copy the token (`123456789:ABCdef...`).
+2. Paste it into `/admin` → Channels → Telegram → Save.
+3. Message your bot.
+
+The gateway starts automatically as soon as **one valid provider** and **one configured channel** both exist.
+
+## 4. Approve yourself (pairing)
+
+You do not need to hunt for numeric user IDs any more. When an unrecognized user DMs the bot, Hermes replies with an 8-character pairing code (valid 1 hour, rate-limited to one request per user per 10 minutes).
+
+Approve it in `/admin` → **Users**: pending codes appear there, and you click **Approve**. The equivalent CLI is `hermes pairing approve <platform> <code>`.
+
+The same panel lists approved users and lets you revoke them. Pairing state lives in `/opt/data/.hermes/pairing/`.
+
+If you genuinely want an open bot, Channels → **Allow all users** sets `GATEWAY_ALLOW_ALL_USERS=true` and skips allowlists and pairing entirely. Use with care.
+
+> Note: saving a Telegram or Discord bot token from `/admin` clears that platform's static allowlist, on purpose — pairing is the intended path.
+
+## 5. Also in `/admin`
+
+- **Overview** — gateway and WebUI state, uptime, autostart eligibility, resolved paths.
+- **Gateway** — Start / Stop / Restart. The gateway is considered healthy once it has run ≥3 s without crashing (it is a bot process, not an HTTP server, so there is no endpoint to probe).
+- **Restart WebUI** — without restarting the container.
+- **Logs** — live tails of `gateway.log` and the WebUI log.
+- Status refreshes every 5 s.
+
+## 6. Your first prompts
+
+Hermes is deployed but blank. The first ten minutes shape how useful it is for the rest of its life.
+
+**Onboard it to itself:**
+
+```
+Use your hermes-agent skill and help me with first-time setup.
+Read your own documentation, understand what you're capable of, then walk me
+through how to make you as useful as possible for someone who just deployed
+you. Start by asking what I do, what I want to automate, and what help I need
+daily. Then suggest what to set up first.
+```
+
+**Onboard it to you:**
+
+```
+I want to brief you on who I am so you can serve me better. Ask me these one
+at a time, waiting for each answer:
+  1. What do you do for work, or what are you building?
+  2. What's your biggest time drain right now?
+  3. What do you wish you had a daily assistant for?
+  4. Which tools do you use most (Notion, Gmail, Telegram, ...)?
+  5. What have you always wanted to automate but never had time to set up?
+Then summarize who I am, save it to your memory, and suggest the three most
+valuable things to set up first.
+```
+
+**Give it a new capability:**
+
+```
+Show me your available skills with /skills. Then find something useful for
+[your goal] in the skills hub, install it, and show me how to use it.
+```
+
+## 7. Skills
+
+Skills are already running — nothing to set up. Hermes indexes its skills directory at the start of every conversation and injects the index into its own system prompt, then loads a skill's procedures automatically when your request matches. A skill is just a Markdown file:
+
+```
+/opt/data/.hermes/skills/
+  github-code-review/
+    SKILL.md         ← frontmatter + instructions
+    references/      ← optional supporting docs
+```
+
+Three layers: **built-in** (seeded onto the volume on first boot), **optional** (`/opt/data/.hermes/optional-skills/`, installed on demand), and **community** at [agentskills.io](https://agentskills.io).
+
+```
+/skills                              # what's active
+/skills install arxiv                # from the optional library
+/skills search "cold email"          # community hub
+```
+
+If nothing fits, describe the workflow once and ask Hermes to save it as a skill. After a successful multi-step task, this works well:
+
+```
+That worked. Write a skill capturing this workflow so you can do it faster
+next time without my instructions. Check existing skills first to avoid
+duplicates.
+```
+
+## 8. Scheduling and automations
+
+Built-in cron, natural language or crontab syntax:
 
 ```bash
-export PATH="/usr/local/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:$PATH"
-hermes --tui
+hermes cron create "every day at 8am" "your prompt" --name "My Task" --deliver telegram
+hermes cron create "0 8 * * 1-5" "your prompt" --name "Weekday Briefing" --deliver telegram
 ```
 
-The browser WebUI at `/` is usually a better fit on Railway than the terminal TUI (Ink needs a real TTY). Use the TUI mainly for local `docker compose exec`.
+Delivery targets: `--deliver telegram | discord | slack | local`.
 
-**Logs & lifecycle**
+**Script injection** runs a Python script first and feeds its output to the agent as context — mechanical work outside the LLM, reasoning inside it:
 
 ```bash
-docker compose logs -f hermes
-docker compose ps
-docker compose down          # stop and remove container
-docker compose up -d --build # rebuild after Dockerfile changes
+hermes cron create "every 1h" \
+  "If CHANGE DETECTED, summarize what changed and why it matters. If NO_CHANGE, reply [SILENT]." \
+  --script ~/.hermes/scripts/watch-prices.py \
+  --name "Price Monitor" --deliver telegram
 ```
 
-**Health (host → published port)**
+`[SILENT]` is the key pattern: notify only when something actually changed.
 
-```bash
-curl -s http://127.0.0.1:8787/health | python3 -m json.tool
+Chain skills into a job with `--skills "arxiv,obsidian"`. Full docs: [hermes-agent cron features](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron).
+
+A worked example to paste as-is:
+
+```
+Create a daily intelligence briefing at 7am, delivered to Telegram.
+My interests: [...]. Skip: [...].
+Sources: Hacker News top 10, TechCrunch, The Verge, r/MachineLearning, trending arXiv CS.
+Per item: title + link, 2-sentence summary, why it matters to me, and the "so what".
+Limit to the 5 most relevant. Name it "Morning Briefing" and schedule it.
 ```
 
-**Tailscale (when `TAILSCALE_AUTH_KEY` is set)**
+## 9. Your agent's identity — `SOUL.md`
 
-```bash
-docker exec hermes-all-in-one tailscale --socket=/run/tailscale/tailscaled.sock status
-docker exec hermes-all-in-one ls -la /opt/data/.tailscale
-```
+`SOUL.md` controls the persistent persona: name, voice, priorities. It lives at `/opt/data/.hermes/SOUL.md`.
 
-From another device on your tailnet (MagicDNS or `100.x.x.x`; local compose uses port **8787**):
+Edit it from the WebUI, then `/admin` → Overview → **Restart** the gateway to apply. 200 words of well-crafted identity beats 2000 words of prompt stuffing. Formatting guidance: [Hermes Agent docs](https://github.com/NousResearch/hermes-agent).
 
-```bash
-curl -s "http://hermes-local:8787/health"
-curl -s -o /dev/null -w "%{http_code}" "http://hermes-local:8787/admin/login"
-```
+## 10. The self-learning loop
 
-If `/` works but `/admin` shows the chat UI or hangs, your browser still has the WebUI **service worker** from an earlier visit — it intercepts `/admin` navigations. Hard-refresh `/admin`, use a private window, or unregister the service worker for that host (v0.3.2+ ships a fix in `sw.js`).
+1. **Memory nudges** — after complex conversations the agent prompts itself to save what it learned about you.
+2. **Session search** — every conversation is FTS5-indexed; `/insights` shows what it knows.
+3. **Skill creation** — a completed multi-step task can become a skill it wrote itself.
+4. **User modeling** — via [Honcho](https://github.com/plastic-labs/honcho), it builds a model of your preferences and working style.
+5. **Skill improvement** — skills get sharper as it finds better approaches.
 
-After the node has joined once, restarts usually reuse machine credentials in `/opt/data/.tailscale/` even if the auth key in env has expired — you only need a fresh key when that state is wiped or the machine was removed from the tailnet.
+Practical consequence: month 3 is not the same agent as day 1. Which is also why the volume matters.
 
 ---
 
-### Deploy to Railway
+# Optional extras
 
-Create a new Railway service from this repo (Dockerfile + `railway.toml`).
+## Tailscale — private access
 
-#### 1. Add a volume
+Railway blocks `NET_ADMIN` and `/dev/net/tun`, so this image runs Tailscale in **userspace networking**. With no `TAILSCALE_AUTH_KEY`, the service is a no-op that just holds its s6 slot; local and compose behavior is unchanged.
 
-In Railway → your service → **Volumes** tab → mount a persistent volume at **`/opt/data`**.
+When enabled, the container joins your tailnet and `http://<magicdns>:$PORT/` serves the same `/`, `/admin`, `/health`.
 
-> Without a volume, all your agent memory, config, and credentials are lost on every redeploy.
-
-#### 2. Set required environment variables
-
-Go to **Variables** in your Railway service and set at minimum:
+**Minimum:**
 
 ```
-HERMES_WEBUI_PASSWORD=your-secure-password
-HERMES_ADMIN_PASSWORD=your-admin-password
+TAILSCALE_AUTH_KEY=tskey-auth-...
+TAILSCALE_HOSTNAME=hermes-all-in-one     # defaults to $RAILWAY_SERVICE_NAME, then hermes-all-in-one
 ```
 
-#### 3. Deploy
+Create an [auth key](https://tailscale.com/kb/1085/auth-keys) in the Tailscale admin console. Disable the public Railway URL if you want tailnet-only access. After the first join, restarts reuse machine credentials in `/opt/data/.tailscale/` even if the key expired — you only need a fresh key when that state is wiped or the machine is removed from the tailnet.
 
-Railway builds the Dockerfile and starts the container. The control plane at `/admin` is ready in ~30 seconds.
+### HTTPS on the tailnet
 
-**Railway networking notes:**
+`TAILSCALE_HTTPS=1` runs `tailscale serve --bg --https=443 http://127.0.0.1:$PORT` after join, giving you `https://<hostname>.<tailnet>.ts.net/` with a Let's Encrypt certificate.
 
-- Railway injects `PORT` (often `8080`). **Do not set `PORT=8787` in Railway variables** — that desyncs routing from the platform.
-- The public service is the **control plane** on `0.0.0.0:$PORT`. The internal WebUI intentionally binds to **`127.0.0.1:8788`** and is reached via the control-plane proxy — that loopback bind is correct, not a misconfiguration.
-- Set `CONTROL_PLANE_HOST=0.0.0.0` only if you need to override the image default (already baked in).
-- Mount the volume at **`/opt/data`** (not `/data`).
+- Prerequisites your tailnet admin must enable (the image cannot): **MagicDNS** and **HTTPS Certificates**.
+- **Cert-additive, not TLS-only**: plain `http://<magicdns>:$PORT/` stays open.
+- cont-init sets `HERMES_WEBUI_TRUST_FORWARDED_PROTO=1` so WebUI auth cookies get the `Secure` flag on the HTTPS path. **Prefer the HTTPS URL for login.**
+- Certs live under `/opt/data/.tailscale/`, sharing the volume with machine credentials. Wiping that directory forces a new node **and** re-issues certificates (Let's Encrypt allows 5 duplicate certs per name per week). Rotate the auth key instead of wiping state.
 
-#### Optional: Tailscale (tailnet-only access)
+Serve config is persisted node state, so every boot reconciles it against your env **one handler at a time** — applying what you asked for and disabling only what the image itself owns. There is no global `serve reset`, so handlers you added on other ports (including Funnel) are never touched. Port 22 is reconciled unconditionally, since the image has owned it since `TAILSCALE_SSH=openssh` became the default. Port 443 is only disabled when the image enabled it, tracked by `/opt/data/.tailscale/.serve-https-managed`. Every serve failure is non-fatal: nothing is torn down before a re-apply, so a working handler survives and the service logs a warning.
 
-Railway blocks `NET_ADMIN` and `/dev/net/tun`, so this image uses Tailscale **userspace networking** (no kernel TUN). When enabled, the container joins your tailnet and inbound traffic to `http://<magicdns>:$PORT/` reaches the control plane (same paths as the public URL: `/`, `/admin`, `/health`). **v0.8.1+:** optional `TAILSCALE_HTTPS=1` also exposes `https://<magicdns>/` on 443 via [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve) (does **not** close plain `$PORT`).
-
-1. Create an [ephemeral auth key](https://tailscale.com/kb/1085/auth-keys) in the Tailscale admin console.
-2. Set Railway variables:
-   ```
-   TAILSCALE_AUTH_KEY=tskey-auth-...
-   TAILSCALE_HOSTNAME=hermes-all-in-one
-   ```
-3. Disable the service’s **public** Railway URL if you want tailnet-only access (the Tailscale IP/MagicDNS name still works).
-4. Optional — outbound to other tailnet nodes (homelab DB, etc.): `TAILSCALE_OUTBOUND_PROXY=1` (sets `ALL_PROXY` with `NO_PROXY` for loopback and `*.railway.internal`).
-5. Optional — reach **subnet routes** advertised by another node (e.g. `192.168.88.0/24` via a subnet router): `TAILSCALE_ACCEPT_ROUTES=1` (also requires `TAILSCALE_OUTBOUND_PROXY=1`; userspace has no kernel routes — the SOCKS proxy dials accepted prefixes).
-6. Optional — **internet egress via a tailnet exit node** (`TAILSCALE_EXIT_NODE=<peer>`): routes proxied outbound traffic through a node advertising as an exit node (home/office Pi, etc.). Value is a peer base name, MagicDNS name, or Tailscale IP (same as `tailscale set --exit-node`). Unset/empty = no env-driven exit node (default). Pair with `TAILSCALE_OUTBOUND_PROXY=1` so app traffic uses `localhost:1055`; only proxied traffic exits via the node. Approve the exit node in the Tailscale admin console on first use. Preference is also written into node state on the volume.
-7. Optional — **shell over the tailnet** via `TAILSCALE_SSH` (see below). Disable with `TAILSCALE_SSH=0`.
-8. Optional (**v0.8.1+**) — **HTTPS on the tailnet** (`TAILSCALE_HTTPS=1`): Serve terminates TLS on 443 with a Let’s Encrypt cert for `<hostname>.<tailnet>.ts.net` and proxies to `http://127.0.0.1:$PORT`. Prerequisites (tailnet admin — the image cannot enable these): **MagicDNS** and **HTTPS Certificates** on. Certs/state live under `/opt/data/.tailscale/` (`--statedir`). This is **cert-additive**: `http://<magicdns>:$PORT/` stays reachable. Not TLS-only. Prefer the HTTPS URL for login; cont-init sets `HERMES_WEBUI_TRUST_FORWARDED_PROTO=1` so Secure cookies work on that path.
-
-**Tailscale shell access (`TAILSCALE_SSH`)**
-
-Railway has no kernel TUN, so this image uses **userspace networking**. [Tailscale SSH](https://tailscale.com/kb/1193/tailscale-ssh) (`tailscale up --ssh`) is unreliable there: TCP to port 22 succeeds and `RunSSH` is true, but the server often **never sends an SSH banner**, so the client hangs right after `Local version string SSH-2.0-…` in `ssh -vvv`. That is **not** an ACL problem.
-
-**Default (v0.3.5+): OpenSSH + `tailscale serve`** — normal `ssh` with a pubkey on the volume.
-
-| Value | Behavior |
-|-------|----------|
-| `openssh` or `1` (default) | `sshd` on loopback + `tailscale serve --tcp 22` — use `/opt/data/.ssh/authorized_keys` |
-| `tailscale` | Tailscale SSH only — often hangs on Railway userspace (see above) |
-| `0` | Off |
-
-Your ACL is fine for either mode (`action: accept`, `autogroup:nonroot` includes `hermes`). If the node has **`tag:server`**, only rules with `dst: ["tag:server"]` apply — not `autogroup:self`.
-
-OpenSSH **host keys** live on the volume at `/opt/data/.ssh/host/` (created once by cont-init, root-owned). Redeploys reuse the same fingerprint, so you should not see `REMOTE HOST IDENTIFICATION HAS CHANGED` after the first boot that creates those keys. Client keys stay in `/opt/data/.ssh/authorized_keys` (`hermes`-owned). Do not `chown -R hermes` the whole `.ssh` tree — that would break host-key permissions.
-
-### Setup (default openssh)
-
-1. Deploy **v0.3.6+** (or set `TAILSCALE_SSH=openssh` explicitly).
-
-2. Add your SSH public key — **recommended: Railway variable** (no `railway ssh` copy):
+Check it:
 
 ```bash
-# On your Mac
-cat ~/.ssh/id_ed25519.pub
+# Local compose
+docker exec hermes-all-in-one tailscale --socket=/run/tailscale/tailscaled.sock serve status
+
+# Railway — no docker exec. Reach the box over tailnet SSH as `hermes`. The certs
+# directory is root-owned 0700 with no sudo, so inspect the live cert off the wire:
+ssh hermes@<host>.<tailnet>.ts.net tailscale --socket=/run/tailscale/tailscaled.sock serve status
+echo | openssl s_client -connect <host>.<tailnet>.ts.net:443 -servername <host>.<tailnet>.ts.net 2>/dev/null \
+  | openssl x509 -noout -serial -dates -subject
 ```
 
-In Railway → **Variables**, set (multiline value is fine for several keys):
+### Shell over the tailnet
+
+Default is **OpenSSH + `tailscale serve --tcp 22`**, i.e. normal `ssh` with a public key on the volume.
+
+| `TAILSCALE_SSH` | Behavior |
+|---|---|
+| `openssh` / `1` / `true` / `yes` (**default**) | `sshd` on `127.0.0.1:22` + `tailscale serve --tcp 22`; keys from `/opt/data/.ssh/authorized_keys` |
+| `tailscale` | Tailscale SSH (`tailscale up --ssh`). Unreliable under userspace networking: TCP to 22 connects and `RunSSH` is true, but the server often never sends a banner, so clients hang right after `Local version string SSH-2.0-…`. Not an ACL problem. |
+| `0` / `false` / `off` / `no` | Off |
+
+Add your key the easy way — Railway → **Variables** (multiline is fine for several keys):
 
 ```
 TAILSCALE_SSH_AUTHORIZED_KEYS=ssh-ed25519 AAAA...comment
 ```
 
-Cont-init merges this into `/opt/data/.ssh/authorized_keys` on each boot (idempotent; existing volume keys are kept).
-
-Alternatively, append once via shell:
+cont-init merges it into `/opt/data/.ssh/authorized_keys` on every boot, idempotently, keeping keys already on the volume. Then:
 
 ```bash
-railway ssh
-mkdir -p /opt/data/.ssh && chmod 700 /opt/data/.ssh
-cat >> /opt/data/.ssh/authorized_keys <<'EOF'
-ssh-ed25519 AAAA...paste-from-~/.ssh/id_ed25519.pub...
-EOF
-chmod 600 /opt/data/.ssh/authorized_keys
-chown hermes:hermes /opt/data/.ssh /opt/data/.ssh/authorized_keys
+ssh hermes@<your-magicdns-name>
 ```
 
-3. From your Mac (Tailscale app running):
+Host keys are generated once into `/opt/data/.ssh/host/` (root-owned, `0700`) so redeploys keep the same fingerprint. `authorized_keys` is `hermes`-owned `0600`. **Do not `chown -R hermes` the whole `.ssh` tree** — that breaks host-key permissions. If you carry a stale fingerprint from a much older image: `ssh-keygen -R <your-magicdns-name>`.
 
-```bash
-ssh hermes@hermes-richard
-```
+ACL note: if the node carries `tag:server`, only rules with `dst: ["tag:server"]` apply — `autogroup:self` will not match.
 
-Logs should show `ssh=openssh` and `openssh on 127.0.0.1:22 via tailscale serve`.
+`railway ssh` remains available independently and works even with tailnet SSH off.
 
-If you still have a stale fingerprint from an older image that regenerated host keys every boot:
+### Outbound through the tailnet
 
-```bash
-ssh-keygen -R <your-magicdns-name>
-```
-
-Accept the new key once; later redeploys should keep it.
-
-### Hotfix on v0.3.4 (before redeploy)
-
-```bash
-railway ssh
-tailscale --socket=/run/tailscale/tailscaled.sock set --ssh=false
-apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server
-mkdir -p /run/sshd /opt/data/.ssh/host
-# add authorized_keys as above, then persist host keys on the volume:
-[ -f /opt/data/.ssh/host/ssh_host_ed25519_key ] || ssh-keygen -t ed25519 -f /opt/data/.ssh/host/ssh_host_ed25519_key -N "" -C hermes-all-in-one
-[ -f /opt/data/.ssh/host/ssh_host_ecdsa_key ] || ssh-keygen -t ecdsa -f /opt/data/.ssh/host/ssh_host_ecdsa_key -N "" -C hermes-all-in-one
-[ -f /opt/data/.ssh/host/ssh_host_rsa_key ] || ssh-keygen -t rsa -b 4096 -f /opt/data/.ssh/host/ssh_host_rsa_key -N "" -C hermes-all-in-one
-chmod 700 /opt/data/.ssh/host && chmod 600 /opt/data/.ssh/host/ssh_host_*_key
-chown -R root:root /opt/data/.ssh/host
-/usr/sbin/sshd \
-  -o HostKey=/opt/data/.ssh/host/ssh_host_ed25519_key \
-  -o HostKey=/opt/data/.ssh/host/ssh_host_ecdsa_key \
-  -o HostKey=/opt/data/.ssh/host/ssh_host_rsa_key
-tailscale --socket=/run/tailscale/tailscaled.sock serve reset
-tailscale --socket=/run/tailscale/tailscaled.sock serve --bg --tcp 22 127.0.0.1:22
-```
-
-### Optional: Tailscale SSH (`TAILSCALE_SSH=tailscale`)
-
-Only if you explicitly want identity-based Tailscale SSH. Try `tailscale ssh hermes@hermes-richard` first; plain `ssh` may hang as above.
-
-`railway ssh` remains the Railway-hosted shell; tailnet SSH is separate and works when the public Railway URL is disabled.
-
-State persists under `/opt/data/.tailscale` on the volume. Without `TAILSCALE_AUTH_KEY`, the sidecar is a no-op and local/docker-compose behavior is unchanged.
-
-**HTTPS (`TAILSCALE_HTTPS=1`, v0.8.1+)**
-
-Post-join `tailscale serve --bg --https=443 http://127.0.0.1:$PORT` (not a `tailscale up` flag). Open `https://<TAILSCALE_HOSTNAME>.<tailnet>.ts.net/` (port 443).
-
-```bash
-# Local docker-compose (docker host access):
-docker exec hermes-all-in-one tailscale --socket=/run/tailscale/tailscaled.sock serve status
-
-# Railway (no docker exec — reach the box over tailnet SSH as `hermes`; the
-# certs directory is root-owned 0700 with no sudo, so check the live cert
-# off the wire instead of listing the directory):
-ssh hermes@<TAILSCALE_HOSTNAME>.<tailnet>.ts.net tailscale --socket=/run/tailscale/tailscaled.sock serve status
-echo | openssl s_client -connect <TAILSCALE_HOSTNAME>.<tailnet>.ts.net:443 -servername <TAILSCALE_HOSTNAME>.<tailnet>.ts.net 2>/dev/null \
-  | openssl x509 -noout -serial -dates -subject
-```
-
-Serve config is persisted node state, so every boot reconciles it against your env **one handler at a time** — applying what you asked for and running `… off` on what you didn't. There is no global `serve reset`, so handlers you added yourself on other ports (including Funnel) are never touched. Port 22 is reconciled unconditionally, since the image has owned it since `TAILSCALE_SSH=openssh` became the default — setting `TAILSCALE_SSH=0` therefore also clears a handler inherited from an older image. Port 443 is only disabled when the image was the one that enabled it, tracked by a marker at `/opt/data/.tailscale/.serve-https-managed`, so an operator-managed 443 handler survives. Every serve failure is non-fatal: nothing is torn down before a re-apply, so a previously working handler stays in effect and the service logs a warning instead of restarting. After disabling something the image re-reads `serve status` and warns loudly if the handler is somehow still live.
-
-When HTTPS is on, cont-init sets `HERMES_WEBUI_TRUST_FORWARDED_PROTO=1` so WebUI auth cookies get the `Secure` flag on the real HTTPS path (Serve → loopback). Prefer `https://…ts.net/` for login. Plain `http://$PORT` is still open; under userspace networking that hop is also loopback, so a forged `X-Forwarded-Proto: https` from a tailnet peer is trusted at best-effort and can only break that peer’s own cookies (browser drops `Secure` over HTTP). Railway’s public edge stays outside uvicorn’s default trusted-peer set. TLS certs share the volume with machine credentials under `/opt/data/.tailscale/`. Wiping that directory forces a new Tailscale node **and** re-issues Let’s Encrypt certs (rate limit: 5 duplicate certs/week per name) — prefer rotating the auth key over wiping state when possible.
-
-**Railway logs look scary but are often fine:** s6 (`s6-rc: info: …`), cont-init (`cont-init: info: … exited 0`), and Tailscale startup lines are written to **stderr**, so Railway tags them `severity: error` even when the message says `info` or `successfully started`. Uvicorn `INFO:` lines behave the same way. Filter for real failures: non-zero exits, crash loops, or HTTP 5xx — not every red line.
-
-With `TAILSCALE_OUTBOUND_PROXY=1`, expect one-time Tailscale noise at boot (`TPM`, UDP buffer size, `profile not found`, brief `connection refused` on `127.0.0.1:1055` before the userspace proxy is up). After `[tailscaled] joined tailnet` and `Switching ipn state … -> Running`, the node is healthy. Optional `TAILSCALE_NO_PROXY_EXTRA` adds comma-separated hosts to `NO_PROXY` for APIs that must not go through the tailnet proxy (public LLM endpoints, etc.).
-
-To reach LAN IPs behind a tailnet subnet router (not just `100.x` peers), set `TAILSCALE_ACCEPT_ROUTES=1` with `TAILSCALE_OUTBOUND_PROXY=1`. Approve the advertised routes in the Tailscale admin console (or ACL auto-approvers). Without accept-routes, the userspace SOCKS proxy will not dial those prefixes.
-
-**Exit node (`TAILSCALE_EXIT_NODE`, optional)**
-
-Use a residential/home/office peer as internet egress so datacenter IPs (Railway) are not seen by sites that block them (e.g. Reddit). The peer must advertise as an exit node (`tailscale set --advertise-exit-node` on that machine) and be approved in the admin console.
-
-```
-TAILSCALE_OUTBOUND_PROXY=1
-TAILSCALE_EXIT_NODE=server-office-pi-01
-# or MagicDNS / Tailscale IP:
-# TAILSCALE_EXIT_NODE=server-office-pi-01.your-tailnet.ts.net
-# TAILSCALE_EXIT_NODE=100.x.y.z
-```
-
-Unset or empty = default: the image does **not** pass `--exit-node` and does **not** clear a preference you set manually (`tailscale set --exit-node=…`). When set, every boot applies it via `tailscale up` and a post-join `tailscale set`. Verify:
+| Variable | Effect |
+|---|---|
+| `TAILSCALE_OUTBOUND_PROXY=1` | Sets `ALL_PROXY=socks5://127.0.0.1:1055/` plus `HTTP_PROXY`/`HTTPS_PROXY` and a `NO_PROXY` list covering loopback and `*.railway.internal`, so app traffic can reach tailnet peers (homelab DB, etc.) |
+| `TAILSCALE_NO_PROXY_EXTRA=host,.domain` | Extra `NO_PROXY` entries for APIs that must not traverse the proxy (public LLM endpoints, for instance) |
+| `TAILSCALE_ACCEPT_ROUTES=1` | Reach LAN prefixes advertised by a subnet router (e.g. `192.168.88.0/24`). Requires `TAILSCALE_OUTBOUND_PROXY=1` — userspace has no kernel routes, so the SOCKS proxy is what dials accepted prefixes. Approve the routes in the admin console. |
+| `TAILSCALE_EXIT_NODE=<peer>` | Internet egress via a tailnet exit node, so sites that block datacenter IPs see a residential address. Peer base name, MagicDNS name, or `100.x.y.z`. The peer must run `tailscale set --advertise-exit-node` and be approved. Pair with `TAILSCALE_OUTBOUND_PROXY=1`; only proxied traffic exits via the node, direct sockets still use the host IP. Unset/empty means the image passes no `--exit-node` and does not clear a preference you set by hand. |
 
 ```bash
 tailscale status | grep 'exit node'
-curl -s https://ipinfo.io/ip   # should match the exit node's public IP, not Railway
+curl -s https://ipinfo.io/ip     # should be the exit node's IP, not Railway's
 ```
 
-Only traffic that uses the userspace proxy (`ALL_PROXY` / `HTTP(S)_PROXY` → `localhost:1055`) exits via the node. Direct sockets still use the host's public IP.
+Expect one-time boot noise with the outbound proxy on: `TPM`, UDP buffer size, `profile not found`, brief `connection refused` on `127.0.0.1:1055` before the userspace proxy is listening. Once you see `joined tailnet` and `Switching ipn state … -> Running`, it is healthy.
 
-**PMTU black hole (office network: small responses work, large pages hang)**
+### PMTU black holes
 
-Symptoms from some client networks (corporate NAT, PPPoE, firewalls that drop ICMP fragmentation-needed): `curl -I` succeeds but `curl` (full GET) returns an empty body; `ping -s 1220` works but `ping -s 1230` drops. Tailscale’s default tunnel MTU (1280) negotiates TCP MSS around 1240, which can exceed the real path MTU (~1230).
+Symptom from some client networks (corporate NAT, PPPoE, ICMP-dropping firewalls): `curl -I` succeeds but a full `curl` returns an empty body; `ping -s 1220` works and `ping -s 1230` does not. Tailscale's default 1280 tunnel MTU negotiates an MSS near 1240, above the real path MTU.
 
-Railway blocks `NET_ADMIN`, so **iptables MSS clamp is not available**. **v0.3.9+** sets `TS_DEBUG_MTU=1200` by default when Tailscale is enabled (logs: `[tailscaled] TS_DEBUG_MTU=1200`). Override with `TAILSCALE_MTU` (e.g. `1100` for tighter paths) or `TAILSCALE_MTU=0` to use Tailscale’s default 1280. `TS_DEBUG_MTU` is a Tailscale debug knob — the only server-side fix without kernel TUN on Railway.
+Railway blocks `NET_ADMIN`, so an iptables MSS clamp is unavailable. The image therefore sets `TS_DEBUG_MTU=1200` by default whenever Tailscale is enabled (log line: `[tailscaled] TS_DEBUG_MTU=1200`). Tune with `TAILSCALE_MTU=1100` for tighter paths, or `TAILSCALE_MTU=0` to fall back to Tailscale's 1280.
 
-To confirm before redeploying, temporarily lower the Tailscale interface MTU on your Mac: `sudo ifconfig utun<N> mtu 1220` (find `utun` via `ifconfig | grep -B1 "100\."`).
+To confirm before redeploying, temporarily lower the MTU on your Mac's Tailscale interface: `sudo ifconfig utun<N> mtu 1220` (find it with `ifconfig | grep -B1 "100\."`).
 
-#### 4. Configure your AI provider at `/admin`
+## Hermes Vault — secrets off the volume
 
-Go to `/admin` → **Providers** → pick your provider → enter your API key → Save.
-
-#### 5. (Optional) Connect Telegram
-
-Go to `/admin` → **Channels** → enter your bot token and your numeric Telegram user ID → Save.
-
-The gateway starts automatically once both provider and channel are configured.
-
----
-
-## Your First Prompts
-
-Hermes is deployed but blank. It doesn't know who you are, what you need, or how you work. The first 10 minutes are the most important — they shape how the agent behaves for the rest of its life on your machine.
-
-### Prompt 1 — Self-optimize for a first-time user
-
-Paste this as your very first message. It tells Hermes to read its own documentation, understand its full capabilities, and then guide you through setup like a pro:
-
-```
-Use your hermes-agent skill and help me with first-time setup.
-Read your own documentation, understand what you're capable of,
-then walk me through how to make you as useful as possible for
-someone who just deployed you for the first time.
-Start by asking me what I do, what I want to automate, and what
-kind of help I need daily. Then suggest what to set up first.
-```
-
-Hermes will read its own skill files, explain what it can do, and interview you before recommending what to build.
-
----
-
-### Prompt 2 — The onboarding interview
-
-After the first prompt, paste this to give Hermes everything it needs to understand you as a person. A well-briefed agent is 10x more useful than a blank one:
-
-```
-I want to brief you on who I am so you can serve me better.
-Ask me these questions one at a time, wait for my answer,
-then move on:
-
-1. What do you do for work or what are you building?
-2. What's your biggest time drain right now?
-3. What do you wish you had a daily assistant for?
-4. What tools or platforms do you use most (Notion, Gmail, Telegram, etc.)?
-5. What's something you've always wanted to automate but never had time to set up?
-
-After I answer all five, write a brief summary of who I am,
-save it to your memory, and suggest the three most valuable
-things to set up first based on my answers.
-```
-
-This seeds Hermes' memory with your context. Every future conversation builds on it.
-
----
-
-### Prompt 3 — Install your first skill
-
-Hermes ships with a skills system — modular "instruction packs" that teach it how to do specific things (use certain tools, follow specific workflows, talk to specific APIs). There are hundreds of community skills at [agentskills.io](https://agentskills.io).
-
-To see what's available and install something useful immediately:
-
-```
-Show me your available skills with /skills.
-Then browse the skills hub and find me something
-useful for [your goal — e.g. "web research", "email drafting",
-"daily briefings", "job hunting"].
-Install the most relevant one and show me how to use it.
-```
-
-Or install a specific skill directly:
-```
-/skills install arxiv
-/skills install github-code-review
-/skills install web-research
-```
-
-Once installed, skills activate automatically when relevant — or you can call them explicitly with `/skill-name`.
-
----
-
-## Starter Automations
-
-These are the highest-value things to set up in your first hour. Each one is a real working prompt you can send to Hermes as-is.
-
----
-
-### Client Hunter (B2B / freelancers)
-
-Hermes monitors job boards, LinkedIn searches, or RSS feeds and sends you a digest of prospects matching your criteria — every morning, to Telegram.
-
-**Setup prompt:**
-```
-Set up a daily client hunting automation for me.
-
-My service: [describe what you sell — e.g. "React development", "copywriting", "SEO consulting"]
-My ideal client: [describe — e.g. "early-stage SaaS startups", "e-commerce brands over $1M revenue"]
-
-Search LinkedIn, Upwork, and relevant job boards for new posts matching this.
-Filter for posts from the last 24 hours only.
-Send me a Telegram digest every morning at 8am with:
-- Company name and link
-- What they're looking for
-- Why it's a match for me
-- A suggested 2-sentence cold opener I could use
-
-Name this automation "Client Hunter" and show me the cron schedule.
-```
-
----
-
-### Job Seeker (career transition / active search)
-
-Hermes monitors multiple job boards for your target roles, deduplicates across sites, and delivers a curated shortlist to Telegram daily.
-
-**Setup prompt:**
-```
-Build me a daily job search automation.
-
-Target role: [e.g. "Senior Product Manager", "Full Stack Developer", "Growth Marketing Lead"]
-Preferred companies: [e.g. "Series A-C startups, remote-first, fintech or developer tools"]
-Deal-breakers: [e.g. "no agencies, no relocation required, no Java"]
-
-Search LinkedIn Jobs, Wellfound, and Greenhouse postings from the last 48 hours.
-Rank results by how closely they match my profile.
-Send me a Telegram digest every weekday at 7am with:
-- Job title, company, and direct application link
-- Salary range if listed
-- Why it's a strong/medium/weak match
-- One thing I should customize in my application for each
-
-Name this "Job Seeker Daily" and activate it.
-```
-
----
-
-### Daily Intelligence Feed (RSS + AI curation)
-
-Instead of doom-scrolling through 20 RSS feeds, Hermes reads everything and sends you a curated 5-item briefing on what actually matters — filtered for your interests.
-
-**Setup prompt:**
-```
-Create a daily intelligence briefing that runs every morning at 7am and delivers to Telegram.
-
-My interests: [e.g. "AI/ML, indie hacking, startup funding news, productivity tools"]
-What I want to skip: [e.g. "politics, sports, crypto price updates, press releases"]
-
-Pull from these sources:
-- Hacker News top 10
-- TechCrunch, The Verge (recent posts)
-- Any relevant subreddits: r/MachineLearning, r/entrepreneur
-- arXiv CS papers if there are any trending
-
-For each item include:
-- Title and link
-- 2-sentence summary
-- Why it's relevant to me personally
-- A "so what" — what action or insight does this give me?
-
-Limit to the 5 most relevant items. Skip anything I've likely already seen.
-Name this "Morning Briefing" and schedule it.
-```
-
----
-
-### Skill Creator (build your own tools)
-
-This is the meta-skill: teach Hermes how to teach itself. After completing a complex task, Hermes can write a skill that makes it faster next time — permanently.
-
-**Trigger it manually after any successful task:**
-```
-That worked well. Write a skill that captures this workflow
-so you can do it faster next time without needing my instructions.
-Give it a clear name and description, then save it to your skills folder.
-```
-
-**Or turn it on permanently:**
-```
-From now on, after every multi-step task you complete successfully,
-write a skill file that captures the approach so you can improve on it next time.
-Check your existing skills first to avoid duplicates.
-Update existing skills if you found a better way to do something.
-```
-
-This is Hermes' self-improvement loop — it literally rewrites its own procedures from experience.
-
----
-
-## How the Skills System Works
-
-Skills are already running. Nothing to set up.
-
-Hermes ships with a full library of built-in skills covering research, GitHub, email, feeds, diagramming, social media, note-taking, productivity tools (Notion, Linear, Google Workspace), devops, data science, and more. Every time you start a conversation, Hermes scans its skills directory, builds an index of everything available, and injects it into its own system prompt. It knows what it can do before you say a word.
-
-When you ask it something that matches a skill — "review this PR", "summarize these papers", "draft a LinkedIn post" — it loads that skill's procedures automatically. You don't invoke it. It just picks up the right tool for the job.
-
-**A skill is a Markdown file.** Name, description, version, and a set of instructions the agent follows when it activates. That's it. The system is intentionally simple so you can read, edit, and write them yourself.
-
-```
-/opt/data/.hermes/skills/
-  github-code-review/
-    SKILL.md         ← instructions + frontmatter
-    references/      ← optional supporting docs
-```
-
-**Beyond the built-ins, there are two more layers:**
-
-**Optional skills** ship with Hermes but aren't active by default — niche integrations, heavier dependencies, things only some users need. Browse and install them in one command:
-```
-/skills                           # see everything active
-/skills install arxiv             # add from the optional library
-/skills install github-pr-workflow
-```
-
-**Community skills** at [agentskills.io](https://agentskills.io) — an open standard anyone can publish to. Same install flow, same format:
-```
-/skills search "cold email"
-/skills install cold-email-outreach
-```
-
-And if none of that covers what you need, ask Hermes to write a skill from scratch. Describe the workflow once, tell it to save it as a skill, and it handles the file. Next time, it follows the procedure without you re-explaining anything.
-
----
-
-## How the Self-Learning Loop Works
-
-Hermes has a closed learning loop built into the agent. This is what makes it different from a stateless chatbot:
-
-**1. Memory nudges.** After complex conversations, the agent notices what it learned about you and prompts itself to save it. You don't have to remember to say "save that" — it just does.
-
-**2. Session search.** Hermes indexes every conversation with FTS5 full-text search. Ask it something it learned in a conversation from two weeks ago and it can find it. Use `/insights` to see what it knows about you.
-
-**3. Automatic skill creation.** After completing a complex multi-step task, Hermes can recognize that it just learned a repeatable procedure and write a skill from it. The next time you ask for the same thing, it's faster because it's following a procedure it wrote itself.
-
-**4. User modeling.** Via [Honcho](https://github.com/plastic-labs/honcho), Hermes builds a model of who you are — your preferences, working style, what you care about — and adjusts how it responds over time.
-
-**5. Skill improvement.** When Hermes uses a skill and finds a better approach, it updates the skill. Skills get sharper the more you use them.
-
-The practical result: the longer you run Hermes, the more capable it gets at your specific workflows. It's not the same agent in month 3 that it was on day 1.
-
----
-
-## How Scheduling Works
-
-Hermes has a built-in cron scheduler. Schedule anything in natural language:
-
-```
-hermes cron create "every day at 8am" "your prompt here" --name "My Task" --deliver telegram
-```
-
-Or with a cron expression:
-```
-hermes cron create "0 8 * * 1-5" "your prompt here" --name "Weekday Briefing" --deliver telegram
-```
-
-**Delivery targets:**
-```
---deliver telegram          # your Telegram home channel
---deliver discord           # your Discord home channel
---deliver slack             # your Slack channel
---deliver local             # save to file, no notification
-```
-
-**Power feature: script injection.** Run a Python script before the agent runs. The script's output becomes context the agent can reason about. Use this to fetch data, diff files, or do any mechanical work before handing off to the LLM:
-
-```
-hermes cron create "every 1h" \
-  "If CHANGE DETECTED, summarize what changed and why it matters. If NO_CHANGE, respond with [SILENT]." \
-  --script ~/.hermes/scripts/watch-prices.py \
-  --name "Price Monitor" \
-  --deliver telegram
-```
-
-The `[SILENT]` pattern is key — Hermes only sends a notification when something actually changes. Zero spam.
-
-**Chain skills into automations:**
-```
-hermes cron create "0 9 * * *" \
-  "Search for top AI papers from yesterday. Summarize the top 3 and save as notes." \
-  --skills "arxiv,obsidian" \
-  --name "Daily Paper Digest" \
-  --deliver telegram
-```
-
-Full scheduling docs: [hermes-agent.nousresearch.com/docs/user-guide/features/cron](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron)
-
----
-
-## Environment Variables
-
-### Required
-
-| Variable | Description |
-|----------|-------------|
-| `HERMES_WEBUI_PASSWORD` | Password for the WebUI at `/` |
-| `HERMES_ADMIN_PASSWORD` | Password for `/admin` (falls back to WebUI password if unset) |
-
-### AI Provider (set via `/admin` UI or manually)
-
-| Variable | Description |
-|----------|-------------|
-| `OPENROUTER_API_KEY` | For OpenRouter (recommended — access to all models) |
-| `ANTHROPIC_API_KEY` | For Anthropic direct |
-| `OPENAI_API_KEY` | For OpenAI or custom OpenAI-compatible endpoints |
-
-### Telegram (set via `/admin` UI or manually)
-
-| Variable | Description |
-|----------|-------------|
-| `TELEGRAM_BOT_TOKEN` | Your bot token from [@BotFather](https://t.me/BotFather) |
-| `TELEGRAM_ALLOWED_USERS` | Comma-separated numeric user IDs allowed to chat |
-
-### Gateway behavior
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HERMES_GATEWAY_AUTOSTART` | `auto` | `auto` = start when provider + channel ready; `off` = never autostart |
-
-### Lightpanda browser backend (optional)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LIGHTPANDA_ENABLED` | `0` | `1` = start the Lightpanda headless browser CDP server at boot (`127.0.0.1:9222`). Default **off** — the service holds its slot, so enabling is just an env change. Pair with Hermes config `browser.cdp_url: http://127.0.0.1:9222` to use it as the browser engine. |
-
-Lightpanda is pinned to a stable release (`0.3.7`) in the Dockerfile and its
-download is verified against the published SHA256 checksum. Telemetry is
-disabled (`LIGHTPANDA_DISABLE_TELEMETRY=true`).
-
-### Internal paths (don't change these unless you know why)
-
-| Variable | Default |
-|----------|---------|
-| `HERMES_DATA_DIR` | `/opt/data` (volume mount point) |
-| `HERMES_HOME` | `/opt/data/.hermes` (agent config, sessions, skills) |
-| `HERMES_CONFIG_PATH` | `/opt/data/.hermes/config.yaml` |
-| `HERMES_WEBUI_STATE_DIR` | `/opt/data/webui` |
-| `HERMES_WORKSPACE_DIR` | `/opt/data/workspace` |
-| `HERMES_WEBUI_AGENT_DIR` | `/opt/hermes` (agent from official base image) |
-| `CONTROL_PLANE_RUNTIME` | `s6` (in Docker; use subprocess mode only for local `start.sh`) |
-| `PORT` | `8787` |
-
----
-
-## Provider Setup Guide
-
-### OpenRouter (recommended for beginners)
-
-OpenRouter gives you a single API key that accesses Anthropic, OpenAI, Mistral, Google, and hundreds of other models. Create an account at [openrouter.ai](https://openrouter.ai), add credits, copy your API key.
-
-In `/admin` → Providers:
-- Provider: **OpenRouter**
-- Model: `anthropic/claude-sonnet-4-6` (or any model from their catalog)
-- API Key: your OpenRouter key
-
-### Anthropic Direct
-
-Get a key from [console.anthropic.com](https://console.anthropic.com).
-
-In `/admin` → Providers:
-- Provider: **Anthropic**
-- Model: `claude-sonnet-4-6`
-- API Key: your `sk-ant-...` key
-
-### OpenAI Direct
-
-Get a key from [platform.openai.com](https://platform.openai.com).
-
-In `/admin` → Providers:
-- Provider: **OpenAI**
-- Model: `gpt-4o`
-- API Key: your `sk-...` key
-
-### Custom OpenAI-compatible endpoint
-
-For Ollama, LM Studio, vLLM, Together, Groq, or any OpenAI-compatible API:
-
-In `/admin` → Providers:
-- Provider: **Custom OpenAI-compatible**
-- Model: whatever your endpoint expects
-- API Key: your key (or `ollama` for local Ollama)
-- Base URL: `https://your-endpoint.com/v1`
-
-### OpenAI Subscription / ChatGPT account login (advanced)
-
-> **Disclaimer:** This uses your personal ChatGPT account via the host's SSH/shell into the container. It works but is fragile — OpenAI may change their auth flow at any time. Use at your own risk. Your credentials are stored only on the persistent volume under `/opt/data/.hermes`.
-
-OAuth-style and subscription-based provider flows (ChatGPT, Codex, Nous Portal) can't be completed in the browser UI. Use shell access instead (Railway CLI, `docker exec`, etc.):
-
-```bash
-# Install Railway CLI
-npm install -g @railway/cli
-
-# Log in
-railway login
-
-# SSH into your running service
-railway ssh
-
-# Inside the container, run Hermes auth
-hermes auth login
-# Follow the prompts — this stores credentials under /opt/data/.hermes
-```
-
-After completing auth in the terminal, go back to `/admin` and the provider should appear as configured.
-
----
-
-## Telegram Setup Guide
-
-### Step 1: Create a bot
-
-1. Open Telegram, search for [@BotFather](https://t.me/BotFather)
-2. Send `/newbot` and follow the prompts
-3. Copy the bot token (looks like `123456789:ABCdef...`)
-
-### Step 2: Find your numeric user ID
-
-1. Open Telegram, search for [@userinfobot](https://t.me/userinfobot)
-2. Start the bot — it replies with your numeric ID (e.g. `123456789`)
-
-> Important: Telegram user IDs are **numbers**, not usernames. `@yourhandle` won't work — you need the numeric ID.
-
-### Step 3: Configure in `/admin`
-
-Go to `/admin` → **Channels** → **Telegram**:
-- Bot token: paste your BotFather token
-- Allowed user IDs: your numeric ID (comma-separate for multiple users)
-- Save
-
-The gateway starts automatically. Send `/start` to your bot on Telegram — it should respond.
-
----
-
-## Hermes Vault (baked into the image)
-
-This image vendors **[Hermes Vault](https://github.com/asimons81/hermes-vault)** and installs:
+[Hermes Vault](https://github.com/asimons81/hermes-vault) is vendored and baked in, so credentials can live as `hv://` bindings instead of plaintext in `.env`. Plaintext `.env` and `/admin` still work; the vault is optional.
 
 | Path | Role |
-|------|------|
-| `/usr/local/bin/hermes-vault` | CLI (isolated venv at `/opt/hermes-vault`) |
-| `/opt/hermes/plugins/hermes-vault-secret-source/` | Bundled Secret Source plugin |
+|---|---|
+| `/usr/local/bin/hermes-vault` | CLI, isolated venv at `/opt/hermes-vault` |
+| `/opt/hermes/plugins/hermes-vault-secret-source/` | Bundled Secret Source plugin, discovered every boot |
 | `/opt/hermes/.venv/bin/hermes` | **Gateway vault shim** — preloads `hv://` secrets before `hermes gateway run` |
-| `/app/docker/scripts/hermes-vault-env-inject.py` | Fetch helper used by the shim |
+| `/opt/hermes/.venv/bin/hermes.stock.bak` | The stock console script, kept for reference |
+| `/app/docker/scripts/hermes-vault-env-inject.py` | Fetch helper the shim calls |
 
-### Why the gateway shim exists
+**Why the shim exists.** Hermes applies secret sources during the first `load_hermes_dotenv()`, which runs *before* Python plugins are discovered. Cron sessions re-pull secrets and keep working; the gateway parent does not. With a vault-only `TELEGRAM_BOT_TOKEN` that gives you outbound cron → Telegram working while inbound DMs get no reply. The shim materializes the vault env into the process before importing `hermes_cli.main`, so the stock s6 `hermes gateway run` invocation still receives the tokens.
 
-Hermes applies secret sources during the first `load_hermes_dotenv()`, which runs **before** Python plugins (including `hermes_vault`) are discovered. Cron sessions re-pull secrets and keep working; the **gateway parent** does not — so with vault-only `TELEGRAM_BOT_TOKEN` you get:
-
-- ✅ Cron → Telegram outbound still works  
-- ❌ Inbound Telegram DMs get no reply (`TELEGRAM_BOT_TOKEN` missing in the gateway process)
-
-The shim materializes `secrets.hermes_vault.env` into the process environment **before** importing `hermes_cli.main`, so stock s6 `hermes gateway run` (regenerated on every cont-init) still receives vault tokens.
-
-### Minimal config
-
-Railway (or compose) must provide the vault unlock secret:
+Setup:
 
 ```bash
-HERMES_VAULT_PASSPHRASE=...          # platform secret — not on the volume
-# optional override:
+HERMES_VAULT_PASSPHRASE=...        # platform secret — never on the volume
+# optional:
 # HERMES_VAULT_HOME=/opt/data/.hermes/hermes-vault-data
 ```
 
-In `/opt/data/.hermes/config.yaml`:
-
 ```yaml
+# /opt/data/.hermes/config.yaml
 secrets:
   sources:
     - hermes_vault
@@ -825,99 +564,282 @@ secrets:
       # OPENROUTER_API_KEY: hv://openrouter
 ```
 
-After unlock + bindings exist, restart the gateway. Verify (names/lengths only):
+Restart the gateway, then verify (names and lengths only, never values):
 
 ```bash
 python3 /app/docker/scripts/hermes-vault-env-inject.py --check
 cat /opt/data/.hermes/hermes-vault-data/last-env-inject.json
-# gateway_state.json → platforms.telegram.state should be "connected"
 ```
 
-Plaintext tokens in `.env` / `/admin` still work; vault is optional.
+## Lightpanda — headless browser backend
 
----
-
-## Your Agent's Identity — SOUL.md
-
-`SOUL.md` controls the agent's persistent persona and behavior — its name, how it speaks, what it cares about. On the persistent volume it lives at `/opt/data/.hermes/SOUL.md`.
-
-Edit it directly from the Hermes WebUI, then restart the gateway from `/admin` → Overview → **Restart** to apply changes.
-
-For full formatting guidance, persona examples, and what `SOUL.md` can control, see the [Hermes Agent documentation](https://github.com/NousResearch/hermes-agent).
-
----
-
-## Memory & Sessions
-
-Hermes agent state lives under `/opt/data/.hermes` (`HERMES_HOME`). The WebUI and workspace sit alongside it on the volume:
+A CDP-speaking headless browser pinned to `0.3.7`, verified against the published SHA256 at build time, telemetry disabled. Off by default; the s6 service holds its slot, so enabling it is only an env change.
 
 ```
-/opt/data/                 ← mount this (HERMES_DATA_DIR)
-  .hermes/                 ← HERMES_HOME
-    config.yaml            ← provider + model config
-    .env                   ← channel credentials (tokens, API keys)
-    sessions/              ← conversation history per channel
-    skills/                ← agent skills and tools
-    SOUL.md                ← agent identity
-  .ssh/                    ← Tailscale OpenSSH (authorized_keys + host/)
-  .tailscale/              ← Tailscale node state
-  webui/                   ← WebUI state
-  workspace/               ← agent workspace
+LIGHTPANDA_ENABLED=1
 ```
 
-The WebUI and Telegram gateway share this directory. That means:
-- Your agent remembers Telegram conversations when you switch to WebUI
-- Skills you add via one surface are available on the other
-- One personality, two frontends
+It then serves CDP on `127.0.0.1:9222`. Point Hermes at it with `browser.cdp_url: http://127.0.0.1:9222` in `config.yaml` — the attach path. The `--engine lightpanda` spawn path is broken upstream ("Multiple targets"). `LIGHTPANDA_BIN` overrides the binary location.
 
-Back up `/opt/data` entirely before destructive volume operations.
+## Self-heal watchdog
 
-**Upgrading from v0.1.3 or earlier (flat layout):** On first container start, `cont-init` automatically moves agent files from `/opt/data/` into `/opt/data/.hermes/` when it finds `config.yaml` at the volume root. `webui/` and `workspace/` stay in place.
+The `healthwatch` service polls `http://127.0.0.1:${PORT}/health` every 20 s. If the body has not contained `"status": "ok"` for a continuous 480 s, it writes exit code `1` into the s6 container results and halts the container, so Railway's `restartPolicyType = "ON_FAILURE"` redeploys it. It recycles the whole container rather than individual services.
+
+Tune with `HEALTHWATCH_INTERVAL_SECONDS`, `HEALTHWATCH_GRACE_SECONDS`, or disable with `HEALTHWATCH_ENABLED=0`.
+
+## Interactive shell notes
+
+`s6` binaries live under `/command/` and are only on `PATH` inside supervised processes. Use full paths by hand:
+
+```bash
+/command/s6-svstat /run/service/gateway-default
+```
+
+Node 22 is baked in at `/usr/local/bin/node`. Some shells (notably `railway ssh`) start with a minimal `PATH`; cont-init patches this for current deploys, but if `hermes --tui` ever offers to install Node:
+
+```bash
+export PATH="/usr/local/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:$PATH"
+hermes --tui
+```
+
+The browser WebUI is generally a better fit than the TUI on Railway — Ink wants a real TTY. Use the TUI locally via `docker compose exec`.
+
+## Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| `/admin` shows the chat UI, or hangs | Your browser cached the WebUI **service worker** from an earlier visit and it intercepts `/admin` navigations. Hard-refresh, use a private window, or unregister the service worker for that host. |
+| `/health` says `degraded` | The internal WebUI did not answer `127.0.0.1:8788/health` within 2 s. Check `/command/s6-svstat /run/service/hermes-webui` and the WebUI log tail in `/admin` → Logs. |
+| Gateway never starts | Autostart requires a valid provider **and** a configured channel. `/admin` → Overview shows `autostart_eligible`. `HERMES_GATEWAY_AUTOSTART=1` does not override this. |
+| Cron delivers to Telegram but DMs get no reply | Vault-only `TELEGRAM_BOT_TOKEN` without the gateway shim path working. Run the `--check` above. |
+| Logged out of `/admin` after a deploy | Admin sessions are in-process and do not survive a restart. Log in again. |
+| Railway logs are full of red | s6, cont-init and Tailscale log informational output to stderr. Look for non-zero exits, crash loops and 5xx, not colored lines. |
+| Everything forgot everything | The volume was replaced or unmounted. Back up `/opt/data` before any destructive volume operation. |
+
+---
+---
+
+# Environment variable reference
+
+Defaults below are what the **image** provides (`Dockerfile:161-177`) or what the consuming code falls back to. Anything marked *set by the image* should not normally appear in your platform variables.
+
+## Required
+
+| Variable | Default | Description |
+|---|---|---|
+| `HERMES_WEBUI_PASSWORD` | *(none)* | Password for the WebUI at `/`. Setting it also locks the in-UI password field. |
+| `HERMES_ADMIN_PASSWORD` | falls back to `HERMES_WEBUI_PASSWORD`, then empty | Password for `/admin`. **If both are empty, admin auth is disabled entirely and `/admin` is open.** |
+
+## AI provider — set via `/admin`, or manually
+
+| Variable | Used by |
+|---|---|
+| `OPENROUTER_API_KEY` | OpenRouter |
+| `ANTHROPIC_API_KEY` | Anthropic direct |
+| `OPENAI_API_KEY` | OpenAI direct, and any custom OpenAI-compatible endpoint |
+
+## Channels — set via `/admin`, or manually
+
+| Variable | Default | Description |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | *(none)* | Bot token from [@BotFather](https://t.me/BotFather) |
+| `TELEGRAM_ALLOWED_USERS` | *(none)* | Comma-separated **numeric** user IDs. Optional — pairing is the default path. Cleared when you save a bot token from `/admin` without also sending it. |
+| `DISCORD_BOT_TOKEN` | *(none)* | Discord bot token |
+| `DISCORD_ALLOWED_USERS` | *(none)* | Comma-separated Discord user IDs; same clearing behavior |
+| `SLACK_BOT_TOKEN` | *(none)* | Slack bot token |
+| `SLACK_APP_TOKEN` | *(none)* | Slack app-level token |
+| `EMAIL_ADDRESS` | *(none)* | Mailbox address |
+| `EMAIL_PASSWORD` | *(none)* | Mailbox password / app password |
+| `WHATSAPP_ENABLED` | *(none)* | `1`/`true`/`yes`/`on` marks WhatsApp configured externally; not configurable from `/admin` |
+| `GATEWAY_ALLOW_ALL_USERS` | *(none)* | `true` skips allowlists **and** pairing for every channel |
+
+## Gateway
+
+| Variable | Default | Description |
+|---|---|---|
+| `HERMES_GATEWAY_AUTOSTART` | `auto` | `0`/`false`/`no`/`off`/`disabled` = never autostart. `auto` (default) and `1`/`true`/`yes`/`on`/`enabled` both autostart **only** when a valid provider and a configured channel exist. |
+
+## Control plane & WebUI
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `8787` | Public control-plane port. **Railway injects this — never set it there.** |
+| `CONTROL_PLANE_PORT` | `8787` | Fallback used only when `PORT` is unset |
+| `CONTROL_PLANE_HOST` | `0.0.0.0` *(set by the image)* | Public bind address |
+| `CONTROL_PLANE_INTERNAL_WEBUI_HOST` | `127.0.0.1` *(set by the image)* | Internal WebUI host. Keep it loopback. |
+| `CONTROL_PLANE_INTERNAL_WEBUI_PORT` | `8788` *(set by the image)* | Internal WebUI port |
+| `CONTROL_PLANE_RUNTIME` | `s6` *(set by the image)* | `s6` = supervised services. Anything else makes the control plane subprocess-manage the WebUI and gateway (used by `start.sh` only). |
+| `CONTROL_PLANE_STATUS_CACHE_TTL` | `2.0` | Seconds the `/admin` status JSON is cached |
+| `HERMES_ADMIN_SESSION_TTL` | `86400` | Admin session lifetime in seconds |
+| `HERMES_ADMIN_USERNAME` | `admin` | **No-op.** Read but never used — admin login is password-only. |
+| `HERMES_WEBUI_TRUST_FORWARDED_PROTO` | set to `1` when `TAILSCALE_HTTPS=1` | Lets the WebUI mark auth cookies `Secure` behind Tailscale Serve |
+
+## Tailscale (all optional)
+
+| Variable | Default | Description |
+|---|---|---|
+| `TAILSCALE_AUTH_KEY` | *(none)* | Empty = the sidecar is a no-op. Set it to join your tailnet. Gates every other Tailscale feature. |
+| `TAILSCALE_HOSTNAME` | `$RAILWAY_SERVICE_NAME`, else `hermes-all-in-one` | Tailnet node name |
+| `TAILSCALE_SSH` | `openssh` | `openssh`/`1`/`true`/`yes` = OpenSSH + `serve --tcp 22`; `tailscale` = Tailscale SSH; `0`/`false`/`off`/`no` = off |
+| `TAILSCALE_SSH_AUTHORIZED_KEYS` | *(none)* | Newline-separated public keys, merged into `/opt/data/.ssh/authorized_keys` each boot |
+| `TAILSCALE_HTTPS` | off | `1`/`true`/`yes` = `serve --https=443` → `$PORT`. Cert-additive; requires MagicDNS + HTTPS Certificates on the tailnet. |
+| `TAILSCALE_OUTBOUND_PROXY` | off | `1`/`true`/`yes` = set `ALL_PROXY`/`HTTP_PROXY`/`HTTPS_PROXY` to the userspace proxy on `127.0.0.1:1055` |
+| `TAILSCALE_NO_PROXY_EXTRA` | *(none)* | Comma-separated extra `NO_PROXY` hosts |
+| `TAILSCALE_ACCEPT_ROUTES` | off | `1`/`true`/`yes` = `--accept-routes`. Needs `TAILSCALE_OUTBOUND_PROXY=1`. |
+| `TAILSCALE_EXIT_NODE` | *(none)* | Peer name, MagicDNS name, or `100.x.y.z`. Empty = pass no `--exit-node` and leave any manual preference alone. |
+| `TAILSCALE_MTU` | `1200` when Tailscale is on | Exported as `TS_DEBUG_MTU` (PMTU workaround). `0`/`false`/`off`/`disable` = use Tailscale's 1280. |
+| `TAILSCALE_STATE_DIR` | `${HERMES_DATA_DIR}/.tailscale` | Node state, profile and TLS certs |
+| `TAILSCALE_SOCKET` | `/run/tailscale/tailscaled.sock` | tailscaled control socket |
+| `RAILWAY_SERVICE_NAME` | *(platform-injected)* | Hostname fallback when `TAILSCALE_HOSTNAME` is unset |
+
+## Hermes Vault (all optional)
+
+| Variable | Default | Description |
+|---|---|---|
+| `HERMES_VAULT_PASSPHRASE` | *(none)* | Unlock secret. Required for `hv://` resolution. Keep it a platform secret, never on the volume. |
+| `HERMES_VAULT_HOME` | `${HERMES_HOME}/hermes-vault-data` | Vault data directory and inject stamp |
+| `HERMES_VAULT_BINARY` | auto-detected | Overrides CLI discovery (`/usr/local/bin/hermes-vault` → `/opt/hermes-vault/bin/hermes-vault` → `PATH`) |
+| `HERMES_VAULT_INJECT_SCRIPT` | `/app/docker/scripts/hermes-vault-env-inject.py` | Helper the gateway shim executes |
+
+## Lightpanda browser backend
+
+| Variable | Default | Description |
+|---|---|---|
+| `LIGHTPANDA_ENABLED` | `0` | `1`/`true`/`on`/`yes` starts the CDP server on `127.0.0.1:9222` at boot |
+| `LIGHTPANDA_BIN` | `/usr/local/bin/lightpanda` | Binary override |
+| `LIGHTPANDA_DISABLE_TELEMETRY` | forced `true` | Set by the run script; not an operator knob |
+
+## Watchdog
+
+| Variable | Default | Description |
+|---|---|---|
+| `HEALTHWATCH_ENABLED` | `1` | `0`/`false`/`off`/`no` disables the self-heal loop |
+| `HEALTHWATCH_INTERVAL_SECONDS` | `20` | Probe interval |
+| `HEALTHWATCH_GRACE_SECONDS` | `480` | Continuous degraded time before the container halts with exit code 1 |
+
+## Paths and internals — change only with a reason
+
+| Variable | Default |
+|---|---|
+| `HERMES_DATA_DIR` | `/opt/data` (the volume mount point) |
+| `HERMES_HOME` | `/opt/data/.hermes` (config, `.env`, sessions, skills, pairing) |
+| `HERMES_CONFIG_PATH` | `/opt/data/.hermes/config.yaml` |
+| `HERMES_WEBUI_STATE_DIR` | `/opt/data/webui` |
+| `HERMES_WORKSPACE_DIR` | `/opt/data/workspace` |
+| `HERMES_WEBUI_AGENT_DIR` | `/opt/hermes` (agent runtime from the base image) |
+| `HOME` | `/opt/data` |
+| `TERMINAL_HOME_MODE` | `real` — forced, so subprocesses use the persistent home instead of an isolated `${HERMES_HOME}/home` |
+| `HERMES_NODE` | `/usr/local/bin/node` |
+| `HERMES_DASHBOARD` | `0` — the upstream dashboard slot stays off |
+| `PYTHONPATH` | `/app` |
+| `SHELL` | `/bin/zsh` |
+
+## Build args
+
+| `ARG` | Default | Purpose |
+|---|---|---|
+| `HERMES_IMAGE` | `nousresearch/hermes-agent:v2026.8.31` | Base image pin; kept in sync with `hermes-base` in `VERSION` |
+| `HERMES_WEBUI_VERSION` | `unknown` | Baked into the vendored WebUI's `_version.py` |
+| `MICRO_VERSION` | `2.0.14` | `micro` editor for interactive shells |
+| `LIGHTPANDA_VERSION` | `0.3.7` | Lightpanda release, SHA256-verified per arch |
+
+```bash
+docker build \
+  --build-arg HERMES_IMAGE=nousresearch/hermes-agent:v2026.8.31 \
+  --build-arg HERMES_WEBUI_VERSION=v0.12.0 \
+  -t hermes-all-in-one .
+```
+
+## Smoke-test overrides
+
+`scripts/smoke.sh` only: `SMOKE_IMAGE_TAG` (`hermes-control-plane-smoke:local`), `SMOKE_PORT` (`18787`), `SMOKE_CONTAINER_PORT` (`18999`), `SMOKE_DATA_DIR` (`./.tmp-smoke-data`), `SMOKE_PASSWORD` (`smoke-test-password`), `SMOKE_WEBUI_PASSWORD`, `SMOKE_ADMIN_PASSWORD`, `SMOKE_SKIP_BUILD` (`0`).
 
 ---
 
-## Use Cases & Patterns
+# Data on the volume
 
-### Personal AI assistant on Telegram
-Set `TELEGRAM_ALLOWED_USERS` to just your own ID. Use your agent for research, writing, brainstorming, and task tracking — all in your normal Telegram flow. Your conversations persist across reboots.
+Everything durable lives under `/opt/data`. Below are the entries that matter; the agent creates more at runtime (`logs/`, `memories/`, `cron/`, `state.db`, caches, and an unused `home/` left over from the isolated-home default).
 
-### Team knowledge base assistant
-Add multiple user IDs to `TELEGRAM_ALLOWED_USERS`. Give the agent a custom SOUL.md as a team expert in your domain. Point it at your docs using Hermes skills.
+```
+/opt/data/                       ← mount this (HERMES_DATA_DIR)
+  .hermes/                       ← HERMES_HOME
+    config.yaml                  ← provider + model config
+    .env                         ← API keys and channel credentials
+    SOUL.md                      ← agent identity
+    sessions/                    ← conversation history per channel
+    skills/                      ← seeded from the image on first boot
+    optional-skills/             ← installable library
+    pairing/                     ← *-pending.json, *-approved.json, _rate_limits.json (0600)
+    hermes-vault-data/           ← vault data + last-env-inject.json (when vault is used)
+  webui/                         ← WebUI state
+  workspace/                     ← agent workspace
+  .tailscale/                    ← node state, profile/, certs/, .serve-https-managed
+  .ssh/                          ← authorized_keys (hermes 0600) + host/ (root 0700)
+  .admin_signing_key             ← admin session HMAC key (0600)
+```
 
-### Automated task runner
-Use the Hermes skills system to give your agent tools — file access, API calls, code execution. Trigger tasks over Telegram or the WebUI.
+`.tailscale/`, `.ssh/` and `hermes-vault-data/` only appear once the corresponding feature is enabled.
 
-### Multi-channel bot
-Configure Telegram + Discord + Slack simultaneously (all supported by the gateway). One agent responds across all channels with shared memory.
+The WebUI and every gateway channel share this directory, which is the whole point:
 
-### Development sandbox
-Keep `HERMES_GATEWAY_AUTOSTART=off`, deploy once, and use the WebUI exclusively for development and testing. Toggle the gateway on only when you're ready to go live.
+- The agent remembers Telegram conversations when you switch to the WebUI.
+- Skills added from one surface are available on the other.
+- One personality, many frontends.
+
+**Back up `/opt/data` before any destructive volume operation.**
+
+Upgrading from `v0.1.3` or earlier (flat layout): on first start, cont-init moves agent files from `/opt/data/` into `/opt/data/.hermes/` when it finds `config.yaml` at the volume root. `webui/`, `workspace/` and `.admin_signing_key` stay in place.
 
 ---
 
-## Tips from the field
+# Architecture
 
-**On first deploy, go straight to `/admin`** — not `/`. The WebUI at `/` requires a working provider before it's useful.
+```
+Container (FROM nousresearch/hermes-agent)
+│
+├── PID 1: /init (s6-overlay — zombie reaping, service supervision)
+│   ├── cont-init 03: volume bootstrap, legacy migration, skills + pairing seed
+│   ├── cont-init 04: Tailscale proxy / forwarded-proto env fan-out
+│   ├── cont-init 05: PATH, HERMES_NODE, TERMINAL_HOME_MODE=real
+│   ├── cont-init 06: OpenSSH host keys + authorized_keys on the volume
+│   │
+│   ├── longrun tailscaled     → userspace tailnet, SOCKS/HTTP :1055   (no-op without an auth key)
+│   ├── longrun hermes-webui   → vendor/hermes-webui/server.py 127.0.0.1:8788
+│   ├── longrun control-plane  → uvicorn on 0.0.0.0:$PORT  (/, /admin, /health, proxy)
+│   ├── longrun lightpanda     → CDP 127.0.0.1:9222        (no-op unless enabled)
+│   ├── longrun healthwatch    → /health poll → container halt on sustained failure
+│   └── dynamic gateway-default → hermes gateway (Telegram / Discord / Slack / Email)
+│
+└── CMD: sleep infinity
+```
 
-**Use OpenRouter for experimenting** — swap models without changing your deployment. Try Claude for reasoning, Mistral for speed, local models for privacy.
+```mermaid
+flowchart LR
+  U["Browser / tailnet"] -->|"$PORT"| CP["control-plane<br/>Starlette"]
+  CP -->|"/admin"| A["Admin UI + API"]
+  CP -->|"everything else"| W["hermes-webui<br/>127.0.0.1:8788"]
+  A -->|"hermes gateway start/stop"| G["gateway-default"]
+  A -->|"config.yaml + .env"| V[("/opt/data/.hermes")]
+  W --> V
+  G --> V
+  H["healthwatch"] -->|"/health"| CP
+```
 
-**Don't share your Telegram bot token in public repos.** Use Railway environment variables, not `.env` files committed to git.
+Boot dependencies: everything depends on the s6 `base` bundle; `control-plane` additionally depends on the `tailscaled` slot (which holds open via `sleep infinity` when Tailscale is disabled, so it never blocks startup).
 
-**Your agent's `SOUL.md` is the highest-leverage file you'll ever write.** 200 words of well-crafted identity beats 2000 words of prompt injection in system prompts.
+The control plane is a thin Starlette wrapper — not a framework, not a product. It exists to:
 
-**Volume = memory.** If you delete the persistent volume, your agent forgets everything. Back up `/opt/data` before destructive deploy or volume operations.
-
-**The gateway health check is time-based, not HTTP.** Hermes gateway is a Telegram bot process — it's healthy if it's been running without crashing for ≥3 seconds. No HTTP endpoint to probe.
-
-**Password protect everything before sharing the URL.** Both `HERMES_WEBUI_PASSWORD` and `HERMES_ADMIN_PASSWORD` should be set before the service is public.
+1. Proxy the WebUI behind the public port.
+2. Expose `/admin` for setup, pairing and gateway control.
+3. Start/stop/restart the gateway through the official `hermes gateway` CLI and s6, never raw subprocesses.
 
 ---
 
-## Releases & versioning
+# Releases & versioning
 
-This repo uses **two version fields**: your all-in-one release semver (`x.y.z`) and the upstream base tags baked into the image.
+Two version concepts: this package's semver, and the upstream tags baked into the image.
 
-### `VERSION` file
+## The `VERSION` file
 
 ```text
 0.12.0
@@ -928,144 +850,95 @@ vault-base=v0.25.0
 ```
 
 | Line | Field | Meaning |
-|------|--------|---------|
-| 1 | Package semver | GHCR + git tag: `v0.7.2` |
+|---|---|---|
+| 1 | package semver | GHCR tag + git tag: `v0.12.0` |
 | 2 | `hermes-base` | Pinned `nousresearch/hermes-agent` tag in the Dockerfile |
-| 3 | `agent-base` | Pinned upstream tag for the vendored `vendor/hermes-agent` subtree |
-| 4 | `webui-base` | Pinned upstream tag for the vendored `vendor/hermes-webui` subtree |
-| 5 | `vault-base` | Pinned upstream tag for the vendored `vendor/hermes-vault` subtree |
+| 3 | `agent-base` | Pinned upstream tag for `vendor/hermes-agent` |
+| 4 | `webui-base` | Pinned upstream tag for `vendor/hermes-webui` |
+| 5 | `vault-base` | Pinned upstream tag for `vendor/hermes-vault` |
 
-**Bump rules — minor is reserved for the upstream agent/webui bases, patch for everything else:**
+## Bump rules
 
-| Change | Version bump | Example |
-|--------|----------------|---------|
-| Adopt a new Hermes Agent / `agent-base` or `webui-base` release | **y** + 1, **z** → 0 | `0.7.1` → `0.8.0` on Hermes `v2026.8.1` |
-| `vault-base` bump, all-in-one-only fix or feature (control plane, docker glue, new bundled plugin, watchdog, SSH persistence, etc.) | **z** + 1 | `0.7.1` → `0.7.2` |
-| Breaking packaging change (volume layout, env contract) | **x** + 1 (manual) | Rare |
+Minor is reserved for upstream agent/webui base advances. Everything else is a patch.
 
-The rule is **not** "how big is the change" — it's whether `hermes-base`/`agent-base`/`webui-base` moved. A brand-new capability that only touches this repo's own container layer (a new watchdog service, SSH host-key persistence, baking in a whole new vendored dependency like `hermes-vault`) is still a **patch**, because it doesn't track an upstream Hermes Agent or WebUI release. Save minor bumps for when one of those two actually advances. (Real precedent: `v0.6.2` — SSH host-key persistence — and `v0.7.1` — healthwatch watchdog — were both patches despite adding whole new capabilities, because neither moved `hermes-base`/`agent-base`/`webui-base`.)
+| Change | Bump | Example |
+|---|---|---|
+| New Hermes Agent / `agent-base` or `webui-base` release | **y**+1, **z**→0 | `0.11.0` → `0.12.0` on Hermes `v2026.8.31` |
+| `vault-base` bump, or any all-in-one-only fix or feature (control plane, docker glue, new bundled dependency, watchdog, SSH persistence…) | **z**+1 | `0.10.0` → `0.10.1` |
+| Breaking packaging change (volume layout, env contract) | **x**+1, manual | Rare |
 
-The agent runtime comes from the **base image** (`HERMES_IMAGE`); vendored WebUI (`vendor/hermes-webui`), agent (`vendor/hermes-agent`), and vault (`vendor/hermes-vault`) are copied in at build time via `git subtree`.
+The rule is **not** "how big is the change" — it is whether `hermes-base` / `agent-base` / `webui-base` moved. A brand-new capability confined to this repo's container layer is still a patch. Precedent: `v0.6.2` (SSH host-key persistence), `v0.7.1` (healthwatch watchdog) and `v0.10.1` (Lightpanda) were all patches despite adding whole new capabilities. `v0.8.0` was once mis-released as a minor for a vault addition, then corrected to `v0.7.2`.
 
-### Maintainer scripts
+## Maintainer scripts
 
 ```bash
-./scripts/bump-hermes.sh v2026.7.1   # new Hermes/agent base → y+1, z=0, pins hermes-base + agent-base + Dockerfile
-./scripts/bump-patch.sh              # your layer only (incl. webui-base/vault-base bumps) → z+1
-./scripts/set-version.sh 0.7.2 v2026.7.7.2   # explicit set
-./scripts/smoke.sh                   # build + runtime smoke (CI runs this too)
-./scripts/sync-upstreams.sh          # refresh vendor/hermes-agent + vendor/hermes-webui + vendor/hermes-vault
+./scripts/bump-hermes.sh v2026.9.1   # new Hermes base → y+1, z=0; writes hermes-base + agent-base + Dockerfile ARG
+./scripts/bump-patch.sh              # this layer only (incl. webui-base/vault-base bumps) → z+1; no Dockerfile change
+./scripts/set-version.sh 0.12.1 [v2026.9.1]   # explicit set; pins the Dockerfile only if a hermes tag is given
+./scripts/read-version.sh            # emit semver / *_base as GITHUB_OUTPUT key=value pairs
+./scripts/latest-hermes-tag.sh       # newest nousresearch/hermes-agent v20* tag from Docker Hub
+./scripts/sync-upstreams.sh          # manual subtree pull: hermes-agent + hermes-webui only (NOT vault, no pin writes)
+./scripts/patch-vendor-models.py     # align vendored WebUI model lists with the agent's; run by both sync paths
+./scripts/smoke.sh                   # build + runtime smoke; what CI runs
 ```
 
-### Release flow
+`scripts/version-lib.sh` is the shared parser/writer (`read_version_file`, `write_version_file`, `pin_*_base`, `pin_dockerfile_hermes`). `write_version_file` re-reads and preserves the pins it is not asked to change.
 
-**1. New Hermes Agent version** (or merge the daily `check-upstream` PR):
+## Release flow
+
+Tagging is **manual**. No workflow auto-tags on a `VERSION` change, and pushing to `main` publishes nothing.
+
+**Upstream bump** (or merge the daily `check-upstream` PR):
 
 ```bash
-./scripts/bump-hermes.sh v2026.7.1
-./scripts/sync-upstreams.sh          # optional: refresh vendored WebUI/vault
+./scripts/bump-hermes.sh v2026.9.1
+./scripts/sync-upstreams.sh          # optional: refresh vendored agent/webui
 ./scripts/smoke.sh
-git add VERSION Dockerfile
-git commit -m "chore(release): 0.8.0 on hermes v2026.7.1"
-git push origin main
-git tag v0.8.0
-git push origin v0.8.0               # triggers release.yml → GHCR + GitHub Release
+git add VERSION Dockerfile && git commit -m "chore(release): 0.13.0 on hermes v2026.9.1"
+# open a PR, land it once `vendor syntax` + `smoke` are green, then:
+git tag v0.13.0 && git push origin v0.13.0     # triggers release.yml
 ```
 
-**2. All-in-one patch** (same hermes/agent/webui base — includes vault-base bumps and new container-only features):
+**Layer patch** (same hermes/agent/webui base — includes vault bumps and container-only features):
 
 ```bash
-./scripts/bump-patch.sh              # e.g. 0.7.1 → 0.7.2
-./scripts/smoke.sh
-git commit -am "fix: …"
-git tag v0.7.2
-git push origin main --tags
-```
-
-Pushing to `main` alone does **not** publish an image — only a matching **`v*.*.*` git tag** does.
-
-### CI & automation
-
-| Workflow | When | What |
-|----------|------|------|
-| [`ci.yml`](.github/workflows/ci.yml) | PR + branch push | `./scripts/smoke.sh` |
-| [`release.yml`](.github/workflows/release.yml) | Tag push `v*.*.*` | Tag↔VERSION preflight → multi-arch build → GHCR `vX.Y.Z` + `latest` → GitHub Release (smoke stays in `ci.yml`) |
-| [`check-upstream.yml`](.github/workflows/check-upstream.yml) | Daily | Opens a PR when Docker Hub has a newer Hermes tag than `hermes-base` |
-| [`sync-upstreams.yml`](.github/workflows/sync-upstreams.yml) | Daily | Subtree sync for `vendor/hermes-agent`, `vendor/hermes-webui`, `vendor/hermes-vault` |
-
-Release notes should mention both versions, e.g. **hermes-all-in-one v0.4.0** built on **Hermes Agent v2026.6.5**.
-
-### Cursor release skill
-
-This repo ships a [Cursor Agent Skill](.cursor/skills/hermes-all-in-one-release/SKILL.md) for maintainers. It captures the full release playbook — version rules, ad-hoc commands, checklists, and when to rely on daily automation vs manual steps.
-
-**Location:** `.cursor/skills/hermes-all-in-one-release/` (`SKILL.md` + `examples.md`)
-
-**How to use it in Cursor**
-
-1. Open this repo in Cursor (project skills load from `.cursor/skills/`).
-2. In Agent chat, ask in plain language — the skill is picked up from context when you mention releases, for example:
-   - *“Release a patch for the Tailscale fix”*
-   - *“Bump to the latest Hermes and walk me through tagging”*
-   - *“Run the release pipeline after merging the upstream PR”*
-3. The agent follows the skill: runs `bump-patch.sh` or `bump-hermes.sh`, `./scripts/smoke.sh`, and the correct `git tag` / push steps.
-
-**Typical ad-hoc path (most common)** — layer-only change, same `hermes-base`; daily `check-upstream` handles Hermes detection for you:
-
-```bash
-./scripts/bump-patch.sh
+./scripts/bump-patch.sh              # e.g. 0.12.0 → 0.12.1
 ./scripts/smoke.sh
 git commit -am "fix: …"
-git tag v$(head -1 VERSION)
-git push origin main --tags
+# land via PR, then:
+git tag v0.12.1 && git push origin v0.12.1
 ```
 
-For Hermes bumps, prefer merging the auto-opened `check-upstream` PR, then tag. See the skill’s workflow **C** for that path and **A** for layer patches.
+Only a matching `v*.*.*` git tag publishes an image.
 
-**Reference without Cursor:** the skill mirrors this README section; [`examples.md`](.cursor/skills/hermes-all-in-one-release/examples.md) has copy-paste scenarios.
+## CI & automation
+
+| Workflow | When | What | Notes |
+|---|---|---|---|
+| [`ci.yml`](.github/workflows/ci.yml) | PRs, push to `main` | Job **`vendor syntax`** (conflict-marker scan, `compileall` of vendored webui + vault, `dash -n` on every cont-init and s6 script), then job **`smoke`** running `./scripts/smoke.sh` | These two job names are the required checks in branch protection |
+| [`release.yml`](.github/workflows/release.yml) | Tag push `v*.*.*` | `preflight` (tag must equal `VERSION` line 1) → `build (linux/amd64)` + `build (linux/arm64)` → `merge manifest` → GHCR `:vX.Y.Z` and `:latest` → GitHub Release | No smoke: branch protection already ran it on the merge commit |
+| [`check-upstream.yml`](.github/workflows/check-upstream.yml) | Daily 03:00 UTC, or manual | Opens a `chore/bump-hermes-<tag>` PR when Docker Hub has a newer Hermes tag than `hermes-base` | Requires `secrets.SYNC_PAT`; no `GITHUB_TOKEN` fallback |
+| [`sync-upstreams.yml`](.github/workflows/sync-upstreams.yml) | Daily 04:00 UTC, or manual | Subtree-pulls `vendor/hermes-agent`, `vendor/hermes-webui`, `vendor/hermes-vault` when a strictly newer tag exists, advances the matching pins, runs `patch-vendor-models.py`, opens/updates the `automation/sync-upstreams` PR | `SYNC_PAT` preferred; falls back to `GITHUB_TOKEN`, which may not re-trigger `ci.yml` |
+| [`test.yml`](.github/workflows/test.yml) | Manual only | `echo hello` stub | Placeholder, not a test suite |
+
+Release notes should name both versions, e.g. **hermes-all-in-one v0.12.0** on **Hermes Agent v2026.8.31**.
+
+**Vendor strategy.** Upstream trees are vendored with `git subtree --squash` so every dependency is reviewable, diffable against upstream, and survives a volume wipe. When `git subtree pull` becomes unmergeable across a large tag gap, replace the tree from `git archive` of the target tag — and diff the pre-replace tree against the old upstream tag first, so local patches are not silently lost.
+
+**GitHub Actions quirk.** PRs authored by `github-actions[bot]` require manual approval for every workflow run in the same repo. Pushing automation PRs as a real user avoids the stall. If CI shows `action_required` with 0 jobs, re-run the latest run rather than assuming failure.
+
+## Cursor release skill
+
+`.cursor/skills/hermes-all-in-one-release/` (`SKILL.md` + [`examples.md`](.cursor/skills/hermes-all-in-one-release/examples.md)) captures the release playbook for maintainers using Cursor. Open the repo in Cursor and ask in plain language — *"release a patch for the Tailscale fix"*, *"bump to the latest Hermes and walk me through tagging"* — and the agent follows the skill through `bump-patch.sh` / `bump-hermes.sh`, `smoke.sh`, and the tag push.
 
 ---
 
-## Architecture Overview
+# Credits
 
-```
-Container (FROM nousresearch/hermes-agent)
-│
-├── PID 1: /init (s6-overlay — zombie reaping, service supervision)
-│   ├── s6 longrun: tailscaled → userspace tailnet (optional; `TAILSCALE_AUTH_KEY`)
-│   ├── s6 longrun: control-plane → uvicorn on $PORT (public /, /admin, /health, proxy)
-│   ├── s6 longrun: hermes-webui → server.py :8788 (loopback only)
-│   └── s6 dynamic: gateway-default → hermes gateway (Telegram / Discord / Slack)
-│
-└── CMD: sleep infinity (container stays up while s6 runs services)
-│
-Volume: /opt/data  (HERMES_DATA_DIR)
-  ├── .hermes/       ← HERMES_HOME (config.yaml, .env, sessions/, skills/, SOUL.md)
-  ├── webui/         ← WebUI state
-  └── workspace/     ← agent workspace
-```
-
-The control plane is a thin Starlette wrapper — not a framework, not a product. It exists to:
-1. Proxy WebUI behind auth
-2. Expose `/admin` for initial setup
-3. Start/stop/restart the gateway via official `hermes gateway` + s6 (not raw subprocesses)
-
-Build with an optional pin (defaults match `VERSION` / `hermes-base`):
-
-```bash
-docker build \
-  --build-arg HERMES_IMAGE=nousresearch/hermes-agent:v2026.6.5 \
-  --build-arg HERMES_WEBUI_VERSION=v0.3.9 \
-  .
-```
-
----
-
-## Credits
-
-This repository is an all-in-one deployment wrapper (control plane + WebUI proxy + gateway supervision). Agent and WebUI logic lives upstream:
+This repository is a deployment wrapper: control plane, WebUI proxy, s6 supervision, volume contract. The agent and UI live upstream.
 
 - **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** — official base image and agent runtime (NousResearch)
-- **[Hermes WebUI](https://github.com/nesquena/hermes-webui)** — browser chat interface (vendored under `vendor/hermes-webui`)
+- **[Hermes WebUI](https://github.com/nesquena/hermes-webui)** — browser chat interface, vendored at `vendor/hermes-webui`
+- **[Hermes Vault](https://github.com/asimons81/hermes-vault)** — credential broker, vendored at `vendor/hermes-vault`
 
-Forked from [sphinxcode/hermes-all-in-one](https://github.com/sphinxcode/hermes-all-in-one) and rebuilt on the official Hermes Docker image with s6-managed services and `/opt/data` volume persistence (`/opt/data/.hermes` for agent state).
+Forked from [sphinxcode/hermes-all-in-one](https://github.com/sphinxcode/hermes-all-in-one) and rebuilt on the official Hermes Docker image with s6-managed services and `/opt/data` volume persistence.
