@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from starlette.applications import Starlette
@@ -102,7 +103,7 @@ def _admin_required(request: Request) -> Response | None:
     return admin_unauthorized_response(request)
 
 
-async def on_startup() -> None:
+async def _startup() -> None:
     ensure_runtime_dirs()
     if use_s6_supervision():
         if not webui_manager.wait_until_ready(timeout=90):
@@ -121,10 +122,22 @@ async def on_startup() -> None:
     _invalidate_status_cache()
 
 
-async def on_shutdown() -> None:
+async def _shutdown() -> None:
     if not use_s6_supervision():
         gateway_manager.stop()
         webui_manager.stop()
+
+
+@asynccontextmanager
+async def lifespan(_app: Starlette):
+    # Starlette 1.x dropped on_startup/on_shutdown kwargs (CVE pin starlette==1.3.1).
+    await _startup()
+    try:
+        yield
+    finally:
+        await _shutdown()
+
+
 
 
 async def health(request: Request) -> JSONResponse:
@@ -391,4 +404,4 @@ routes = [
     Route("/{path:path}", proxy_catchall, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]),
 ]
 
-app = Starlette(routes=routes, on_startup=[on_startup], on_shutdown=[on_shutdown])
+app = Starlette(routes=routes, lifespan=lifespan)

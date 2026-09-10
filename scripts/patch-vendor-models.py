@@ -3,8 +3,10 @@
 Post-sync patch: keep hermes-webui model lists in sync with hermes-agent.
 
 Sources:
-  - OPENROUTER_MODELS  (models.py)   → _FALLBACK_MODELS  (all providers)
-  - DEFAULT_CODEX_MODELS (codex_models.py) → _PROVIDER_MODELS openai + openai-codex
+  - OPENROUTER_MODELS (models_catalog_static.py, re-exported by models.py)
+      → _FALLBACK_MODELS (all providers)
+  - DEFAULT_CODEX_MODELS (codex_models.py)
+      → _PROVIDER_MODELS openai + openai-codex
 
 Idempotent — safe to run multiple times.
 """
@@ -16,24 +18,26 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
-AGENT_MODELS   = ROOT / "vendor/hermes-agent/hermes_cli/models.py"
-AGENT_CODEX    = ROOT / "vendor/hermes-agent/hermes_cli/codex_models.py"
-WEBUI_CONFIG   = ROOT / "vendor/hermes-webui/api/config.py"
+# v0.21.1+ keeps curated tables in models_catalog_static; models.py re-exports.
+AGENT_MODELS_CATALOG = ROOT / "vendor/hermes-agent/hermes_cli/models_catalog_static.py"
+AGENT_MODELS = ROOT / "vendor/hermes-agent/hermes_cli/models.py"
+AGENT_CODEX = ROOT / "vendor/hermes-agent/hermes_cli/codex_models.py"
+WEBUI_CONFIG = ROOT / "vendor/hermes-webui/api/config.py"
 
 # provider-prefix → display name used in webui _FALLBACK_MODELS
 PROVIDER_MAP: dict[str, str] = {
-    "anthropic":   "Anthropic",
-    "openai":      "OpenAI",
-    "google":      "Google",
-    "deepseek":    "DeepSeek",
-    "qwen":        "Qwen",
-    "moonshotai":  "Moonshot",
-    "x-ai":        "xAI",
-    "minimax":     "MiniMax",
-    "z-ai":        "Z.AI",
-    "xiaomi":      "Xiaomi",
-    "nvidia":      "NVIDIA",
-    "mistralai":   "Mistral",
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+    "google": "Google",
+    "deepseek": "DeepSeek",
+    "qwen": "Qwen",
+    "moonshotai": "Moonshot",
+    "x-ai": "xAI",
+    "minimax": "MiniMax",
+    "z-ai": "Z.AI",
+    "xiaomi": "Xiaomi",
+    "nvidia": "NVIDIA",
+    "mistralai": "Mistral",
 }
 
 # model-id slugs to skip entirely (free/experimental noise)
@@ -69,7 +73,7 @@ def _label(model_id: str) -> str:
     parts = re.split(r"[-_]", model_id)
     out = []
     for p in parts:
-        if re.fullmatch(r"[\d.]+", p):        # version number — keep as-is
+        if re.fullmatch(r"[\d.]+", p):  # version number — keep as-is
             out.append(p)
         elif p.upper() in {"GPT", "GLM", "XAI", "MCP", "API"}:
             out.append(p.upper())
@@ -82,29 +86,82 @@ def _label(model_id: str) -> str:
 
 
 def _load_openrouter_models() -> list[tuple[str, str]]:
-    """Returns list of (full_id, description) from OPENROUTER_MODELS."""
-    src = AGENT_MODELS.read_text(encoding="utf-8")
-    # Skip past type annotation — find the `= [` assignment
-    m = re.search(
-        r"OPENROUTER_MODELS\s*(?::[^\n]+)?\s*=\s*\[(.*?)\n\]",
-        src, re.DOTALL,
+    """Returns list of (full_id, description) from OPENROUTER_MODELS.
+
+    Upstream layout (v2026.9.7+): ids are bare strings in
+    ``for mid in (...)`` with optional text in ``_OPENROUTER_DESCRIPTIONS``.
+    Older layout: list of ``("id", "desc")`` pairs in models.py.
+    """
+    src_path = AGENT_MODELS_CATALOG if AGENT_MODELS_CATALOG.is_file() else AGENT_MODELS
+    src = src_path.read_text(encoding="utf-8")
+
+    descs: dict[str, str] = {}
+    dm = re.search(
+        r"_OPENROUTER_DESCRIPTIONS\s*=\s*\{(.*?)\n\}",
+        src,
+        re.DOTALL,
     )
-    if not m:
-        print("[patch] Warning: could not parse OPENROUTER_MODELS — skipping fallback sync")
-        return []
-    pairs = re.findall(r'\(\s*"([^"]+)"\s*,\s*"([^"]*)"\s*\)', m.group(1))
+    if dm:
+        descs = dict(re.findall(r'"([^"]+)"\s*:\s*"([^"]*)"', dm.group(1)))
+
+    pairs: list[tuple[str, str]] = []
+
+    # New form: OPENROUTER_MODELS = [ (mid, …) for mid in ( "id", … ) ]
+    assign = re.search(r"OPENROUTER_MODELS\s*(?::[^\n]+)?\s*=\s*\[", src)
+    if assign:
+        tail = src[assign.end() :]
+        # Stop before the next top-level assignment so we don't grab Vercel/etc.
+        next_assign = re.search(r"\n[A-Z_][A-Z0-9_]*\s*(?::[^\n]+)?\s*=", tail)
+        region = tail[: next_assign.start()] if next_assign else tail
+        mid_m = re.search(r"for mid in\s*\(", region)
+        if mid_m:
+            start_i = mid_m.end()
+            depth = 1
+            j = start_i
+            while j < len(region) and depth:
+                ch = region[j]
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                j += 1
+            body = region[start_i : j - 1]
+            raw_ids = re.findall(r'"([^"]+)"', body)
+            pairs = [
+                (
+                    mid,
+                    descs.get(mid, "free" if mid.endswith(":free") else ""),
+                )
+                for mid in raw_ids
+            ]
+
+    if not pairs:
+        # Legacy form: explicit ("id", "desc") tuples
+        m = re.search(
+            r"OPENROUTER_MODELS\s*(?::[^\n]+)?\s*=\s*\[(.*?)\n\]",
+            src,
+            re.DOTALL,
+        )
+        if not m:
+            print(
+                f"[patch] Warning: could not parse OPENROUTER_MODELS in "
+                f"{src_path.relative_to(ROOT)} — skipping fallback sync"
+            )
+            return []
+        pairs = re.findall(r'\(\s*"([^"]+)"\s*,\s*"([^"]*)"\s*\)', m.group(1))
+
     safe = [(mid, desc) for mid, desc in pairs if _is_safe_id(mid)]
     if len(safe) != len(pairs):
         rejected = [mid for mid, _ in pairs if not _is_safe_id(mid)]
         print(f"[patch] Warning: dropped {len(rejected)} malformed OpenRouter id(s): {rejected!r}")
     return safe
 
-
 def _load_codex_models() -> list[str]:
     src = AGENT_CODEX.read_text(encoding="utf-8")
     m = re.search(
         r"DEFAULT_CODEX_MODELS\s*:\s*List\[str\]\s*=\s*\[(.*?)\]",
-        src, re.DOTALL,
+        src,
+        re.DOTALL,
     )
     if not m:
         print("[patch] Warning: could not parse DEFAULT_CODEX_MODELS — skipping codex sync")
@@ -137,9 +194,7 @@ def _patch_fallback_models(text: str, openrouter: list[tuple[str, str]]) -> str:
         new_entry = f'    {{"provider": "{provider_name}", "id": "{full_id}", "label": "{lbl}"}},'
 
         # Insert before the first existing entry for the same provider
-        anchor = re.compile(
-            rf'"provider":\s*"{re.escape(provider_name)}"'
-        )
+        anchor = re.compile(rf'"provider":\s*"{re.escape(provider_name)}"')
         if anchor.search(text):
             lines = text.splitlines(keepends=True)
             for i, line in enumerate(lines):
@@ -172,7 +227,7 @@ def _patch_provider_block(text: str, block_key: str, models: list[str]) -> str:
                 body = (
                     body[: first.start()]
                     + f'\n        {{"id": "{model_id}", "label": "{lbl}"}},'
-                    + body[first.start():]
+                    + body[first.start() :]
                 )
         return m.group(1) + body + m.group(3)
 
@@ -180,12 +235,15 @@ def _patch_provider_block(text: str, block_key: str, models: list[str]) -> str:
 
 
 def main() -> None:
-    for p in (AGENT_MODELS, AGENT_CODEX, WEBUI_CONFIG):
+    required = [AGENT_CODEX, WEBUI_CONFIG]
+    if not AGENT_MODELS_CATALOG.is_file() and not AGENT_MODELS.is_file():
+        sys.exit(f"[patch] Not found: {AGENT_MODELS_CATALOG} or {AGENT_MODELS}")
+    for p in required:
         if not p.exists():
             sys.exit(f"[patch] Not found: {p}")
 
     openrouter = _load_openrouter_models()
-    codex      = _load_codex_models()
+    codex = _load_codex_models()
 
     print(f"[patch] OpenRouter models: {len(openrouter)}")
     print(f"[patch] Codex models: {codex}")

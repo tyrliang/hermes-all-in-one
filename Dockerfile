@@ -4,7 +4,7 @@
 # Build:  docker build --build-arg HERMES_IMAGE=nousresearch/hermes-agent:latest .
 # Pin:    HERMES_IMAGE=nousresearch/hermes-agent:<tag>
 
-ARG HERMES_IMAGE=nousresearch/hermes-agent:v2026.8.31
+ARG HERMES_IMAGE=nousresearch/hermes-agent:v2026.9.7
 FROM ${HERMES_IMAGE}
 ENV HOME=/opt/data
 
@@ -102,10 +102,14 @@ RUN python3 -m venv /opt/hermes-vault \
           /opt/hermes/plugins/hermes-vault-secret-source/ \
     && chown -R hermes:hermes /opt/hermes-vault /opt/hermes/plugins/hermes-vault-secret-source
 
-# fastapi + uvicorn[standard] are the `hermes dashboard` deps: keep them in sync
-# with the tool.dashboard pins in vendor/hermes-agent/tools/lazy_deps.py.
+# fastapi + uvicorn[standard] + starlette are the `hermes dashboard` / `web` extra
+# deps: keep them in sync with vendor/hermes-agent/tools/lazy_deps.py and
+# pyproject.toml `[project.optional-dependencies] web`.
 # uvicorn[standard] (not plain uvicorn) is required — it pulls in `websockets`,
 # which the dashboard's /api/pty and /api/ws WebSocket endpoints depend on.
+# starlette==1.3.1 is required for CVE-2026-48710 (BadHost); fastapi alone can
+# resolve Starlette into the vulnerable <1.0.1 range and bypass path-gating
+# middleware (this image gates /admin that way).
 # chown the venv to hermes so the non-root user can run lazy installs at runtime.
 # hermes-vault is ALSO installed here with --no-deps: the bundled secret-source
 # plugin runs inside this venv and imports hermes_vault.crypto whenever a vault
@@ -129,6 +133,7 @@ RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-w
         "mcp>=1.24.0" \
         "fastapi==0.133.1" \
         "uvicorn[standard]==0.41.0" \
+        "starlette==1.3.1" \
     && uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir --no-deps \
         /app/vendor/hermes-vault \
     && rm -f /opt/hermes/.venv/bin/hermes-vault \
