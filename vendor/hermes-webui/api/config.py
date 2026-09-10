@@ -1094,6 +1094,12 @@ CLI_TOOLSETS = _resolve_cli_toolsets()
 # Also used as the OpenRouter model list — keep this curated to current, widely-used models.
 _FALLBACK_MODELS = [
     # OpenAI
+    {"provider": "OpenAI", "id": "openai/gpt-6-astra-pro-flex", "label": "GPT 6 Astra Pro Flex"},
+    {"provider": "OpenAI", "id": "openai/gpt-6-astra-pro-fast", "label": "GPT 6 Astra Pro Fast"},
+    {"provider": "OpenAI", "id": "openai/gpt-6-astra-pro", "label": "GPT 6 Astra Pro"},
+    {"provider": "OpenAI", "id": "openai/gpt-6-astra-flex", "label": "GPT 6 Astra Flex"},
+    {"provider": "OpenAI", "id": "openai/gpt-6-astra-fast", "label": "GPT 6 Astra Fast"},
+    {"provider": "OpenAI", "id": "openai/gpt-6-astra", "label": "GPT 6 Astra"},
     {"provider": "OpenAI", "id": "openai/gpt-5.5-pro", "label": "GPT 5.5 Pro"},
     {"provider": "OpenAI", "id": "openai/gpt-5.5", "label": "GPT 5.5"},
     {"provider": "OpenAI", "id": "openai/gpt-5.6-luna-pro", "label": "GPT 5.6 Luna Pro"},
@@ -1105,6 +1111,7 @@ _FALLBACK_MODELS = [
     {"provider": "OpenAI",    "id": "openai/gpt-5.4-mini",                "label": "GPT-5.4 Mini"},
     {"provider": "OpenAI",    "id": "openai/gpt-5.4",                     "label": "GPT-5.4"},
     # Anthropic — 4.6 flagship + 4.5 generation
+    {"provider": "Anthropic", "id": "anthropic/claude-fable-5.1", "label": "Claude Fable 5.1"},
     {"provider": "Anthropic", "id": "anthropic/claude-haiku-4.5", "label": "Claude Haiku 4.5"},
     {"provider": "Anthropic", "id": "anthropic/claude-sonnet-5", "label": "Claude Sonnet 5"},
     {"provider": "Anthropic", "id": "anthropic/claude-opus-4.8-fast", "label": "Claude Opus 4.8 Fast"},
@@ -1118,6 +1125,7 @@ _FALLBACK_MODELS = [
     {"provider": "Anthropic", "id": "anthropic/claude-sonnet-4-5",        "label": "Claude Sonnet 4.5"},
     {"provider": "Anthropic", "id": "anthropic/claude-haiku-4-5",         "label": "Claude Haiku 4.5"},
     # Google — 3.x (latest preview) + 2.5 (stable GA)
+    {"provider": "Google", "id": "google/gemini-3.8-flash", "label": "Gemini 3.8 Flash"},
     {"provider": "Google", "id": "google/gemini-3.7-flash", "label": "Gemini 3.7 Flash"},
     {"provider": "Google",    "id": "google/gemini-3.1-pro-preview",            "label": "Gemini 3.1 Pro Preview"},
     {"provider": "Google",    "id": "google/gemini-3-flash-preview",            "label": "Gemini 3 Flash Preview"},
@@ -1132,6 +1140,7 @@ _FALLBACK_MODELS = [
     {"provider": "DeepSeek",  "id": "deepseek/deepseek-chat-v3-0324",      "label": "DeepSeek V3 (legacy)"},
     {"provider": "DeepSeek",  "id": "deepseek/deepseek-r1",                "label": "DeepSeek R1 (legacy)"},
     # Qwen (Alibaba) — strong coding and general models
+    {"provider": "Qwen", "id": "qwen/qwen3.8-max-0902", "label": "Qwen3.8 Max 0902"},
     {"provider": "Qwen", "id": "qwen/qwen3.8-flash", "label": "Qwen3.8 Flash"},
     {"provider": "Qwen", "id": "qwen/qwen3.8-max", "label": "Qwen3.8 Max"},
     {"provider": "Qwen",      "id": "qwen/qwen3-coder",                   "label": "Qwen3 Coder"},
