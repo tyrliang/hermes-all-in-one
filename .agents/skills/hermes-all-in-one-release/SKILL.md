@@ -134,13 +134,17 @@ When subtree is unmergeable (common across large tag gaps):
 
 ```bash
 TAG=v2026.8.31
-git fetch hermes-agent-upstream tag "$TAG"
-# diff vendor/hermes-agent vs old pin first, then:
+# Tags land in refs/tags/, not refs/remotes/<remote>/$TAG.
+git fetch hermes-agent-upstream tag "$TAG" tag "$OLD_TAG"
+# Pre-replace: MUST resolve the old pin to a real tree (not an empty dir).
+#   tmp=$(mktemp -d) && git archive "$OLD_TAG" | tar -x -C "$tmp"
+#   diff -rq "$tmp" vendor/hermes-agent | grep ' differ$'   # local patches
+#   rm -rf "$tmp"
 rm -rf vendor/hermes-agent
 mkdir -p vendor/hermes-agent
-git archive "hermes-agent-upstream/$TAG" | tar -x -C vendor/hermes-agent
+git archive "$TAG" | tar -x -C vendor/hermes-agent
 # strip junk, re-apply patches
-python3 scripts/patch-vendor-models.py
+python3 scripts/patch-vendor-models.py   # gate: OpenRouter/Codex counts must be non-zero
 git add vendor/hermes-agent   # explicit paths
 ```
 
