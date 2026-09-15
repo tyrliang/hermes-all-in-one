@@ -1133,6 +1133,7 @@ _FALLBACK_MODELS = [
     {"provider": "Google",    "id": "google/gemini-2.5-pro",                    "label": "Gemini 2.5 Pro"},
     {"provider": "Google",    "id": "google/gemini-2.5-flash",                  "label": "Gemini 2.5 Flash"},
     # DeepSeek
+    {"provider": "DeepSeek", "id": "deepseek/deepseek-v4.1-flash", "label": "Deepseek V4.1 Flash"},
     {"provider": "DeepSeek", "id": "deepseek/deepseek-v4-flash-0731", "label": "Deepseek V4 Flash 0731"},
     {"provider": "DeepSeek", "id": "deepseek/deepseek-v4-pro-0813", "label": "Deepseek V4 Pro 0813"},
     {"provider": "DeepSeek",  "id": "deepseek/deepseek-v4-flash",          "label": "DeepSeek V4 Flash"},

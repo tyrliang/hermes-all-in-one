@@ -8,10 +8,10 @@ No terminal setup. Deploy it, open `/admin`, paste an API key, connect a channel
 
 | | |
 |---|---|
-| **Package version** | `0.13.0` |
-| **Base image** | `nousresearch/hermes-agent:v2026.9.7` |
-| **Vendored** | agent `v2026.9.7` · webui `v0.52.113` · vault `v0.25.0` |
-| **Published image** | `ghcr.io/tyrliang/hermes-all-in-one:v0.13.0` / `:latest` |
+| **Package version** | `0.14.0` |
+| **Base image** | `nousresearch/hermes-agent:v2026.9.14` |
+| **Vendored** | agent `v2026.9.14` · webui `v0.52.113` · vault `v0.25.0` |
+| **Published image** | `ghcr.io/tyrliang/hermes-all-in-one:v0.14.0` / `:latest` |
 | **Volume mount** | `/opt/data` (required) |
 | **Public port** | `$PORT` (Railway-injected) or `8787` |
 
@@ -738,15 +738,15 @@ Defaults below are what the **image** provides (`Dockerfile:161-177`) or what th
 
 | `ARG` | Default | Purpose |
 |---|---|---|
-| `HERMES_IMAGE` | `nousresearch/hermes-agent:v2026.9.7` | Base image pin; kept in sync with `hermes-base` in `VERSION` |
+| `HERMES_IMAGE` | `nousresearch/hermes-agent:v2026.9.14` | Base image pin; kept in sync with `hermes-base` in `VERSION` |
 | `HERMES_WEBUI_VERSION` | `unknown` | Baked into the vendored WebUI's `_version.py` |
 | `MICRO_VERSION` | `2.0.14` | `micro` editor for interactive shells |
 | `LIGHTPANDA_VERSION` | `0.3.7` | Lightpanda release, SHA256-verified per arch |
 
 ```bash
 docker build \
-  --build-arg HERMES_IMAGE=nousresearch/hermes-agent:v2026.9.7 \
-  --build-arg HERMES_WEBUI_VERSION=v0.13.0 \
+  --build-arg HERMES_IMAGE=nousresearch/hermes-agent:v2026.9.14 \
+  --build-arg HERMES_WEBUI_VERSION=v0.14.0 \
   -t hermes-all-in-one .
 ```
 
@@ -842,16 +842,16 @@ Two version concepts: this package's semver, and the upstream tags baked into th
 ## The `VERSION` file
 
 ```text
-0.13.0
-hermes-base=v2026.9.7
-agent-base=v2026.9.7
+0.14.0
+hermes-base=v2026.9.14
+agent-base=v2026.9.14
 webui-base=v0.52.113
 vault-base=v0.25.0
 ```
 
 | Line | Field | Meaning |
 |---|---|---|
-| 1 | package semver | GHCR tag + git tag: `v0.13.0` |
+| 1 | package semver | GHCR tag + git tag: `v0.14.0` |
 | 2 | `hermes-base` | Pinned `nousresearch/hermes-agent` tag in the Dockerfile |
 | 3 | `agent-base` | Pinned upstream tag for `vendor/hermes-agent` |
 | 4 | `webui-base` | Pinned upstream tag for `vendor/hermes-webui` |
@@ -863,7 +863,7 @@ Minor is reserved for upstream agent/webui base advances. Everything else is a p
 
 | Change | Bump | Example |
 |---|---|---|
-| New Hermes Agent / `agent-base` or `webui-base` release | **y**+1, **z**→0 | `0.12.0` → `0.13.0` on Hermes `v2026.9.7` |
+| New Hermes Agent / `agent-base` or `webui-base` release | **y**+1, **z**→0 | `0.13.0` → `0.14.0` on Hermes `v2026.9.14` |
 | `vault-base` bump, or any all-in-one-only fix or feature (control plane, docker glue, new bundled dependency, watchdog, SSH persistence…) | **z**+1 | `0.10.0` → `0.10.1` |
 | Breaking packaging change (volume layout, env contract) | **x**+1, manual | Rare |
 
@@ -872,9 +872,9 @@ The rule is **not** "how big is the change" — it is whether `hermes-base` / `a
 ## Maintainer scripts
 
 ```bash
-./scripts/bump-hermes.sh v2026.9.7   # new Hermes base → y+1, z=0; writes hermes-base + agent-base + Dockerfile ARG
+./scripts/bump-hermes.sh v2026.9.14   # new Hermes base → y+1, z=0; writes hermes-base + agent-base + Dockerfile ARG
 ./scripts/bump-patch.sh              # package z+1 only; preserves all *_base pins (does not write webui/vault)
-./scripts/set-version.sh 0.13.1 [v2026.9.7]   # explicit set; pins the Dockerfile only if a hermes tag is given
+./scripts/set-version.sh 0.14.1 [v2026.9.14]   # explicit set; pins the Dockerfile only if a hermes tag is given
 ./scripts/read-version.sh            # emit semver / *_base as GITHUB_OUTPUT key=value pairs
 ./scripts/latest-hermes-tag.sh       # newest nousresearch/hermes-agent v20* tag from Docker Hub
 ./scripts/sync-upstreams.sh          # manual subtree pull: hermes-agent + hermes-webui only (NOT vault, no pin writes)
@@ -891,22 +891,22 @@ Tagging is **manual**. No workflow auto-tags on a `VERSION` change, and pushing 
 **Upstream bump** (or merge the daily `check-upstream` PR):
 
 ```bash
-./scripts/bump-hermes.sh v2026.9.7
+./scripts/bump-hermes.sh v2026.9.14
 ./scripts/sync-upstreams.sh          # optional: refresh vendored agent/webui
 ./scripts/smoke.sh
-git add VERSION Dockerfile && git commit -m "chore(release): 0.13.0 on hermes v2026.9.7"
+git add VERSION Dockerfile && git commit -m "chore(release): 0.14.0 on hermes v2026.9.14"
 # open a PR, land it once `vendor syntax` + `smoke` are green, then:
-git tag v0.13.0 && git push origin v0.13.0     # triggers release.yml
+git tag v0.14.0 && git push origin v0.14.0     # triggers release.yml
 ```
 
 **Layer patch** (same hermes/agent/webui base — includes vault bumps and container-only features):
 
 ```bash
-./scripts/bump-patch.sh              # e.g. 0.13.0 → 0.13.1
+./scripts/bump-patch.sh              # e.g. 0.14.0 → 0.14.1
 ./scripts/smoke.sh
 git commit -am "fix: …"
 # land via PR, then:
-git tag v0.13.1 && git push origin v0.13.1
+git tag v0.14.1 && git push origin v0.14.1
 ```
 
 Only a matching `v*.*.*` git tag publishes an image.
@@ -921,7 +921,7 @@ Only a matching `v*.*.*` git tag publishes an image.
 | [`sync-upstreams.yml`](.github/workflows/sync-upstreams.yml) | Daily 04:00 UTC, or manual | Subtree-pulls `vendor/hermes-agent`, `vendor/hermes-webui`, `vendor/hermes-vault` when a strictly newer tag exists, advances the matching pins, runs `patch-vendor-models.py`, opens/updates the `automation/sync-upstreams` PR | `SYNC_PAT` preferred; falls back to `GITHUB_TOKEN`, which may not re-trigger `ci.yml` |
 | [`test.yml`](.github/workflows/test.yml) | Manual only | `echo hello` stub | Placeholder, not a test suite |
 
-Release notes should name both versions, e.g. **hermes-all-in-one v0.13.0** on **Hermes Agent v2026.9.7**.
+Release notes should name both versions, e.g. **hermes-all-in-one v0.14.0** on **Hermes Agent v2026.9.14**.
 
 **Vendor strategy.** Upstream trees are vendored with `git subtree --squash` so every dependency is reviewable, diffable against upstream, and survives a volume wipe. When `git subtree pull` becomes unmergeable across a large tag gap, replace the tree from `git archive` of the target tag — and diff the pre-replace tree against the old upstream tag first, so local patches are not silently lost.
 
