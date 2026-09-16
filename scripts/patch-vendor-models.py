@@ -102,7 +102,8 @@ def _load_openrouter_models() -> list[tuple[str, str]]:
         re.DOTALL,
     )
     if dm:
-        descs = dict(re.findall(r'"([^"]+)"\s*:\s*"([^"]*)"', dm.group(1)))
+        desc_body = re.sub(r"#[^\n]*", "", dm.group(1))
+        descs = dict(re.findall(r'"([^"]+)"\s*:\s*"([^"]*)"', desc_body))
 
     pairs: list[tuple[str, str]] = []
 
@@ -126,6 +127,8 @@ def _load_openrouter_models() -> list[tuple[str, str]]:
                     depth -= 1
                 j += 1
             body = region[start_i : j - 1]
+            # Strip comments so quoted prose inside them is never scraped.
+            body = re.sub(r"#[^\n]*", "", body)
             raw_ids = re.findall(r'"([^"]+)"', body)
             pairs = [
                 (
@@ -148,7 +151,8 @@ def _load_openrouter_models() -> list[tuple[str, str]]:
                 f"{src_path.relative_to(ROOT)} — skipping fallback sync"
             )
             return []
-        pairs = re.findall(r'\(\s*"([^"]+)"\s*,\s*"([^"]*)"\s*\)', m.group(1))
+        legacy_body = re.sub(r"#[^\n]*", "", m.group(1))
+        pairs = re.findall(r'\(\s*"([^"]+)"\s*,\s*"([^"]*)"\s*\)', legacy_body)
 
     safe = [(mid, desc) for mid, desc in pairs if _is_safe_id(mid)]
     if len(safe) != len(pairs):
@@ -173,7 +177,7 @@ def _load_codex_models() -> list[str]:
         print("[patch] Warning: could not parse DEFAULT_CODEX_MODELS — skipping codex sync")
         return []
     # Drop full-line and trailing comments before extracting strings.
-    body = re.sub(r"#.*?$", "", m.group(1), flags=re.MULTILINE)
+    body = re.sub(r"#[^\n]*", "", m.group(1))
     raw = re.findall(r'"([^"]+)"', body)
     # Codex slugs are versioned (digit required). Bare words like "openai" are
     # comment residue if comment-stripping ever misses a quote pair.
@@ -240,7 +244,8 @@ def _patch_provider_block(text: str, block_key: str, models: list[str]) -> str:
             body,
         )
         for model_id in models:
-            if model_id in body:
+            # Entry test, not substring — "gpt-5.5" must not match "gpt-5.5-mini".
+            if f'"id": "{model_id}"' in body:
                 continue
             lbl = _label(model_id)
             first = re.search(r"\n\s*\{", body)

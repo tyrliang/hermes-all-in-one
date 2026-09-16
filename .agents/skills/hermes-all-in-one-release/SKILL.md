@@ -134,6 +134,7 @@ When subtree is unmergeable (common across large tag gaps):
 
 ```bash
 TAG=v2026.8.31
+OLD_TAG=$(sed -n 's/^agent-base=//p' VERSION)   # pin currently in tree
 # Tags land in refs/tags/, not refs/remotes/<remote>/$TAG.
 git fetch hermes-agent-upstream tag "$TAG" tag "$OLD_TAG"
 # Pre-replace: MUST resolve the old pin to a real tree (not an empty dir).
