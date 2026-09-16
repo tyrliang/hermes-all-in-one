@@ -102,7 +102,8 @@ def _load_openrouter_models() -> list[tuple[str, str]]:
         re.DOTALL,
     )
     if dm:
-        descs = dict(re.findall(r'"([^"]+)"\s*:\s*"([^"]*)"', dm.group(1)))
+        desc_body = re.sub(r"#[^\n]*", "", dm.group(1))
+        descs = dict(re.findall(r'"([^"]+)"\s*:\s*"([^"]*)"', desc_body))
 
     pairs: list[tuple[str, str]] = []
 
@@ -126,6 +127,8 @@ def _load_openrouter_models() -> list[tuple[str, str]]:
                     depth -= 1
                 j += 1
             body = region[start_i : j - 1]
+            # Strip comments so quoted prose inside them is never scraped.
+            body = re.sub(r"#[^\n]*", "", body)
             raw_ids = re.findall(r'"([^"]+)"', body)
             pairs = [
                 (
@@ -148,7 +151,8 @@ def _load_openrouter_models() -> list[tuple[str, str]]:
                 f"{src_path.relative_to(ROOT)} — skipping fallback sync"
             )
             return []
-        pairs = re.findall(r'\(\s*"([^"]+)"\s*,\s*"([^"]*)"\s*\)', m.group(1))
+        legacy_body = re.sub(r"#[^\n]*", "", m.group(1))
+        pairs = re.findall(r'\(\s*"([^"]+)"\s*,\s*"([^"]*)"\s*\)', legacy_body)
 
     safe = [(mid, desc) for mid, desc in pairs if _is_safe_id(mid)]
     if len(safe) != len(pairs):
@@ -157,6 +161,12 @@ def _load_openrouter_models() -> list[tuple[str, str]]:
     return safe
 
 def _load_codex_models() -> list[str]:
+    """Parse DEFAULT_CODEX_MODELS list literals only — never comment prose.
+
+    Comments inside the list historically contained quoted provider names
+    (e.g. ``"openai"`` in "stays out of the openai catalog"); a naive
+    ``"…"`` scrape treated those as model ids and wrote bogus picker rows.
+    """
     src = AGENT_CODEX.read_text(encoding="utf-8")
     m = re.search(
         r"DEFAULT_CODEX_MODELS\s*:\s*List\[str\]\s*=\s*\[(.*?)\]",
@@ -166,11 +176,15 @@ def _load_codex_models() -> list[str]:
     if not m:
         print("[patch] Warning: could not parse DEFAULT_CODEX_MODELS — skipping codex sync")
         return []
-    raw = re.findall(r'"([^"]+)"', m.group(1))
-    safe = [mid for mid in raw if _is_safe_id(mid)]
+    # Drop full-line and trailing comments before extracting strings.
+    body = re.sub(r"#[^\n]*", "", m.group(1))
+    raw = re.findall(r'"([^"]+)"', body)
+    # Codex slugs are versioned (digit required). Bare words like "openai" are
+    # comment residue if comment-stripping ever misses a quote pair.
+    safe = [mid for mid in raw if _is_safe_id(mid) and re.search(r"\d", mid)]
     if len(safe) != len(raw):
-        rejected = [mid for mid in raw if not _is_safe_id(mid)]
-        print(f"[patch] Warning: dropped {len(rejected)} malformed Codex id(s): {rejected!r}")
+        rejected = [mid for mid in raw if mid not in safe]
+        print(f"[patch] Warning: dropped {len(rejected)} non-model Codex id(s): {rejected!r}")
     return safe
 
 
@@ -210,7 +224,11 @@ def _patch_fallback_models(text: str, openrouter: list[tuple[str, str]]) -> str:
 
 
 def _patch_provider_block(text: str, block_key: str, models: list[str]) -> str:
-    """Insert missing model entries at the top of a _PROVIDER_MODELS[block_key] list."""
+    """Insert missing model entries at the top of a _PROVIDER_MODELS[block_key] list.
+
+    Also drops the phantom ``{"id": "openai", …}`` rows left by older scrapes
+    that captured comment prose in ``codex_models.py``.
+    """
     block_re = re.compile(
         rf'("{re.escape(block_key)}":\s*\[)(.*?)(\s*\],)',
         re.DOTALL,
@@ -218,8 +236,16 @@ def _patch_provider_block(text: str, block_key: str, models: list[str]) -> str:
 
     def replacer(m: re.Match) -> str:
         body = m.group(2)
+        # Remove phantom provider-name ids that earlier scrapes injected from
+        # comment text in codex_models.py.
+        body = re.sub(
+            r"\n\s*\{\s*\"id\"\s*:\s*\"openai\"\s*,\s*\"label\"\s*:\s*\"[^\"]*\"\s*\},?",
+            "",
+            body,
+        )
         for model_id in models:
-            if model_id in body:
+            # Entry test, not substring — "gpt-5.5" must not match "gpt-5.5-mini".
+            if f'"id": "{model_id}"' in body:
                 continue
             lbl = _label(model_id)
             first = re.search(r"\n\s*\{", body)
@@ -247,6 +273,20 @@ def main() -> None:
 
     print(f"[patch] OpenRouter models: {len(openrouter)}")
     print(f"[patch] Codex models: {codex}")
+
+    # Exit 0 with "already up to date" after parsing nothing used to mask
+    # upstream table renames (models.py → models_catalog_static.py). Fail
+    # closed so a no-op parse cannot ship as a successful vendor patch.
+    if not openrouter:
+        sys.exit(
+            "[patch] OpenRouter model list is empty — upstream table missing "
+            "or unparseable; refusing to continue"
+        )
+    if not codex:
+        sys.exit(
+            "[patch] Codex model list is empty — DEFAULT_CODEX_MODELS missing "
+            "or unparseable; refusing to continue"
+        )
 
     original = WEBUI_CONFIG.read_text(encoding="utf-8")
     text = original

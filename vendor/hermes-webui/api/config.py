@@ -1133,6 +1133,7 @@ _FALLBACK_MODELS = [
     {"provider": "Google",    "id": "google/gemini-2.5-pro",                    "label": "Gemini 2.5 Pro"},
     {"provider": "Google",    "id": "google/gemini-2.5-flash",                  "label": "Gemini 2.5 Flash"},
     # DeepSeek
+    {"provider": "DeepSeek", "id": "deepseek/deepseek-v4.1-flash", "label": "Deepseek V4.1 Flash"},
     {"provider": "DeepSeek", "id": "deepseek/deepseek-v4-flash-0731", "label": "Deepseek V4 Flash 0731"},
     {"provider": "DeepSeek", "id": "deepseek/deepseek-v4-pro-0813", "label": "Deepseek V4 Pro 0813"},
     {"provider": "DeepSeek",  "id": "deepseek/deepseek-v4-flash",          "label": "DeepSeek V4 Flash"},
@@ -1703,7 +1704,6 @@ _PROVIDER_MODELS = {
     ],
     "openai": [
         {"id": "gpt-5.3-codex-spark", "label": "GPT 5.3 Codex Spark"},
-        {"id": "openai", "label": "Openai"},
         {"id": "gpt-5.3-codex", "label": "GPT 5.3 Codex"},
         {"id": "gpt-5.6-luna-pro", "label": "GPT 5.6 Luna Pro"},
         {"id": "gpt-5.6-luna", "label": "GPT 5.6 Luna"},
@@ -1724,7 +1724,6 @@ _PROVIDER_MODELS = {
     ],
     "openai-codex": [
         {"id": "gpt-5.3-codex-spark", "label": "GPT 5.3 Codex Spark"},
-        {"id": "openai", "label": "Openai"},
         {"id": "gpt-5.6-luna-pro", "label": "GPT 5.6 Luna Pro"},
         {"id": "gpt-5.6-luna", "label": "GPT 5.6 Luna"},
         {"id": "gpt-5.6-terra-pro", "label": "GPT 5.6 Terra Pro"},
