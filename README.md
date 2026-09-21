@@ -842,7 +842,7 @@ Two version concepts: this package's semver, and the upstream tags baked into th
 ## The `VERSION` file
 
 ```text
-0.14.0
+0.14.1
 hermes-base=v2026.9.14
 agent-base=v2026.9.14
 webui-base=v0.52.113
