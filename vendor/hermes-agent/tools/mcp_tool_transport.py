@@ -13,6 +13,8 @@ from tools.mcp_tool_common import _core
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_lifecycle as _lifecycle
 from tools import mcp_tool_registration as _registration
+from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy
+from utils import normalize_proxy_url
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -33,6 +35,32 @@ def _is_2xx(resp) -> bool:
 def _present(**kwargs) -> dict:
     """*kwargs* minus the ``None`` values (optional httpx client arguments)."""
     return {k: v for k, v in kwargs.items() if v is not None}
+
+
+def _env_proxy_for(url: str) -> Optional[str]:
+    """Env-configured proxy for *url*, or None when unset or excluded by NO_PROXY.
+
+    httpx applies ``HTTPS_PROXY`` / ``ALL_PROXY`` by mounting proxy transports around its
+    *default* transport. The MCP clients below pass an explicit ``transport=`` (the wire-body
+    cap wrapping an ``AsyncHTTPTransport``), which httpx then uses for every request — the
+    env-derived mounts are never consulted, so ``trust_env`` stays True but has no effect and
+    the client connects directly. Deployments that reach their MCP servers only through a
+    proxy (Tailscale ``--tun=userspace-networking``, which resolves nothing in
+    ``/etc/resolv.conf`` and serves the tailnet over a local SOCKS/HTTP proxy; corporate
+    egress proxies) then fail every MCP connection with a DNS or connect error while the rest
+    of Hermes — which leaves httpx's default transport in place — works fine.
+
+    Passing the result to ``AsyncHTTPTransport(proxy=...)`` restores proxying on the inner
+    transport while keeping the body cap. Uses the shared NO_PROXY matcher so MCP agrees with
+    the LLM transport and the gateway adapters on which hosts bypass the proxy.
+    """
+    value = first_proxy_env_value()
+    if not value:
+        return None
+    proxy = normalize_proxy_url(value)
+    if not proxy:
+        return None
+    return None if should_bypass_proxy(url) else proxy
 
 
 def _pgroup_alive(pgid: Optional[int]) -> bool:
@@ -353,12 +381,16 @@ class MCPServerTransportMixin:
         # Always own the client: the httpx_client_factory forwards the SDK's (headers, auth, timeout),
         # installs the wire-body cap and layers TLS on the inner transport (client-level verify/cert are
         # inert once a custom transport= is passed). Client MUST come from the SDK's httpx (httpx2 on mcp >= 2.0).
+        # The env proxy also rides the inner transport: a custom transport= bypasses httpx's trust_env
+        # proxy mounts entirely (see _env_proxy_for).
         _httpx_mod = _core.sdk_httpx()
+        _proxy = _env_proxy_for(url)
         sse_kwargs["httpx_client_factory"] = lambda headers=None, timeout=None, auth=None: _httpx_mod.AsyncClient(
             follow_redirects=True,
             timeout=timeout if timeout is not None else _httpx_mod.Timeout(30.0, read=300.0),
             transport=_make_mcp_body_cap_transport(
-                _httpx_mod, _httpx_mod.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))),
+                _httpx_mod, _httpx_mod.AsyncHTTPTransport(verify=ssl_verify,
+                                                          **_present(cert=client_cert, proxy=_proxy))),
             **_present(headers=headers, auth=auth))
         return _core.sse_client(**sse_kwargs)
 
@@ -380,11 +412,15 @@ class MCPServerTransportMixin:
         _strip_auth_on_cross_origin_redirect = _make_redirect_header_stripper(
             httpx.URL(url), strict=strict_cfg_headers, configured_header_names=configured_header_names)
         # verify/cert live on the inner transport: a custom transport= makes client-level TLS kwargs inert.
+        # Same for the env proxy — a custom transport= bypasses httpx's trust_env proxy mounts
+        # entirely (see _env_proxy_for).
         client_kwargs: dict = {"follow_redirects": True, "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                                **({"headers": headers} if headers else {}),
                                "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
                                "transport": _make_mcp_body_cap_transport(
-                                   httpx, httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))),
+                                   httpx, httpx.AsyncHTTPTransport(
+                                       verify=ssl_verify,
+                                       **_present(cert=client_cert, proxy=_env_proxy_for(url)))),
                                **_present(auth=oauth_auth)}
 
         @asynccontextmanager
