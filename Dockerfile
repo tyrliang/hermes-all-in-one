@@ -22,6 +22,14 @@ COPY docker/sshd/ /etc/ssh/sshd_config.d/
 COPY docker/scripts/ /app/docker/scripts/
 COPY docker/profile.d/ /app/docker/profile.d/
 
+# Local patches to the agent tree that ships in the base image. vendor/hermes-agent
+# is otherwise a reference-only copy (scripts/patch-vendor-models.py reads it), so a
+# fix committed there reaches no runtime until it is installed over /opt/hermes.
+# Copy from the vendored tree — one source of truth, no duplicated file to drift.
+# See docker/patches/README.md.
+COPY vendor/hermes-agent/tools/mcp_tool_transport.py /app/patches/agent/tools/mcp_tool_transport.py
+COPY docker/patches/ /app/docker/patches/
+
 ARG HERMES_WEBUI_VERSION=unknown
 
 # Tailscale userspace mode (no TUN): optional tailnet access on Railway. See README § Tailscale.
@@ -159,6 +167,15 @@ RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-w
     && mkdir -p /opt/data \
     && chown hermes:hermes /opt/data \
     && chmod 755 /opt/data
+
+# Install local agent patches over the base image's /opt/hermes tree. Runs after the
+# venv work above so nothing later overwrites the patched files. Fails the build if a
+# target's pre-patch hash no longer matches the pinned base image — on a hermes-base
+# bump, re-apply the patch and refresh the hash rather than pasting stale code over
+# newer upstream. Verify in build logs: "agent-patch: applied tools/mcp_tool_transport.py".
+RUN chmod +x /app/docker/patches/apply-agent-patches.sh \
+    && /app/docker/patches/apply-agent-patches.sh \
+    && chown -R hermes:hermes /opt/hermes/tools
 
 # Volume at /opt/data; agent state under /opt/data/.hermes (see cont-init migration).
 # /usr/local/bin: Node 22 from the base image (TUI, npm tools). cont-init 05-hermes-path
