@@ -118,12 +118,37 @@ From maintainer sessions — acceptance criteria:
 
 | Area | What | When |
 |------|------|------|
+| **Agent `mcp_tool_transport.py`** | MCP HTTP/SSE transports honour `HTTPS_PROXY`/`ALL_PROXY` + shared `NO_PROXY`. Upstream hands httpx an explicit `transport=`, killing `trust_env` proxy mounts — every MCP server behind a proxy fails `[Errno -2]`. | **Every** `vendor/hermes-agent` replace until upstream ships it. Re-apply to the vendored file, then refresh **both** hashes in `docker/patches/apply-agent-patches.sh` |
 | Vault `#42` | `_AnyNameTemplate` in vault `service_ids.py` (+ test) so custom env names work (e.g. `HINDSIGHT_API_KEY=hv://hindsight`) | **Every** `vendor/hermes-vault` replace until upstream ships it |
 | WebUI models | `python3 scripts/patch-vendor-models.py` | After agent and/or webui vendor change |
 | Upstream junk | Strip accidental paths (e.g. `apps/desktop/'/var/folders/...` mutex files) | After agent archive replace if present |
 
 Before replace: diff `vendor/<name>` against the **old** pin tag; list runtime
 deltas; replace; re-apply; targeted tests.
+
+### Agent-tree patches are not shipped by the vendor copy
+
+`vendor/hermes-agent` is **reference-only** — the Dockerfile never copies it.
+`/opt/hermes` comes wholesale from the `nousresearch/hermes-agent` base image.
+A fix committed to that tree ships nothing until `docker/patches/apply-agent-patches.sh`
+installs it over `/opt/hermes` at build time. This cost a full release cycle
+(v0.14.1 tagged, built, and published with no behavioural change).
+
+That script pins the base **and** patched hash per file and fails the build on
+either mismatch, so a vendor refresh that reverts a patch is a red build rather
+than a silent revert. After any agent vendor change:
+
+```bash
+bash docker/patches/test-apply-agent-patches.sh
+```
+
+and confirm `agent-patch: applied <path>` in the smoke build log. A green build
+alone does **not** prove an agent-level patch reached the image — verify on the
+running container:
+
+```bash
+grep -c _env_proxy_for /opt/hermes/tools/mcp_tool_transport.py   # non-zero
+```
 
 ## Vendor strategy
 
@@ -213,13 +238,16 @@ Skip experimental WebUI tags (`exp-*`) unless the user explicitly wants them.
 ### 3. Vendor
 - [ ] Each moved pin: subtree or archive-replace
 - [ ] Pre-replace diff vs old pin → local patches list
-- [ ] Re-apply patches (vault #42, etc.)
+- [ ] Re-apply patches (**agent mcp_tool_transport.py**, vault #42, etc.)
+- [ ] Agent vendor changed → refresh both hashes in `docker/patches/apply-agent-patches.sh`
 - [ ] patch-vendor-models.py after agent/webui vendor
 - [ ] Strip upstream junk if present
 - [ ] README VERSION example matches pins
 
 ### 4. Verify
 - [ ] ./scripts/smoke.sh PASS (or document skip)
+- [ ] `bash docker/patches/test-apply-agent-patches.sh` PASS (if agent patches exist)
+- [ ] Smoke log shows `agent-patch: applied <path>` for every registered patch
 - [ ] Vault patch: pytest vendor/hermes-vault/tests/test_service_ids.py
 - [ ] Optional compileall on touched vendor trees
 

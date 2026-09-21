@@ -12,13 +12,23 @@ A fix committed to `vendor/hermes-agent` therefore changes nothing at runtime. I
 
 The Dockerfile copies each patched file out of `vendor/hermes-agent` into `/app/patches/agent/`, keeping the vendored tree as the single source of truth. No second copy to drift. `apply-agent-patches.sh` then installs them and verifies the result.
 
-Every entry in the `PATCHES` table pins the sha256 of the file **as it ships in the pinned base image** — the pre-patch hash, not the patched one. Before overwriting, the script compares the target against that hash:
+Every entry in the `PATCHES` table pins **two** sha256 values: the file as it ships in the pinned base image, and our patched version. Both are load-bearing and they catch different failures.
 
-- matches the patched file already → `already applied`, skip
-- matches the recorded base hash → install the patch, verify, drop stale bytecode
-- matches neither → **fail the build**
+The **base hash** guards the target. If `/opt/hermes` holds something other than the recorded upstream file, `hermes-base` moved, and overwriting would revert whatever upstream changed there.
 
-That last branch is the point. On a `hermes-base` bump, upstream's file changes and the recorded hash stops matching. Pasting our patched copy over it would silently revert whatever upstream changed in that file. A red build is the cheaper outcome.
+The **patched hash** guards the source. A vendor refresh — `sync-upstreams.sh`, a subtree pull, or an archive replace — rewrites `vendor/hermes-agent` from upstream and drops the local patch. Without this check the target and source both hold upstream's unpatched file, compare equal, and the script reports `already applied` on a green build with the fix gone. The source is verified *before* any equality shortcut for exactly this reason.
+
+Decision table:
+
+| Condition | Action |
+|---|---|
+| source ≠ patched hash, source = base hash | **fail** — vendor refresh reverted the patch |
+| source ≠ patched hash, source = neither | **fail** — patch edited without updating its hash, or new upstream file |
+| target = patched hash | `already applied`, skip |
+| target = base hash | install, verify, drop stale bytecode |
+| target = neither | **fail** — `hermes-base` moved |
+
+A red build costs minutes. A silent revert costs an outage and a debugging session months later.
 
 Build-log markers, greppable:
 
@@ -28,26 +38,42 @@ agent-patch: already applied tools/mcp_tool_transport.py
 agent-patch: FAILED tools/mcp_tool_transport.py      <- alert
 ```
 
+## Tests
+
+```bash
+bash docker/patches/test-apply-agent-patches.sh
+```
+
+Covers the upgrade matrix — pristine base, `hermes-base` moved, vendor refresh reverted the patch, both moved, and a rebuild of an already-patched image — plus missing source and missing target. The invariant asserted throughout: **the build never goes green with the patch missing from the image.**
+
+Run it after touching the script or re-basing a patch. Reverting the source verification makes S2 and S3 fail with `SILENT REGRESSION`, which is the bug this guard exists to prevent.
+
 ## Current patches
 
 | File | Fix | Retire when |
 |------|-----|-------------|
 | `tools/mcp_tool_transport.py` | MCP HTTP/SSE transports honour `HTTPS_PROXY` / `ALL_PROXY` and the shared `NO_PROXY` rules. Both builders hand httpx an explicit `transport=`, which disables its `trust_env` proxy mounts, so MCP connected direct and every server behind a proxy failed with `[Errno -2] Name or service not known`. | `NousResearch/hermes-agent` ships the equivalent fix |
 
-## On a hermes-base bump
+## On a hermes-base bump or a vendor refresh
 
-The build will fail with a hash mismatch. That is the system working. To resolve:
+The build fails with a hash mismatch. That is the system working. Which hash failed tells you what happened:
 
-1. Diff the new upstream file against the old base version. Check whether upstream fixed the bug — if so, drop the patch entirely.
+**"vendored source is UNPATCHED upstream code"** — a vendor refresh reverted `vendor/hermes-agent/<file>`. Re-apply the local patch to that file, commit it, refresh the patched hash, rebuild.
+
+**"base image file does not match the recorded pre-patch hash"** — `hermes-base` moved. Resolve in this order:
+
+1. Diff the new upstream file against the old base version. **Check whether upstream fixed the bug** — if so, drop the patch entirely and delete its row from `PATCHES`.
 2. If still needed, re-apply the patch onto the new upstream file and commit it to `vendor/hermes-agent`.
-3. Refresh the recorded hash:
+3. Refresh both hashes:
 
    ```bash
    docker run --rm nousresearch/hermes-agent:<new-tag> \
-     sha256sum /opt/hermes/tools/mcp_tool_transport.py
+     sha256sum /opt/hermes/tools/mcp_tool_transport.py     # base hash
+   sha256sum vendor/hermes-agent/tools/mcp_tool_transport.py  # patched hash
    ```
 
-4. Rebuild and confirm `agent-patch: applied` in the logs.
+4. `bash docker/patches/test-apply-agent-patches.sh`
+5. Rebuild and confirm `agent-patch: applied` in the logs.
 
 ## Verifying a deployed image
 
