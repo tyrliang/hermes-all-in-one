@@ -1,7 +1,0 @@
-# neuralwatt — no public API documented. Marking as UNSUPPORTED.
-verifiers:
-  neuralwatt:
-    type: http
-    url: https://httpbin.org/bearer
-    headers:
-      Authorization: "Bearer {secret}"

@@ -1,6 +1,0 @@
-verifiers:
-  resend:
-    type: http
-    url: https://api.resend.com/emails
-    headers:
-      Authorization: "Bearer {secret}"

@@ -17,11 +17,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Fast gate: catch unresolved conflict markers, unparseable vendored Python,
-  # and shell-syntax errors in the docker init/s6 scripts in seconds, instead of
-  # as a 60s health-timeout in the smoke build. The vendored webui and vault
-  # plugin ship in the image and crash-loop if they won't import; a broken
-  # cont-init/s6 script wedges startup the same way.
+  # Fast gate: catch unparseable control-plane Python and shell-syntax errors
+  # in the docker init/s6 scripts in seconds, instead of as a 60s health-timeout
+  # in the smoke build. Upstream trees are fetched at image build, not vendored.
   vendor-syntax:
     name: vendor syntax
     runs-on: ubuntu-latest
@@ -35,15 +33,9 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: No unresolved conflict markers in vendor/
-        run: |
-          if git grep -nE '^(<<<<<<<|>>>>>>>) ' -- vendor/; then
-            echo "::error::unresolved git conflict markers in vendor/"
-            exit 1
-          fi
+      - name: Byte-compile control plane
+        run: python -m compileall -q control_plane scripts/patch-vendor-models.py
 
-      - name: Byte-compile vendored webui and vault
-        run: python -m compileall -q vendor/hermes-webui vendor/hermes-vault
 
       - name: Shell-syntax check docker init/s6 scripts
         run: |

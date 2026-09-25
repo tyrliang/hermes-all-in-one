@@ -1,6 +1,0 @@
-verifiers:
-  serper:
-    type: http
-    url: https://google.serper.dev/account
-    headers:
-      X-API-KEY: "{secret}"

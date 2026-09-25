@@ -21,34 +21,35 @@ Invoke by path: read this `SKILL.md` when releasing.
 
 ## Version model
 
-Root `VERSION` (5 fields):
+Root `VERSION`:
 
 ```text
-0.12.0
-hermes-base=v2026.8.31
-agent-base=v2026.8.31
+1.0.0
+hermes-base=v2026.9.24
 webui-base=v0.52.113
-vault-base=v0.25.0
+webui-sha=c67fd2dd270a1128c2754200406bca58e9d9a25a
 ```
 
 | Field | Meaning |
 |-------|---------|
 | Line 1 `x.y.z` | Package semver → git tag `vX.Y.Z`, GHCR tag |
 | `hermes-base` | Docker Hub `nousresearch/hermes-agent` → `Dockerfile` `HERMES_IMAGE` |
-| `agent-base` | Vendored `vendor/hermes-agent` tag (usually == hermes-base) |
-| `webui-base` | Vendored `vendor/hermes-webui` tag |
-| `vault-base` | Vendored `vendor/hermes-vault` tag |
+| `webui-base` | Human label for the WebUI release |
+| `webui-sha` | Commit the image fetches. Not the tag. |
+
+There is no `vendor/` tree and no Vault. Do not archive-replace a vendor tree. Do not re-add Vault.
+Agent bytes are the base image. WebUI bytes are
+`https://github.com/nesquena/hermes-webui/archive/<webui-sha>.tar.gz`.
 
 ### Version **class** (what kind of semver)
 
 | Change | Semver class | Example |
 |--------|--------------|---------|
-| `hermes-base` / `agent-base` / `webui-base` advance | **minor** (y+1, z→0) | `0.11.0` → `0.12.0` |
-| `vault-base` or any container-only fix/feature | **patch** (z+1) | `0.10.0` → `0.10.1` |
-| Breaking packaging (volume/env contract) | **major** (x+1) | rare |
+| `hermes-base` or `webui-base` advance | **minor** (y+1, z→0) | `0.14.3` → `0.15.0` |
+| container-only fix/feature | **patch** (z+1) | `1.0.0` → `1.0.1` |
+| Breaking packaging (volume/env contract) | **major** (x+1) | `v1.0.0` dropped Vault |
 
-Class ≠ script. `bump-patch.sh` only means “z+1”; it does **not** write
-`webui-base` / `vault-base`. Those pins are advanced separately (see below).
+`bump-patch.sh` only means z+1. It does not write `webui-base` or `webui-sha`.
 
 ### What the scripts actually do
 
@@ -156,38 +157,14 @@ build log and verify the marker on the running container, e.g.:
 grep -c _mcp_proxy_mounts /opt/hermes/tools/mcp_tool_transport.py   # non-zero
 ```
 
-## Vendor strategy
+## Fetch strategy
 
-Prefer `./scripts/sync-upstreams.sh` (subtree pull for **agent + webui only**;
-clean tree required; does **not** vendor vault or write pins).
+Do not vendor. Do not `git subtree pull`. Do not `git archive` into `vendor/`.
 
-When subtree is unmergeable (common across large tag gaps):
-
-```bash
-TAG=v2026.8.31
-OLD_TAG=$(sed -n 's/^agent-base=//p' VERSION)   # pin currently in tree
-# Tags land in refs/tags/, not refs/remotes/<remote>/$TAG.
-git fetch hermes-agent-upstream tag "$TAG" tag "$OLD_TAG"
-# Pre-replace: MUST resolve the old pin to a real tree (not an empty dir).
-#   tmp=$(mktemp -d) && git archive "$OLD_TAG" | tar -x -C "$tmp"
-#   diff -rq "$tmp" vendor/hermes-agent | grep ' differ$'   # local patches
-#   rm -rf "$tmp"
-rm -rf vendor/hermes-agent
-mkdir -p vendor/hermes-agent
-git archive "$TAG" | tar -x -C vendor/hermes-agent
-# strip junk, re-apply patches
-python3 scripts/patch-vendor-models.py   # gate: OpenRouter/Codex counts must be non-zero
-git add vendor/hermes-agent   # explicit paths
-```
-
-Same pattern for webui/vault with their remotes. Commit message must note
-archive-replace + re-applied patches.
-
-Remotes (create if missing):
-
-- `hermes-agent-upstream` → `https://github.com/NousResearch/hermes-agent.git`
-- `hermes-webui-upstream` → `https://github.com/nesquena/hermes-webui.git`
-- vault → `https://github.com/asimons81/hermes-vault.git`
+- Agent: `./scripts/bump-hermes.sh <tag>` writes `hermes-base` and `Dockerfile` `HERMES_IMAGE`.
+- WebUI: set `webui-base` to the stable tag (ignore `exp-*`), then `./scripts/sync-upstreams.sh` writes `webui-sha`. The Dockerfile fetches that commit. Pass `--build-arg HERMES_WEBUI_SHA` from `VERSION` (smoke does this).
+- Model lists: `scripts/patch-vendor-models.py` runs inside the image build, reading `/opt/hermes` and writing `/app/hermes-webui`.
+- Vault: removed in v1.0.0. Do not install it, do not re-apply patch #42, do not add `vault-base`.
 
 ## Command cheat sheet
 
@@ -363,11 +340,11 @@ Body structure (see published v0.11.0 / v0.12.0):
 
 ## Agent instructions (ordered)
 
-1. Read `VERSION`; classify Hermes vs webui vs vault vs layer-only.
-2. Detect latest tags for all three; report moves vs holds.
-3. Use scripts + `pin_*` correctly — do not claim `bump-patch` advances webui/vault.
-4. Vendor every moved pin; archive-replace if subtree fails; diff + re-apply.
-5. `patch-vendor-models.py` after agent/webui vendor changes.
+1. Read `VERSION`. Classify Hermes vs WebUI vs layer-only. Vault is gone.
+2. Detect latest Hermes and stable WebUI tags. Report moves vs holds.
+3. `bump-patch.sh` does not write `webui-base` or `webui-sha`. Do not claim it does.
+4. Do not vendor. A WebUI pin move is `pin_webui_base` plus `./scripts/sync-upstreams.sh`.
+5. Model-list rewrite runs in the image build. Do not commit a patched WebUI tree.
 6. README VERSION example matches.
 7. `./scripts/smoke.sh` before merge/tag confidence.
 8. PR with full body; explicit path staging.

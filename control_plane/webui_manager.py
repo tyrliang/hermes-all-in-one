@@ -71,9 +71,9 @@ class WebUIManager:
                     "PYTHONUNBUFFERED": "1",
                 }
             )
-            server_py = Path("/app/vendor/hermes-webui/server.py")
+            server_py = Path("/app/hermes-webui/server.py")
             if not server_py.exists():
-                server_py = Path.cwd() / "vendor/hermes-webui/server.py"
+                server_py = Path.cwd() / "hermes-webui/server.py"
             self.process = subprocess.Popen(
                 [sys.executable, str(server_py)],
                 stdout=subprocess.PIPE,

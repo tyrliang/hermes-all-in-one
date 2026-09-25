@@ -12,25 +12,37 @@ USER root
 
 WORKDIR /app
 
-COPY vendor/hermes-webui /app/vendor/hermes-webui
-COPY vendor/hermes-vault /app/vendor/hermes-vault
 COPY control_plane /app/control_plane
 COPY requirements-control-plane.txt /app/requirements-control-plane.txt
+COPY scripts/patch-vendor-models.py /tmp/patch-vendor-models.py
 COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
 COPY docker/cont-init.d/ /etc/cont-init.d/
 COPY docker/sshd/ /etc/ssh/sshd_config.d/
 COPY docker/scripts/ /app/docker/scripts/
 COPY docker/profile.d/ /app/docker/profile.d/
 
-# Local patches to the agent tree that ships in the base image. vendor/hermes-agent
-# is otherwise a reference-only copy (scripts/patch-vendor-models.py reads it), so a
-# fix committed there reaches no runtime until it is installed over /opt/hermes.
-# The patch table is EMPTY as of hermes-base v2026.9.24 (upstream absorbed the MCP
-# env-proxy fix). Registering a new patch = one row in apply-agent-patches.sh plus a
-# COPY of the file out of the vendored tree. See docker/patches/README.md.
+# Local patches to the agent tree that ships in the base image. The patch table
+# is empty as of hermes-base v2026.9.24. A new patch is a file under
+# docker/patches/agent/ plus one row in apply-agent-patches.sh. See
+# docker/patches/README.md.
 COPY docker/patches/ /app/docker/patches/
 
 ARG HERMES_WEBUI_VERSION=unknown
+# Commit SHA, not the tag. GitHub's archive of a tag can move; the commit URL cannot.
+ARG HERMES_WEBUI_SHA=c67fd2dd270a1128c2754200406bca58e9d9a25a
+
+# WebUI is not a package. Fetch the pinned commit and lay it at /app/hermes-webui.
+# The model-list rewrite reads catalogs from the base image (/opt/hermes), so the
+# fallback picker matches the agent this image was built on.
+RUN curl -fsSL "https://github.com/nesquena/hermes-webui/archive/${HERMES_WEBUI_SHA}.tar.gz" \
+      -o /tmp/hermes-webui.tar.gz \
+    && tar -xzf /tmp/hermes-webui.tar.gz -C /tmp \
+    && mv "/tmp/hermes-webui-${HERMES_WEBUI_SHA}" /app/hermes-webui \
+    && rm -f /tmp/hermes-webui.tar.gz \
+    && HERMES_AGENT_ROOT=/opt/hermes HERMES_WEBUI_ROOT=/app/hermes-webui \
+         python3 /tmp/patch-vendor-models.py \
+    && rm -f /tmp/patch-vendor-models.py \
+    && chown -R hermes:hermes /app/hermes-webui
 
 # Tailscale userspace mode (no TUN): optional tailnet access on Railway. See README § Tailscale.
 RUN curl -fsSL https://tailscale.com/install.sh | sh
@@ -95,23 +107,8 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && chmod 0755 /usr/local/bin/lightpanda \
     && /usr/local/bin/lightpanda version
 
-# Hermes Vault — baked into the image as its own isolated venv (matches the
-# `uv tool install` isolation the persisted-volume install used, avoiding any
-# dependency collision with /opt/hermes/.venv's pinned versions). Bundling the
-# Hermes Secret Source plugin adapter into /opt/hermes/plugins/ makes it a
-# first-class bundled plugin (see hermes_cli/plugins.py:get_bundled_plugins_dir),
-# discovered on every boot with no dependency on the persistent volume.
-RUN python3 -m venv /opt/hermes-vault \
-    && /opt/hermes-vault/bin/pip install --no-cache-dir /app/vendor/hermes-vault \
-    && ln -s /opt/hermes-vault/bin/hermes-vault /usr/local/bin/hermes-vault \
-    && mkdir -p /opt/hermes/plugins/hermes-vault-secret-source \
-    && cp /app/vendor/hermes-vault/plugins/hermes-vault-secret-source/__init__.py \
-          /app/vendor/hermes-vault/plugins/hermes-vault-secret-source/plugin.yaml \
-          /opt/hermes/plugins/hermes-vault-secret-source/ \
-    && chown -R hermes:hermes /opt/hermes-vault /opt/hermes/plugins/hermes-vault-secret-source
-
 # fastapi + uvicorn[standard] + starlette are the `hermes dashboard` / `web` extra
-# deps: keep them in sync with vendor/hermes-agent/tools/lazy_deps.py and
+# deps: keep them in sync with the base image's tools/lazy_deps.py and
 # pyproject.toml `[project.optional-dependencies] web`.
 # uvicorn[standard] (not plain uvicorn) is required — it pulls in `websockets`,
 # which the dashboard's /api/pty and /api/ws WebSocket endpoints depend on.
@@ -119,39 +116,16 @@ RUN python3 -m venv /opt/hermes-vault \
 # resolve Starlette into the vulnerable <1.0.1 range and bypass path-gating
 # middleware (this image gates /admin that way).
 # chown the venv to hermes so the non-root user can run lazy installs at runtime.
-# hermes-vault is ALSO installed here with --no-deps: the bundled secret-source
-# plugin runs inside this venv and imports hermes_vault.crypto whenever a vault
-# profile is set (cfg `secrets.hermes_vault.profile` or HERMES_VAULT_PROFILE env).
-# --no-deps still installs a console-script entrypoint at
-# /opt/hermes/.venv/bin/hermes-vault that imports hermes_vault.cli (needs typer).
-# Gateway PATH puts .venv/bin first, so that broken stub shadows the isolated
-# /usr/local/bin/hermes-vault CLI and pre-exec inject fails (n=0 secrets).
-# Remove the stub; the real CLI stays in /opt/hermes-vault + /usr/local/bin.
-#
-# Gateway vault pre-exec shim: stock s6 run scripts call `hermes gateway run`
-# after cont-init regenerates them. Secret-source plugins register *after* the
-# first load_hermes_dotenv(), so vault-backed TELEGRAM_BOT_TOKEN never reaches
-# the gateway parent unless we inject before importing hermes_cli.main. We
-# install docker/scripts/hermes-with-vault over /opt/hermes/.venv/bin/hermes
-# (stock console script kept as hermes.stock.bak).
-RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-webui/api/_version.py \
+# Hermes Vault is not installed. Credentials are plaintext env / /admin.
+RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/hermes-webui/api/_version.py \
     && uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir \
-        -r /app/vendor/hermes-webui/requirements.txt \
+        -r /app/hermes-webui/requirements.txt \
         -r /app/requirements-control-plane.txt \
         "mcp>=1.24.0" \
         "fastapi==0.133.1" \
         "uvicorn[standard]==0.41.0" \
         "starlette==1.3.1" \
-    && uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir --no-deps \
-        /app/vendor/hermes-vault \
-    && rm -f /opt/hermes/.venv/bin/hermes-vault \
-    && cp /opt/hermes/.venv/bin/hermes /opt/hermes/.venv/bin/hermes.stock.bak \
-    && cp /app/docker/scripts/hermes-with-vault /opt/hermes/.venv/bin/hermes \
-    && chmod 755 /opt/hermes/.venv/bin/hermes \
-        /opt/hermes/.venv/bin/hermes.stock.bak \
-        /app/docker/scripts/hermes-with-vault \
-        /app/docker/scripts/hermes-vault-env-inject.py \
-    && chown -R hermes:hermes /opt/hermes/.venv \
+    && chown -R hermes:hermes /opt/hermes/.venv /app/hermes-webui \
     && chmod +x /etc/cont-init.d/03-all-in-one-setup \
     && chmod +x /etc/cont-init.d/04-tailscale-env \
     && chmod +x /etc/cont-init.d/05-hermes-path \

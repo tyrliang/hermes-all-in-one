@@ -100,7 +100,6 @@ jobs:
 
           ## Test plan
           - [ ] CI smoke passes on this PR
-          - [ ] Optionally run \`scripts/sync-upstreams.sh\` for WebUI vendor updates
           - [ ] After merge: \`git tag v${new_version}\` && \`git push origin v${new_version}\` to publish
           EOF
           )" \
