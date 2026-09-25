@@ -1,19 +1,18 @@
 ---
 name: hermes-all-in-one-release
 description: >-
-  Full hermes-all-in-one release cycle: detect upstream agent/webui/vault tags,
-  bump VERSION pins, vendor-replace trees, re-apply local patches, smoke, open
-  a detailed PR, merge, tag, watch release.yml, and replace the GitHub Release
-  stub with curated notes. Use when the user asks to release, bump Hermes,
-  adopt a new agent/webui/vault base, publish an image, write release notes,
-  tag v0.x.z, or run the upgrade chore.
+  Full hermes-all-in-one release cycle: detect upstream Hermes and stable WebUI
+  tags, bump VERSION pins, smoke, open a detailed PR, merge, tag, watch
+  release.yml, and replace the GitHub Release stub with curated notes. Use when
+  the user asks to release, bump Hermes, adopt a new agent or webui base,
+  publish an image, write release notes, tag v0.x.z, or run the upgrade chore.
 ---
 
 # hermes-all-in-one Release
 
-End-to-end playbook from real cycles (v0.10.0, v0.11.0, v0.12.0) and maintainer
-instructions. Do **not** stop at pin bump + tag — vendor trees, local patches,
-detailed PR body, and **edited GitHub Release notes** are required every time.
+End-to-end playbook. Do **not** stop at pin bump + tag — a detailed PR body and
+**edited GitHub Release notes** are required every time. Do **not** vendor
+upstream trees. Do **not** re-add Hermes Vault.
 
 **Location:** `.agents/skills/hermes-all-in-one-release/` (repo-local only).
 Not under `.cursor/skills/` and not installed into `~/.agents/skills`.
@@ -241,19 +240,17 @@ Upstream refresh and release prep for **hermes-all-in-one vX.Y.Z**.
 | Pin | Was (main / vOLD) | Now |
 |-----|-------------------|-----|
 | package | … | **X.Y.Z** (minor|patch: reason) |
-| hermes-base / agent-base | … (Agent v…) | **…** |
-| webui-base | … | … |
-| vault-base | … | … |
+| hermes-base | … (Agent v…) | **…** |
+| webui-base / webui-sha | … | … |
 
 ### Changes in this PR
 - Dockerfile / VERSION pins
-- Vendor method (subtree vs archive) + re-applied patches
-- patch-vendor-models / layer fixes
+- Layer fixes. No vendor tree. No Vault.
 - README VERSION example
 
 ### Other upstreams checked
 - hermes-webui: …
-- hermes-vault: …
+- hermes-vault: not installed. Do not re-add.
 
 ---
 
@@ -317,14 +314,14 @@ Body structure (see published v0.11.0 / v0.12.0):
 11. **`gh release edit`** full notes. Never leave the stub.
 12. Summarize: pins, PR URL, tag, image, release URL.
 
-**Commit messages:** `chore(release): 0.12.0 on hermes v…` · `chore(sync): vendor …` · `fix(scope): …` + patch bump.
+**Commit messages:** `chore(release): 0.15.0 on hermes v…` · `chore(sync): pin webui-sha …` · `fix(scope): …` + patch bump.
 
 ## Automation vs ad-hoc
 
 | What | How |
 |------|-----|
-| New Hermes on Docker Hub | `check-upstream.yml` → often **pin-only** PR — still vendor + notes |
-| Vendor subtree | `sync-upstreams.yml` or `scripts/sync-upstreams.sh` |
+| New Hermes on Docker Hub | `check-upstream.yml` → pin-only PR. Do not vendor. Rewrite the PR body. |
+| Newer stable WebUI tag | `sync-upstreams.yml` writes `webui-base` + `webui-sha`. Does not vendor. |
 | PR validation | `ci.yml`: **vendor syntax** + **smoke** |
 | Publish image + stub Release | Tag `vX.Y.Z` → `release.yml` |
 | Curated notes | **Manual** `gh release edit` |
@@ -336,8 +333,8 @@ Bot PRs may stall (`action_required`). Prefer human-user push.
 | Issue | Action |
 |-------|--------|
 | `bump-hermes` no-op | Already on that hermes-base |
-| Subtree unmergeable | Archive-replace after local-patch diff |
-| Vault custom env broken | Re-apply #42 |
+| WebUI pin moved but image unchanged | `webui-sha` missing or Dockerfile not reading `VERSION`. `./scripts/sync-upstreams.sh`, then smoke. |
+| Someone asks to re-apply vault #42 | Vault is not installed. Do not. |
 | Smoke apt fail (macOS) | `docker build --network=host` then `SMOKE_SKIP_BUILD=1 ./scripts/smoke.sh` |
 | Release preflight fail | Tag must match VERSION line 1 |
 | Notes still stub | `gh release edit` after green |

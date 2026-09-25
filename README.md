@@ -60,8 +60,8 @@ Deterministic operating contract. Every statement here is verifiable in-tree. Do
 1. **`/opt/data` is the only durable state.** No feature may depend on anything outside it surviving a redeploy. Wiping it destroys agent memory, Tailscale node identity, TLS certs, SSH keys, and the admin signing key.
 2. **The internal WebUI stays on `127.0.0.1:8788`.** It is unauthenticated at the socket level; the control plane is the only intended ingress. Binding it to `0.0.0.0` is a security regression.
 3. **Never set `PORT` in Railway variables.** The platform injects it (usually `8080`); hardcoding desyncs routing. `8787` is a code default for local use only.
-4. **Vendor trees are read-only.** Refresh via `scripts/sync-upstreams.sh` or the `sync-upstreams` workflow. A local patch to a vendor tree must be re-applied after every sync and recorded in the sync commit message (precedent: `b3c09890db`).
-5. **`hermes` on `PATH` inside the image is the vault shim**, not the stock console script. Stock is preserved at `/opt/hermes/.venv/bin/hermes.stock.bak` (`Dockerfile:135-136`). Do not overwrite the shim without preserving the pre-exec inject.
+4. **No vendored upstream trees.** Agent bytes are the base image. WebUI is fetched from `webui-sha` in `VERSION` at build time. Do not add `vendor/` back.
+5. **`hermes` on `PATH` is the stock console script.** There is no vault shim and no `hermes.stock.bak`. Hermes Vault is not installed.
 6. **`TERMINAL_HOME_MODE=real` is forced** at the s6 container-environment level (`docker/cont-init.d/05-hermes-path:27`). Upstream defaults to an isolated fake home at `${HERMES_HOME}/home`, which scatters pip/npm state and loses it on rebuild. Do not revert to isolated mode.
 7. **Minor version bumps are reserved for upstream base advances.** See [Releases & versioning](#releases--versioning). Everything else is a patch, no matter how large.
 8. **`git tag` is manual.** No workflow auto-tags on `VERSION` change. Pushing to `main` publishes nothing.
