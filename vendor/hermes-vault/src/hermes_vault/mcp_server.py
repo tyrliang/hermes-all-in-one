@@ -20,19 +20,40 @@ import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Resource, ResourceTemplate, TextContent, TextResourceContents, Tool
-from pydantic import AnyUrl
+from mcp.types import (
+    CallToolRequestParams,
+    CallToolResult,
+    ContentBlock,
+    ListResourceTemplatesRequest,
+    ListResourceTemplatesResult,
+    ListResourcesRequest,
+    ListResourcesResult,
+    ListToolsRequest,
+    ListToolsResult,
+    ReadResourceRequestParams,
+    ReadResourceResult,
+    Resource,
+    ResourceTemplate,
+    TextContent,
+    TextResourceContents,
+    Tool,
+)
 from rich.console import Console
 
 from hermes_vault import __version__
 from hermes_vault.audit import AuditLogger
 from hermes_vault.broker import Broker
 from hermes_vault.config import get_settings
-from hermes_vault.crypto import resolve_passphrase
+from hermes_vault.crypto import (
+    CorruptKeyMaterialError,
+    MissingKeyMaterialError,
+    MissingPassphraseError,
+    resolve_passphrase,
+)
 from hermes_vault.health import run_health
 from hermes_vault.models import AccessLogRecord, AgentCapability, CredentialSecret, Decision, ServiceAction
 from hermes_vault.mutations import OPERATOR_AGENT_ID, VaultMutations
@@ -352,6 +373,17 @@ def _record_binding_denial(
     )
 
 
+# Embedded operator default for unbound-mode MCP resource reads (v0.26.0 P4).
+# Generic MCP hosts do `resources/list` then `resources/read` on the advertised
+# URI verbatim — no `?agent_id=` query. In unbound mode those reads previously
+# errored with "Missing required parameter: agent_id" for every advertised URI.
+# Resource reads are read-only surfaces, so they fall back to the operator
+# identity (or HERMES_VAULT_MCP_DEFAULT_AGENT when set) when the URI carries no
+# agent; policy still gates every payload exactly as for an explicit agent.
+# Tool calls are NOT relaxed: they remain agent-scoped in unbound mode.
+_UNBOUND_RESOURCE_DEFAULT_AGENT = OPERATOR_AGENT_ID
+
+
 def _resolve_mcp_binding(
     settings: Any,
     arguments: dict[str, Any],
@@ -456,17 +488,51 @@ def _resource_lease_id(uri: Any) -> str | None:
 
 
 def _resolve_resource_binding(settings: Any, uri: Any, resource_key: str) -> MCPBindingContext:
-    return _resolve_mcp_binding(
-        settings,
-        _resource_arguments(uri),
-        f"resource:{resource_key}",
-    )
+    arguments = _resource_arguments(uri)
+    requested_agent_id = _normalize_agent_id(arguments.get("agent_id"))
+    allowed_agents = tuple(settings.mcp_allowed_agents or ())
+    env_default_agent = _normalize_agent_id(settings.mcp_default_agent)
+
+    if not allowed_agents:
+        if requested_agent_id is not None:
+            # Explicit ?agent_id= stays caller-scoped in unbound mode.
+            return MCPBindingContext(
+                requested_agent_id=requested_agent_id,
+                effective_agent_id=requested_agent_id,
+                binding_mode="unrestricted",
+                allowed_agents=allowed_agents,
+                default_agent=env_default_agent,
+            )
+        if env_default_agent is not None:
+            # HERMES_VAULT_MCP_DEFAULT_AGENT names a policy agent: bare URIs
+            # resolve through the normal policy-gated path as that agent.
+            return MCPBindingContext(
+                requested_agent_id=None,
+                effective_agent_id=env_default_agent,
+                binding_mode="default_fallback",
+                allowed_agents=allowed_agents,
+                default_agent=env_default_agent,
+            )
+        # v0.26.0 P4: bare advertised URIs (no ?agent_id=) must be readable as
+        # advertised. Fall back to the embedded operator default: the server
+        # process holds the operator's unlock material, so the advertised
+        # default gets the operator's metadata-only view (desktop-bridge
+        # precedent). Every payload stays metadata-only and audit-logged.
+        return MCPBindingContext(
+            requested_agent_id=None,
+            effective_agent_id=_UNBOUND_RESOURCE_DEFAULT_AGENT,
+            binding_mode="operator_default",
+            allowed_agents=allowed_agents,
+            default_agent=None,
+        )
+
+    return _resolve_mcp_binding(settings, arguments, f"resource:{resource_key}")
 
 
 def _json_resource(uri: Any, payload: dict[str, Any]) -> TextResourceContents:
     return TextResourceContents(
-        uri=AnyUrl(str(uri)),
-        mimeType="application/json",
+        uri=str(uri),
+        mime_type="application/json",
         text=_json_text(payload),
     )
 
@@ -477,6 +543,21 @@ def _resource_error(uri: Any, error: str, agent_id: str | None = None) -> dict[s
         "resource": str(uri).split("?", 1)[0],
         "agent_id": agent_id,
         "error": error,
+    }
+
+
+def _locked_error(code: str, message: str) -> dict[str, Any]:
+    """Typed locked-vault error envelope mirroring the desktop bridge (423 shape).
+
+    ``MISSING_PASSPHRASE`` when no unlock material is available in this
+    process; ``VAULT_NOT_READY`` when key material is missing or corrupt.
+    Both carry ``locked: true`` so hosts can distinguish lock-state from
+    policy denials without parsing prose.
+    """
+    return {
+        "error_code": code,
+        "message": str(message),
+        "locked": True,
     }
 
 
@@ -504,6 +585,8 @@ def _service_metadata_payload(record: Any) -> dict[str, Any]:
 
 def _services_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
     agent_id = binding.effective_agent_id or ""
+    if binding.binding_mode == "operator_default":
+        return _operator_services_resource_payload(broker, binding)
     services = broker.list_available_credentials(agent_id)
     return {
         "version": "vault-services-v1",
@@ -521,12 +604,58 @@ def _services_resource_payload(broker: Broker, binding: MCPBindingContext) -> di
     }
 
 
+def _operator_services_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
+    """Operator-default fallback view: metadata for every service in the vault.
+
+    Mirrors the desktop bridge's operator credential listing — the server
+    process holds the operator's unlock material, so the advertised default
+    resource shows the operator's metadata-only view. Never includes secret
+    material or encrypted payloads.
+    """
+    services: dict[str, dict[str, str]] = {}
+    for record in broker.vault.list_credentials():
+        services.setdefault(
+            record.service,
+            {
+                "service": record.service,
+                "alias": record.alias,
+                "credential_type": record.credential_type,
+                "status": record.status.value,
+            },
+        )
+    _record_resource_audit(
+        broker,
+        OPERATOR_AGENT_ID,
+        "mcp_resource_services",
+        Decision.allow,
+        "operator-default fallback: returned metadata-only service list",
+    )
+    payload_services = [
+        {
+            **info,
+            "resource_uri": f"vault://services/{urllib.parse.quote(info['service'], safe='')}",
+        }
+        for info in services.values()
+    ]
+    return {
+        "version": "vault-services-v1",
+        "generated_at": _generated_at(),
+        "agent_id": OPERATOR_AGENT_ID,
+        "binding_mode": binding.binding_mode,
+        "policy_scoped": False,
+        "count": len(payload_services),
+        "services": payload_services,
+    }
+
+
 def _service_detail_resource_payload(uri: Any, broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
     agent_id = binding.effective_agent_id or ""
     service = _resource_service_name(uri)
     if service is None:
         raise ValueError(f"Missing service name in resource URI: {uri}")
     alias = _resource_arguments(uri).get("alias")
+    if binding.binding_mode == "operator_default":
+        return _operator_service_detail_resource_payload(uri, broker, binding, service, alias)
 
     allowed, reason = broker.policy.can(agent_id, service, ServiceAction.metadata)
     if not allowed:
@@ -569,6 +698,38 @@ def _service_detail_resource_payload(uri: Any, broker: Broker, binding: MCPBindi
     }
 
 
+def _operator_service_detail_resource_payload(
+    uri: Any,
+    broker: Broker,
+    binding: MCPBindingContext,
+    service: str,
+    alias: str | None,
+) -> dict[str, Any]:
+    """Operator-default fallback for ``vault://services/{name}`` — metadata-only."""
+    records = [record for record in broker.vault.list_credentials() if record.service == service]
+    if alias is not None:
+        records = [record for record in records if record.alias == alias]
+    credentials = [_service_metadata_payload(record) for record in records]
+    _record_resource_audit(
+        broker,
+        OPERATOR_AGENT_ID,
+        "mcp_resource_service_detail",
+        Decision.allow,
+        "operator-default fallback: returned metadata-only credential records",
+    )
+    return {
+        "version": "vault-service-v1",
+        "generated_at": _generated_at(),
+        "agent_id": OPERATOR_AGENT_ID,
+        "binding_mode": binding.binding_mode,
+        "policy_scoped": False,
+        "service": service,
+        "alias": alias,
+        "count": len(credentials),
+        "credentials": credentials,
+    }
+
+
 def _lease_metadata_payload(record: Any) -> dict[str, Any]:
     payload = record.model_dump(mode="json")
     payload.pop("metadata", None)
@@ -578,6 +739,24 @@ def _lease_metadata_payload(record: Any) -> dict[str, Any]:
 
 def _leases_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
     agent_id = binding.effective_agent_id or ""
+    if binding.binding_mode == "operator_default":
+        leases = [lease.model_dump(mode="json") for lease in broker.vault.list_leases()]
+        _record_resource_audit(
+            broker,
+            OPERATOR_AGENT_ID,
+            "mcp_resource_leases",
+            Decision.allow,
+            "operator-default fallback: returned metadata-only lease inventory",
+        )
+        return {
+            "version": "vault-leases-v1",
+            "generated_at": _generated_at(),
+            "agent_id": OPERATOR_AGENT_ID,
+            "binding_mode": binding.binding_mode,
+            "policy_scoped": False,
+            "count": len(leases),
+            "leases": leases,
+        }
     lease_list_result = broker.list_leases(agent_id)
     if not lease_list_result.allowed:
         raise ValueError(lease_list_result.reason)
@@ -597,6 +776,25 @@ def _lease_detail_resource_payload(uri: Any, broker: Broker, binding: MCPBinding
     lease_id = _resource_lease_id(uri)
     if lease_id is None:
         raise ValueError(f"Missing lease id in resource URI: {uri}")
+    if binding.binding_mode == "operator_default":
+        lease_record = broker.vault.get_lease(lease_id)
+        if lease_record is None:
+            raise ValueError(f"lease '{lease_id}' not found")
+        _record_resource_audit(
+            broker,
+            OPERATOR_AGENT_ID,
+            "mcp_resource_lease_detail",
+            Decision.allow,
+            "operator-default fallback: returned metadata-only lease detail",
+        )
+        return {
+            "version": "vault-lease-v1",
+            "generated_at": _generated_at(),
+            "agent_id": OPERATOR_AGENT_ID,
+            "binding_mode": binding.binding_mode,
+            "policy_scoped": False,
+            "lease": lease_record.model_dump(mode="json"),
+        }
     lease_show_result = broker.show_lease(agent_id, lease_id)
     if not lease_show_result.allowed:
         raise ValueError(lease_show_result.reason)
@@ -612,6 +810,8 @@ def _lease_detail_resource_payload(uri: Any, broker: Broker, binding: MCPBinding
 
 def _health_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
     agent_id = binding.effective_agent_id or ""
+    if binding.binding_mode == "operator_default":
+        return _operator_health_resource_payload(broker, binding)
     cap_ok, cap_reason = broker.policy.can_capability(agent_id, AgentCapability.list_credentials)
     if not cap_ok:
         _record_resource_audit(broker, agent_id, "mcp_resource_health", Decision.deny, cap_reason)
@@ -643,15 +843,42 @@ def _health_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict
     return payload
 
 
+def _operator_health_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
+    """Operator-default fallback health snapshot — full vault, metadata-only."""
+    _record_resource_audit(
+        broker,
+        OPERATOR_AGENT_ID,
+        "mcp_resource_health",
+        Decision.allow,
+        "operator-default fallback: returned metadata-only health snapshot",
+    )
+    payload = run_health(broker.vault, audit=broker.audit, verify_live=False).as_dict(exclude_none=False)
+    payload.update({
+        "agent_id": OPERATOR_AGENT_ID,
+        "binding_mode": binding.binding_mode,
+        "policy_scoped": False,
+    })
+    return payload
+
+
 def _status_resource_payload(broker: Broker, binding: MCPBindingContext, settings: Any) -> dict[str, Any]:
     agent_id = binding.effective_agent_id or ""
+    operator_view = binding.binding_mode == "operator_default"
     health = _health_resource_payload(broker, binding)
     agent_policy = broker.policy.get_agent_policy(agent_id)
-    if agent_policy is None:
+    if agent_policy is None and not operator_view:
         raise ValueError(f"agent '{agent_id}' is not defined in policy")
 
-    lease_result = broker.list_leases(agent_id)
-    leases = list(lease_result.metadata.get("leases", [])) if lease_result.allowed else []
+    if operator_view:
+        leases = [lease.model_dump(mode="json") for lease in broker.vault.list_leases()]
+        service_count = len(
+            {record.service for record in broker.vault.list_credentials()}
+        )
+    else:
+        assert agent_policy is not None
+        lease_result = broker.list_leases(agent_id)
+        leases = list(lease_result.metadata.get("leases", [])) if lease_result.allowed else []
+        service_count = len(agent_policy.services)
     policy_report = run_policy_doctor(
         settings.effective_policy_path,
         generated_skills_dir=settings.generated_skills_dir,
@@ -713,7 +940,7 @@ def _status_resource_payload(broker: Broker, binding: MCPBindingContext, setting
         },
         "policy": {
             "policy_hash": broker.policy.compute_policy_hash(),
-            "service_count": len(agent_policy.services),
+            "service_count": service_count,
             "finding_count": policy_report.finding_count,
         },
         "leases": {
@@ -730,6 +957,8 @@ def _status_resource_payload(broker: Broker, binding: MCPBindingContext, setting
 
 def _policy_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
     agent_id = binding.effective_agent_id or ""
+    if binding.binding_mode == "operator_default":
+        return _operator_policy_resource_payload(broker, binding)
     agent_policy = broker.policy.get_agent_policy(agent_id)
     if agent_policy is None:
         reason = f"agent '{agent_id}' is not defined in policy"
@@ -766,6 +995,44 @@ def _policy_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict
     }
 
 
+def _operator_policy_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
+    """Operator-default fallback: metadata-only summary of every defined agent."""
+    _record_resource_audit(
+        broker,
+        OPERATOR_AGENT_ID,
+        "mcp_resource_policy",
+        Decision.allow,
+        "operator-default fallback: returned metadata-only all-agents policy summary",
+    )
+    agents: list[dict[str, Any]] = []
+    for agent_key, agent_policy in broker.policy.config.agents.items():
+        agents.append({
+            "agent_id": agent_key,
+            "services": agent_policy.services,
+            "capabilities": [capability.value for capability in agent_policy.capabilities],
+            "raw_secret_access": agent_policy.raw_secret_access,
+            "ephemeral_env_only": agent_policy.ephemeral_env_only,
+            "require_verification_before_reauth": agent_policy.require_verification_before_reauth,
+            "max_ttl_seconds": agent_policy.max_ttl_seconds,
+            "approval_required_services": agent_policy.approval_required_services,
+            "service_actions": {
+                service: {
+                    "actions": [action.value for action in entry.actions],
+                    "max_ttl_seconds": entry.max_ttl_seconds,
+                }
+                for service, entry in agent_policy.service_actions.items()
+            },
+        })
+    return {
+        "version": "policy-summary-v1",
+        "generated_at": _generated_at(),
+        "agent_id": OPERATOR_AGENT_ID,
+        "binding_mode": binding.binding_mode,
+        "policy_hash": broker.policy.compute_policy_hash(),
+        "agents": agents,
+    }
+
+
 def _agent_context_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
     agent_id = binding.effective_agent_id or ""
     from hermes_vault.agent_context import build_agent_context
@@ -787,6 +1054,23 @@ def _policy_explain_resource_payload(uri: Any, broker: Broker, binding: MCPBindi
 
 def _requests_resource_payload(broker: Broker, binding: MCPBindingContext) -> dict[str, Any]:
     agent_id = binding.effective_agent_id or ""
+    if binding.binding_mode == "operator_default":
+        requests = [request.model_dump(mode="json") for request in broker.vault.list_access_requests()]
+        _record_resource_audit(
+            broker,
+            OPERATOR_AGENT_ID,
+            "mcp_resource_requests",
+            Decision.allow,
+            "operator-default fallback: returned metadata-only access requests",
+        )
+        return {
+            "version": "vault-requests-v1",
+            "generated_at": _generated_at(),
+            "agent_id": OPERATOR_AGENT_ID,
+            "binding_mode": binding.binding_mode,
+            "policy_scoped": False,
+            "requests": requests,
+        }
     result = broker.list_access_requests(agent_id=agent_id)
     if not result.allowed:
         raise ValueError(result.reason)
@@ -871,98 +1155,97 @@ _pending_oauth: dict[str, dict[str, Any]] = {}
 server = Server("hermes-vault", version=__version__)
 
 
-@server.list_tools()
 async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="list_services",
             description="List credentials visible to the agent, filtered by policy.",
-            inputSchema=_TOOL_SCHEMAS["list_services"],
+            input_schema=_TOOL_SCHEMAS["list_services"],
         ),
         Tool(
             name="get_credential_metadata",
             description="Fetch metadata for a credential. Raw secrets are never returned.",
-            inputSchema=_TOOL_SCHEMAS["get_credential_metadata"],
+            input_schema=_TOOL_SCHEMAS["get_credential_metadata"],
         ),
         Tool(
             name="get_ephemeral_env",
             description="Materialise ephemeral environment variables for a service. Primary access pattern.",
-            inputSchema=_TOOL_SCHEMAS["get_ephemeral_env"],
+            input_schema=_TOOL_SCHEMAS["get_ephemeral_env"],
         ),
         Tool(
             name="lease_issue",
             description="Issue a credential lease for a service. Returns metadata only.",
-            inputSchema=_TOOL_SCHEMAS["lease_issue"],
+            input_schema=_TOOL_SCHEMAS["lease_issue"],
         ),
         Tool(
             name="lease_list",
             description="List visible leases for the effective agent. Returns metadata only.",
-            inputSchema=_TOOL_SCHEMAS["lease_list"],
+            input_schema=_TOOL_SCHEMAS["lease_list"],
         ),
         Tool(
             name="lease_show",
             description="Show one lease by ID. Returns metadata only.",
-            inputSchema=_TOOL_SCHEMAS["lease_show"],
+            input_schema=_TOOL_SCHEMAS["lease_show"],
         ),
         Tool(
             name="lease_renew",
             description="Renew a lease by ID. Returns metadata only.",
-            inputSchema=_TOOL_SCHEMAS["lease_renew"],
+            input_schema=_TOOL_SCHEMAS["lease_renew"],
         ),
         Tool(
             name="lease_revoke",
             description="Revoke a lease by ID. Returns metadata only.",
-            inputSchema=_TOOL_SCHEMAS["lease_revoke"],
+            input_schema=_TOOL_SCHEMAS["lease_revoke"],
         ),
         Tool(
             name="verify_credential",
             description="Verify a credential against its provider.",
-            inputSchema=_TOOL_SCHEMAS["verify_credential"],
+            input_schema=_TOOL_SCHEMAS["verify_credential"],
         ),
         Tool(
             name="rotate_credential",
             description="Rotate a credential to a new secret value. Requires rotate permission.",
-            inputSchema=_TOOL_SCHEMAS["rotate_credential"],
+            input_schema=_TOOL_SCHEMAS["rotate_credential"],
         ),
         Tool(
             name="scan_for_secrets",
             description="Scan filesystem paths for plaintext secrets.",
-            inputSchema=_TOOL_SCHEMAS["scan_for_secrets"],
+            input_schema=_TOOL_SCHEMAS["scan_for_secrets"],
         ),
         Tool(
             name="oauth_login",
             description="Initiate PKCE OAuth login for a provider. Returns authorization URL.",
-            inputSchema=_TOOL_SCHEMAS["oauth_login"],
+            input_schema=_TOOL_SCHEMAS["oauth_login"],
         ),
         Tool(
             name="oauth_device_login",
             description="Initiate headless OAuth device-code login for a provider. Never returns raw tokens.",
-            inputSchema=_TOOL_SCHEMAS["oauth_device_login"],
+            input_schema=_TOOL_SCHEMAS["oauth_device_login"],
         ),
         Tool(
             name="oauth_provider_status",
             description="Report read-only OAuth provider readiness and safe next commands.",
-            inputSchema=_TOOL_SCHEMAS["oauth_provider_status"],
+            input_schema=_TOOL_SCHEMAS["oauth_provider_status"],
         ),
         Tool(
             name="oauth_refresh",
             description="Trigger token refresh for a service using stored refresh token.",
-            inputSchema=_TOOL_SCHEMAS["oauth_refresh"],
+            input_schema=_TOOL_SCHEMAS["oauth_refresh"],
         ),
         Tool(
             name="request_access",
             description="Create a pending metadata-only access request. Does not return credentials.",
-            inputSchema=_TOOL_SCHEMAS["request_access"],
+            input_schema=_TOOL_SCHEMAS["request_access"],
         ),
         Tool(
             name="policy_explain",
             description="Explain why the effective agent can or cannot perform a service action.",
-            inputSchema=_TOOL_SCHEMAS["policy_explain"],
+            input_schema=_TOOL_SCHEMAS["policy_explain"],
         ),
         Tool(
             name="lease_checkout",
             description="Issue or reuse a lease and perform brokered env handoff through the same policy path.",
-            inputSchema=_TOOL_SCHEMAS["lease_checkout"],
+            input_schema=_TOOL_SCHEMAS["lease_checkout"],
         ),
     ]
 
@@ -992,127 +1275,124 @@ async def _default_agent_service_resources() -> list[Resource]:
             Resource(
                 name=f"vault-service-{service_name}",
                 title=f"Hermes Vault service: {service_name}",
-                uri=AnyUrl(f"vault://services/{urllib.parse.quote(service_name, safe='')}"),
+                uri=f"vault://services/{urllib.parse.quote(service_name, safe='')}",
                 description=f"Metadata for policy-visible service '{service_name}'.",
-                mimeType="application/json",
+                mime_type="application/json",
             )
         )
     return resources
 
 
-@server.list_resources()
 async def list_resources() -> list[Resource]:
     resources = [
         Resource(
             name="vault-status",
             title="Hermes Vault status",
-            uri=AnyUrl("vault://status"),
+            uri="vault://status",
             description="Consolidated policy-scoped vault status and safe next steps.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         Resource(
             name="vault-services",
             title="Hermes Vault services",
-            uri=AnyUrl("vault://services"),
+            uri="vault://services",
             description="Policy-scoped credential services visible to the effective agent.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         Resource(
             name="vault-health",
             title="Hermes Vault health",
-            uri=AnyUrl("vault://health"),
+            uri="vault://health",
             description="Policy-scoped read-only vault health summary. Does not perform live provider verification.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         Resource(
             name="vault-policy",
             title="Hermes Vault policy summary",
-            uri=AnyUrl("vault://policy"),
+            uri="vault://policy",
             description="Sanitized policy summary for the effective agent only.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         Resource(
             name="vault-leases",
             title="Hermes Vault leases",
-            uri=AnyUrl("vault://leases"),
+            uri="vault://leases",
             description="Policy-scoped lease inventory for the effective agent.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         Resource(
             name="vault-agent-context",
             title="Hermes Vault agent context",
-            uri=AnyUrl("vault://agent-context"),
+            uri="vault://agent-context",
             description="Redacted manifest of effective-agent access, leases, and pending requests.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         Resource(
             name="vault-policy-explain",
             title="Hermes Vault policy explain",
-            uri=AnyUrl("vault://policy-explain"),
+            uri="vault://policy-explain",
             description="Policy explanation resource. Requires query parameters: service; optional action and ttl_seconds.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         Resource(
             name="vault-requests",
             title="Hermes Vault access requests",
-            uri=AnyUrl("vault://requests"),
+            uri="vault://requests",
             description="Metadata-only access requests for the effective agent.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         Resource(
             name="vault-recovery",
             title="Hermes Vault recovery drill",
-            uri=AnyUrl("vault://recovery"),
+            uri="vault://recovery",
             description="Redacted recovery drill resource. Requires query parameter: backup.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         Resource(
             name="vault-audit-integrity",
             title="Hermes Vault audit integrity",
-            uri=AnyUrl("vault://audit-integrity"),
+            uri="vault://audit-integrity",
             description="Metadata-only audit integrity status: status, chain version, checkpoint state, verified count.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
     ]
     resources.extend(await _default_agent_service_resources())
     return resources
 
 
-@server.list_resource_templates()
 async def list_resource_templates() -> list[ResourceTemplate]:
     return [
         ResourceTemplate(
             name="vault-service-detail",
             title="Hermes Vault service metadata",
-            uriTemplate="vault://services/{name}",
+            uri_template="vault://services/{name}",
             description="Metadata for one policy-visible service. Optional query parameters: agent_id, alias.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         ResourceTemplate(
             name="vault-lease-detail",
             title="Hermes Vault lease metadata",
-            uriTemplate="vault://leases/{id}",
+            uri_template="vault://leases/{id}",
             description="Metadata for one policy-visible lease. Optional query parameter: agent_id.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         ResourceTemplate(
             name="vault-policy-explain-query",
             title="Hermes Vault policy explain query",
-            uriTemplate="vault://policy-explain?service={service}&action={action}",
+            uri_template="vault://policy-explain?service={service}&action={action}",
             description="Explain an effective-agent service action. Optional query parameters: agent_id, ttl_seconds.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
         ResourceTemplate(
             name="vault-recovery-query",
             title="Hermes Vault recovery drill query",
-            uriTemplate="vault://recovery?backup={path}",
+            uri_template="vault://recovery?backup={path}",
             description="Run a redacted recovery drill for a local backup path. Optional query parameter: agent_id.",
-            mimeType="application/json",
+            mime_type="application/json",
         ),
     ]
 
 
-@server.read_resource()
 async def read_resource(uri: Any) -> Any:
     settings = get_settings()
     key = _resource_key(uri)
@@ -1121,7 +1401,12 @@ async def read_resource(uri: Any) -> Any:
     except ValueError as exc:
         return [_json_resource(uri, _resource_error(uri, str(exc), agent_id=None))]
 
-    broker = _get_broker()
+    try:
+        broker = _get_broker()
+    except MissingPassphraseError as exc:
+        return [_json_resource(uri, {**_resource_error(uri, str(exc), agent_id=binding.effective_agent_id), **_locked_error("MISSING_PASSPHRASE", str(exc))})]
+    except (MissingKeyMaterialError, CorruptKeyMaterialError) as exc:
+        return [_json_resource(uri, {**_resource_error(uri, "Vault key material is unavailable", agent_id=binding.effective_agent_id), **_locked_error("VAULT_NOT_READY", str(exc))})]
     agent_id = binding.effective_agent_id or ""
 
     try:
@@ -1157,7 +1442,6 @@ async def read_resource(uri: Any) -> Any:
     return [_json_resource(uri, payload)]
 
 
-@server.call_tool()
 async def call_tool(name: str, arguments: Any) -> list[TextContent]:
     arguments = arguments or {}
     preflight_error = _preflight_tool_arguments(name, arguments)
@@ -1170,7 +1454,12 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
     except ValueError as exc:
         return [TextContent(type="text", text=f"Error: {sanitize_oauth_error_detail(exc)}")]
 
-    broker = _get_broker()
+    try:
+        broker = _get_broker()
+    except MissingPassphraseError as exc:
+        return [TextContent(type="text", text=_json_text(_locked_error("MISSING_PASSPHRASE", str(exc))))]
+    except (MissingKeyMaterialError, CorruptKeyMaterialError) as exc:
+        return [TextContent(type="text", text=_json_text(_locked_error("VAULT_NOT_READY", str(exc))))]
 
     try:
         if name == "list_services":
@@ -1356,6 +1645,42 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
     except Exception as exc:
         logger.exception("Unhandled error in tool %s", name)
         return [TextContent(type="text", text=f"Internal error: {sanitize_oauth_error_detail(exc)}")]
+
+
+# ── mcp 2.x request handlers ──────────────────────────────────────────────────
+# The mcp 2.x SDK removed the decorator API (list_tools/list_resources/call_tool)
+# from the low-level Server. Handlers are registered per JSON-RPC method with
+# explicit params/result wire types; the handler bodies remain the plain module
+# functions above so they stay directly testable.
+
+
+async def _handle_list_tools(ctx: Any, params: Any) -> ListToolsResult:
+    return ListToolsResult(tools=await list_tools())
+
+
+async def _handle_call_tool(ctx: Any, params: CallToolRequestParams) -> CallToolResult:
+    arguments = dict(params.arguments or {})
+    return CallToolResult(content=cast(list[ContentBlock], await call_tool(params.name, arguments)))
+
+
+async def _handle_list_resources(ctx: Any, params: Any) -> ListResourcesResult:
+    return ListResourcesResult(resources=await list_resources())
+
+
+async def _handle_list_resource_templates(ctx: Any, params: Any) -> ListResourceTemplatesResult:
+    return ListResourceTemplatesResult(resource_templates=await list_resource_templates())
+
+
+async def _handle_read_resource(ctx: Any, params: ReadResourceRequestParams) -> ReadResourceResult:
+    contents = await read_resource(str(params.uri))
+    return ReadResourceResult(contents=list(contents))
+
+
+server.add_request_handler("tools/list", ListToolsRequest, _handle_list_tools)
+server.add_request_handler("tools/call", CallToolRequestParams, _handle_call_tool)
+server.add_request_handler("resources/list", ListResourcesRequest, _handle_list_resources)
+server.add_request_handler("resources/templates/list", ListResourceTemplatesRequest, _handle_list_resource_templates)
+server.add_request_handler("resources/read", ReadResourceRequestParams, _handle_read_resource)
 
 
 # ── OAuth tool implementations ───────────────────────────────────────────────
@@ -1768,8 +2093,11 @@ async def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         filename=str(log_path),
     )
-    global _broker
-    _broker = _get_broker()
+    # v0.26.0 P4: the broker is built lazily on the first vault-touching
+    # request. Capabilities-only sessions (initialize / tools/list /
+    # resources/list) must not require a decryptable vault, and a missing
+    # passphrase surfaces as a typed MISSING_PASSPHRASE envelope per call
+    # instead of killing the server at cold start with a raw traceback.
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,
