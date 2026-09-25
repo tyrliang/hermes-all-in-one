@@ -33,9 +33,10 @@ A red build costs minutes. A silent revert costs an outage and a debugging sessi
 Build-log markers, greppable:
 
 ```
-agent-patch: applied tools/mcp_tool_transport.py
-agent-patch: already applied tools/mcp_tool_transport.py
-agent-patch: FAILED tools/mcp_tool_transport.py      <- alert
+agent-patch: applied tools/example.py
+agent-patch: already applied tools/example.py
+agent-patch: FAILED tools/example.py      <- alert
+agent-patch: done (0 applied, 0 already present)   <- empty table
 ```
 
 ## Tests
@@ -44,15 +45,21 @@ agent-patch: FAILED tools/mcp_tool_transport.py      <- alert
 bash docker/patches/test-apply-agent-patches.sh
 ```
 
-Covers the upgrade matrix — pristine base, `hermes-base` moved, vendor refresh reverted the patch, both moved, and a rebuild of an already-patched image — plus missing source and missing target. The invariant asserted throughout: **the build never goes green with the patch missing from the image.**
+Covers the upgrade matrix — pristine base, `hermes-base` moved, vendor refresh reverted the patch, both moved, a rebuild of an already-patched image — plus missing source, missing target, and an empty table. The invariant asserted throughout: **the build never goes green with the patch missing from the image.**
+
+The matrix runs against a synthetic patch injected via `PATCHES_OVERRIDE`, so it keeps testing the guard while no real patch is registered. Separately, every row of the real `PATCHES` table is checked against the vendored file it names, which catches a hash left stale after re-basing a patch.
 
 Run it after touching the script or re-basing a patch. Reverting the source verification makes S2 and S3 fail with `SILENT REGRESSION`, which is the bug this guard exists to prevent.
 
 ## Current patches
 
-| File | Fix | Retire when |
-|------|-----|-------------|
-| `tools/mcp_tool_transport.py` | MCP HTTP/SSE transports honour `HTTPS_PROXY` / `ALL_PROXY` and the shared `NO_PROXY` rules. Both builders hand httpx an explicit `transport=`, which disables its `trust_env` proxy mounts, so MCP connected direct and every server behind a proxy failed with `[Errno -2] Name or service not known`. | `NousResearch/hermes-agent` ships the equivalent fix |
+**None.** The table in `apply-agent-patches.sh` is empty as of `hermes-base` `v2026.9.24`.
+
+| File | Fix | Retired |
+|------|-----|---------|
+| `tools/mcp_tool_transport.py` | MCP HTTP/SSE transports honour `HTTPS_PROXY` / `ALL_PROXY` and the shared `NO_PROXY` rules. Both builders handed httpx an explicit `transport=`, which disables its `trust_env` proxy mounts, so MCP connected direct and every server behind a proxy failed with `[Errno -2] Name or service not known`. | `v2026.9.24` — upstream ships the equivalent fix as `_mcp_proxy_mounts()`, wired into all three MCP client builders via `mounts=`, with a wider matcher (OS proxy, `urllib.request.proxy_bypass`, loopback) and its own test `tests/tools/test_mcp_http_proxy.py` |
+
+Registering a new patch takes two edits: a row in `PATCHES`, and a `COPY vendor/hermes-agent/<path> /app/patches/agent/<path>` in the Dockerfile.
 
 ## On a hermes-base bump or a vendor refresh
 
@@ -77,8 +84,10 @@ The build fails with a hash mismatch. That is the system working. Which hash fai
 
 ## Verifying a deployed image
 
-Do not infer from a green build that the patch is live. Check the running container:
+Do not infer from a green build that a patch is live. Check the running container — for example, when `tools/mcp_tool_transport.py` was patched:
 
 ```bash
 grep -c _env_proxy_for /opt/hermes/tools/mcp_tool_transport.py   # >0 = present
 ```
+
+With an empty table there is nothing to verify beyond the build log line `agent-patch: done (0 applied, 0 already present)`.

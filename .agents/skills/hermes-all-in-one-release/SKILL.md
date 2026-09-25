@@ -118,10 +118,14 @@ From maintainer sessions — acceptance criteria:
 
 | Area | What | When |
 |------|------|------|
-| **Agent `mcp_tool_transport.py`** | MCP HTTP/SSE transports honour `HTTPS_PROXY`/`ALL_PROXY` + shared `NO_PROXY`. Upstream hands httpx an explicit `transport=`, killing `trust_env` proxy mounts — every MCP server behind a proxy fails `[Errno -2]`. | **Every** `vendor/hermes-agent` replace until upstream ships it. Re-apply to the vendored file, then refresh **both** hashes in `docker/patches/apply-agent-patches.sh` |
 | Vault `#42` | `_AnyNameTemplate` in vault `service_ids.py` (+ test) so custom env names work (e.g. `HINDSIGHT_API_KEY=hv://hindsight`) | **Every** `vendor/hermes-vault` replace until upstream ships it |
 | WebUI models | `python3 scripts/patch-vendor-models.py` | After agent and/or webui vendor change |
 | Upstream junk | Strip accidental paths (e.g. `apps/desktop/'/var/folders/...` mutex files) | After agent archive replace if present |
+| ~~Agent `mcp_tool_transport.py`~~ | Env proxy for MCP HTTP/SSE transports | **Retired** at `v2026.9.24` — upstream ships `_mcp_proxy_mounts()`. `PATCHES` in `docker/patches/apply-agent-patches.sh` is now empty |
+
+On every agent vendor replace, re-check the retired row: a base-hash mismatch is
+the signal to ask whether upstream fixed the bug (drop the patch) or merely moved
+the file (re-base it). `docker/patches/README.md` has the decision table.
 
 Before replace: diff `vendor/<name>` against the **old** pin tag; list runtime
 deltas; replace; re-apply; targeted tests.
@@ -136,18 +140,20 @@ installs it over `/opt/hermes` at build time. This cost a full release cycle
 
 That script pins the base **and** patched hash per file and fails the build on
 either mismatch, so a vendor refresh that reverts a patch is a red build rather
-than a silent revert. After any agent vendor change:
+than a silent revert. The table is currently empty, so the build step is a no-op
+(`agent-patch: done (0 applied, 0 already present)`); the harness stays tested
+against a synthetic patch. After any agent vendor change:
 
 ```bash
 bash docker/patches/test-apply-agent-patches.sh
 ```
 
-and confirm `agent-patch: applied <path>` in the smoke build log. A green build
-alone does **not** prove an agent-level patch reached the image — verify on the
-running container:
+A green build alone does **not** prove an agent-level patch reached the image —
+when the table is non-empty, confirm `agent-patch: applied <path>` in the smoke
+build log and verify the marker on the running container, e.g.:
 
 ```bash
-grep -c _env_proxy_for /opt/hermes/tools/mcp_tool_transport.py   # non-zero
+grep -c _mcp_proxy_mounts /opt/hermes/tools/mcp_tool_transport.py   # non-zero
 ```
 
 ## Vendor strategy
