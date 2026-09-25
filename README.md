@@ -8,10 +8,10 @@ No terminal setup. Deploy it, open `/admin`, paste an API key, connect a channel
 
 | | |
 |---|---|
-| **Package version** | `1.0.0` |
+| **Package version** | `0.15.0` |
 | **Base image** | `nousresearch/hermes-agent:v2026.9.24` |
 | **Fetched at build** | webui `v0.52.113` (`c67fd2dd270a1128c2754200406bca58e9d9a25a`) |
-| **Published image** | `ghcr.io/tyrliang/hermes-all-in-one:v1.0.0` / `:latest` |
+| **Published image** | `ghcr.io/tyrliang/hermes-all-in-one:v0.15.0` / `:latest` |
 | **Volume mount** | `/opt/data` (required) |
 | **Public port** | `$PORT` (Railway-injected) or `8787` |
 
@@ -797,7 +797,7 @@ Two version concepts: this package's semver, and the upstream tags baked into th
 ## The `VERSION` file
 
 ```text
-1.0.0
+0.15.0
 hermes-base=v2026.9.24
 webui-base=v0.52.113
 webui-sha=c67fd2dd270a1128c2754200406bca58e9d9a25a
@@ -805,7 +805,7 @@ webui-sha=c67fd2dd270a1128c2754200406bca58e9d9a25a
 
 | Line | Field | Meaning |
 |---|---|---|
-| 1 | package semver | GHCR tag + git tag: `v1.0.0` |
+| 1 | package semver | GHCR tag + git tag: `v0.15.0` |
 | 2 | `hermes-base` | Pinned `nousresearch/hermes-agent` tag in the Dockerfile |
 | 3 | `webui-base` | WebUI release tag. Human label. The image fetches `webui-sha`, not the tag. |
 | 4 | `webui-sha` | Commit archive URL: `https://github.com/nesquena/hermes-webui/archive/<sha>.tar.gz` |
@@ -818,7 +818,7 @@ Minor is reserved for upstream agent/webui base advances. Everything else is a p
 |---|---|---|
 | New Hermes Agent or WebUI release | **y**+1, **z**→0 | `0.14.3` → `0.15.0` on Hermes `v2026.9.24` |
 | Container-only fix or feature | **z**+1 | `0.10.0` → `0.10.1` |
-| Breaking packaging change (volume layout, env contract) | **x**+1, manual | `v1.0.0` drops Hermes Vault |
+| Breaking packaging change (volume layout, env contract) | **x**+1, manual | Rare. Vault left in 0.15.0, before that tag existed, so it stayed a minor. |
 
 The rule is whether `hermes-base` or `webui-base` moved. A container-only change is still a patch. Breaking the env or volume contract is a major.
 
@@ -874,7 +874,7 @@ Only a matching `v*.*.*` git tag publishes an image.
 | [`test.yml`](.github/workflows/test.yml) | Manual only | `echo hello` stub | Placeholder, not a test suite |
 | [`sync-upstreams.yml`](.github/workflows/sync-upstreams.yml) | Daily 04:00 UTC, or manual | Opens a PR that advances `webui-base` and `webui-sha` when a newer stable WebUI tag exists. Does not vendor. | `SYNC_PAT` preferred; falls back to `GITHUB_TOKEN` |
 
-Release notes should name both versions, e.g. **hermes-all-in-one v1.0.0** on **Hermes Agent v2026.9.24**.
+Release notes should name both versions, e.g. **hermes-all-in-one v0.15.0** on **Hermes Agent v2026.9.24**.
 
 **Upstream bytes.** The agent is the Docker base image. WebUI is fetched by `webui-sha` at build time. There is no `vendor/` tree. Hermes Vault is not installed.
 

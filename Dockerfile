@@ -15,6 +15,7 @@ WORKDIR /app
 COPY control_plane /app/control_plane
 COPY requirements-control-plane.txt /app/requirements-control-plane.txt
 COPY scripts/patch-vendor-models.py /tmp/patch-vendor-models.py
+COPY VERSION /tmp/VERSION
 COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
 COPY docker/cont-init.d/ /etc/cont-init.d/
 COPY docker/sshd/ /etc/ssh/sshd_config.d/
@@ -28,16 +29,18 @@ COPY docker/profile.d/ /app/docker/profile.d/
 COPY docker/patches/ /app/docker/patches/
 
 ARG HERMES_WEBUI_VERSION=unknown
-# Commit SHA, not the tag. GitHub's archive of a tag can move; the commit URL cannot.
-ARG HERMES_WEBUI_SHA=c67fd2dd270a1128c2754200406bca58e9d9a25a
+# Optional override. Empty means the webui-sha line in the copied VERSION file.
+# Release, smoke, and a plain Railway build all read that line, so they cannot diverge.
+ARG HERMES_WEBUI_SHA
 
 # WebUI is not a package. Fetch the pinned commit and lay it at /app/hermes-webui.
-# The model-list rewrite reads catalogs from the base image (/opt/hermes), so the
-# fallback picker matches the agent this image was built on.
-RUN curl -fsSL "https://github.com/nesquena/hermes-webui/archive/${HERMES_WEBUI_SHA}.tar.gz" \
-      -o /tmp/hermes-webui.tar.gz \
+# The model-list rewrite reads catalogs from the base image (/opt/hermes).
+RUN sha="${HERMES_WEBUI_SHA:-$(sed -n 's/^webui-sha=//p' /tmp/VERSION | tr -d '[:space:]')}" \
+    && test -n "$sha" \
+    && curl -fsSL "https://github.com/nesquena/hermes-webui/archive/${sha}.tar.gz" \
+         -o /tmp/hermes-webui.tar.gz \
     && tar -xzf /tmp/hermes-webui.tar.gz -C /tmp \
-    && mv "/tmp/hermes-webui-${HERMES_WEBUI_SHA}" /app/hermes-webui \
+    && mv "/tmp/hermes-webui-${sha}" /app/hermes-webui \
     && rm -f /tmp/hermes-webui.tar.gz \
     && HERMES_AGENT_ROOT=/opt/hermes HERMES_WEBUI_ROOT=/app/hermes-webui \
          python3 /tmp/patch-vendor-models.py \

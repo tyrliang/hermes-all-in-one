@@ -74,6 +74,7 @@ jobs:
           build-args: |
             HERMES_IMAGE=nousresearch/hermes-agent:${{ steps.version.outputs.hermes_base }}
             HERMES_WEBUI_VERSION=v${{ steps.version.outputs.semver }}
+            HERMES_WEBUI_SHA=${{ steps.version.outputs.webui_sha }}
           platforms: linux/amd64
           outputs: type=image,push-by-digest=true,name-canonical=true
           push: true
@@ -114,6 +115,7 @@ jobs:
           build-args: |
             HERMES_IMAGE=nousresearch/hermes-agent:${{ steps.version.outputs.hermes_base }}
             HERMES_WEBUI_VERSION=v${{ steps.version.outputs.semver }}
+            HERMES_WEBUI_SHA=${{ steps.version.outputs.webui_sha }}
           platforms: linux/arm64
           outputs: type=image,push-by-digest=true,name-canonical=true
           push: true
