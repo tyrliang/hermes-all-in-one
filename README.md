@@ -8,10 +8,10 @@ No terminal setup. Deploy it, open `/admin`, paste an API key, connect a channel
 
 | | |
 |---|---|
-| **Package version** | `0.14.0` |
-| **Base image** | `nousresearch/hermes-agent:v2026.9.14` |
-| **Vendored** | agent `v2026.9.14` · webui `v0.52.113` · vault `v0.25.0` |
-| **Published image** | `ghcr.io/tyrliang/hermes-all-in-one:v0.14.0` / `:latest` |
+| **Package version** | `0.15.0` |
+| **Base image** | `nousresearch/hermes-agent:v2026.9.24` |
+| **Vendored** | agent `v2026.9.24` · webui `v0.52.113` · vault `v0.26.0` |
+| **Published image** | `ghcr.io/tyrliang/hermes-all-in-one:v0.15.0` / `:latest` |
 | **Volume mount** | `/opt/data` (required) |
 | **Public port** | `$PORT` (Railway-injected) or `8787` |
 
@@ -738,15 +738,15 @@ Defaults below are what the **image** provides (`Dockerfile:161-177`) or what th
 
 | `ARG` | Default | Purpose |
 |---|---|---|
-| `HERMES_IMAGE` | `nousresearch/hermes-agent:v2026.9.14` | Base image pin; kept in sync with `hermes-base` in `VERSION` |
+| `HERMES_IMAGE` | `nousresearch/hermes-agent:v2026.9.24` | Base image pin; kept in sync with `hermes-base` in `VERSION` |
 | `HERMES_WEBUI_VERSION` | `unknown` | Baked into the vendored WebUI's `_version.py` |
 | `MICRO_VERSION` | `2.0.14` | `micro` editor for interactive shells |
 | `LIGHTPANDA_VERSION` | `0.3.7` | Lightpanda release, SHA256-verified per arch |
 
 ```bash
 docker build \
-  --build-arg HERMES_IMAGE=nousresearch/hermes-agent:v2026.9.14 \
-  --build-arg HERMES_WEBUI_VERSION=v0.14.0 \
+  --build-arg HERMES_IMAGE=nousresearch/hermes-agent:v2026.9.24 \
+  --build-arg HERMES_WEBUI_VERSION=v0.15.0 \
   -t hermes-all-in-one .
 ```
 
@@ -842,11 +842,11 @@ Two version concepts: this package's semver, and the upstream tags baked into th
 ## The `VERSION` file
 
 ```text
-0.14.3
-hermes-base=v2026.9.14
-agent-base=v2026.9.14
+0.15.0
+hermes-base=v2026.9.24
+agent-base=v2026.9.24
 webui-base=v0.52.113
-vault-base=v0.25.0
+vault-base=v0.26.0
 ```
 
 | Line | Field | Meaning |

@@ -25,9 +25,9 @@ COPY docker/profile.d/ /app/docker/profile.d/
 # Local patches to the agent tree that ships in the base image. vendor/hermes-agent
 # is otherwise a reference-only copy (scripts/patch-vendor-models.py reads it), so a
 # fix committed there reaches no runtime until it is installed over /opt/hermes.
-# Copy from the vendored tree — one source of truth, no duplicated file to drift.
-# See docker/patches/README.md.
-COPY vendor/hermes-agent/tools/mcp_tool_transport.py /app/patches/agent/tools/mcp_tool_transport.py
+# The patch table is EMPTY as of hermes-base v2026.9.24 (upstream absorbed the MCP
+# env-proxy fix). Registering a new patch = one row in apply-agent-patches.sh plus a
+# COPY of the file out of the vendored tree. See docker/patches/README.md.
 COPY docker/patches/ /app/docker/patches/
 
 ARG HERMES_WEBUI_VERSION=unknown
@@ -170,9 +170,9 @@ RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/vendor/hermes-w
 
 # Install local agent patches over the base image's /opt/hermes tree. Runs after the
 # venv work above so nothing later overwrites the patched files. Fails the build if a
-# target's pre-patch hash no longer matches the pinned base image — on a hermes-base
-# bump, re-apply the patch and refresh the hash rather than pasting stale code over
-# newer upstream. Verify in build logs: "agent-patch: applied tools/mcp_tool_transport.py".
+# registered patch's pre-patch hash no longer matches the pinned base image, or if a
+# vendor refresh reverted the patched source. With an empty patch table this is a
+# no-op that logs "agent-patch: done (0 applied, 0 already present)".
 RUN chmod +x /app/docker/patches/apply-agent-patches.sh \
     && /app/docker/patches/apply-agent-patches.sh \
     && chown -R hermes:hermes /opt/hermes/tools
