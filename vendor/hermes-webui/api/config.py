@@ -1094,6 +1094,10 @@ CLI_TOOLSETS = _resolve_cli_toolsets()
 # Also used as the OpenRouter model list — keep this curated to current, widely-used models.
 _FALLBACK_MODELS = [
     # OpenAI
+    {"provider": "OpenAI", "id": "openai/gpt-6-luna-pro", "label": "GPT 6 Luna Pro"},
+    {"provider": "OpenAI", "id": "openai/gpt-6-luna", "label": "GPT 6 Luna"},
+    {"provider": "OpenAI", "id": "openai/gpt-6-sol-pro", "label": "GPT 6 Sol Pro"},
+    {"provider": "OpenAI", "id": "openai/gpt-6-sol", "label": "GPT 6 Sol"},
     {"provider": "OpenAI", "id": "openai/gpt-6-astra-pro-flex", "label": "GPT 6 Astra Pro Flex"},
     {"provider": "OpenAI", "id": "openai/gpt-6-astra-pro-fast", "label": "GPT 6 Astra Pro Fast"},
     {"provider": "OpenAI", "id": "openai/gpt-6-astra-pro", "label": "GPT 6 Astra Pro"},
@@ -1111,6 +1115,7 @@ _FALLBACK_MODELS = [
     {"provider": "OpenAI",    "id": "openai/gpt-5.4-mini",                "label": "GPT-5.4 Mini"},
     {"provider": "OpenAI",    "id": "openai/gpt-5.4",                     "label": "GPT-5.4"},
     # Anthropic — 4.6 flagship + 4.5 generation
+    {"provider": "Anthropic", "id": "anthropic/claude-opus-5.5", "label": "Claude Opus 5.5"},
     {"provider": "Anthropic", "id": "anthropic/claude-fable-5.1", "label": "Claude Fable 5.1"},
     {"provider": "Anthropic", "id": "anthropic/claude-haiku-4.5", "label": "Claude Haiku 4.5"},
     {"provider": "Anthropic", "id": "anthropic/claude-sonnet-5", "label": "Claude Sonnet 5"},
@@ -1147,6 +1152,7 @@ _FALLBACK_MODELS = [
     {"provider": "Qwen",      "id": "qwen/qwen3-coder",                   "label": "Qwen3 Coder"},
     {"provider": "Qwen",      "id": "qwen/qwen3.6-plus",                  "label": "Qwen3.6 Plus"},
     # xAI
+    {"provider": "xAI", "id": "x-ai/grok-4.7", "label": "Grok 4.7"},
     {"provider": "xAI", "id": "x-ai/grok-4.6", "label": "Grok 4.6"},
     {"provider": "xAI",       "id": "x-ai/grok-4.20",                    "label": "Grok 4.20"},
     # Mistral
@@ -1157,6 +1163,7 @@ _FALLBACK_MODELS = [
     {"provider": "MiniMax",   "id": "minimax/MiniMax-M2.7",             "label": "MiniMax M2.7"},
     {"provider": "MiniMax",   "id": "minimax/MiniMax-M2.7-highspeed",   "label": "MiniMax M2.7 Highspeed"},
     # Z.AI / GLM
+    {"provider": "Z.AI", "id": "z-ai/glm-5.3-flashx", "label": "GLM 5.3 Flashx"},
     {"provider": "Z.AI", "id": "z-ai/glm-5.2", "label": "GLM 5.2"},
     {"provider": "Z.AI", "id": "z-ai/glm-5.3-flash", "label": "GLM 5.3 Flash"},
     {"provider": "Z.AI", "id": "z-ai/glm-5.3", "label": "GLM 5.3"},
@@ -1703,6 +1710,8 @@ _PROVIDER_MODELS = {
         {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5"},
     ],
     "openai": [
+        {"id": "gpt-6-luna", "label": "GPT 6 Luna"},
+        {"id": "gpt-6-sol", "label": "GPT 6 Sol"},
         {"id": "gpt-5.3-codex-spark", "label": "GPT 5.3 Codex Spark"},
         {"id": "gpt-5.3-codex", "label": "GPT 5.3 Codex"},
         {"id": "gpt-5.6-luna-pro", "label": "GPT 5.6 Luna Pro"},
@@ -1723,6 +1732,8 @@ _PROVIDER_MODELS = {
         {"id": "gpt-5.4",      "label": "GPT-5.4"},
     ],
     "openai-codex": [
+        {"id": "gpt-6-luna", "label": "GPT 6 Luna"},
+        {"id": "gpt-6-sol", "label": "GPT 6 Sol"},
         {"id": "gpt-5.3-codex-spark", "label": "GPT 5.3 Codex Spark"},
         {"id": "gpt-5.6-luna-pro", "label": "GPT 5.6 Luna Pro"},
         {"id": "gpt-5.6-luna", "label": "GPT 5.6 Luna"},
