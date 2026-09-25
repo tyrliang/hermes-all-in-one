@@ -1,19 +1,18 @@
 ---
 name: hermes-all-in-one-release
 description: >-
-  Full hermes-all-in-one release cycle: detect upstream agent/webui/vault tags,
-  bump VERSION pins, vendor-replace trees, re-apply local patches, smoke, open
-  a detailed PR, merge, tag, watch release.yml, and replace the GitHub Release
-  stub with curated notes. Use when the user asks to release, bump Hermes,
-  adopt a new agent/webui/vault base, publish an image, write release notes,
-  tag v0.x.z, or run the upgrade chore.
+  Full hermes-all-in-one release cycle: detect upstream Hermes and stable WebUI
+  tags, bump VERSION pins, smoke, open a detailed PR, merge, tag, watch
+  release.yml, and replace the GitHub Release stub with curated notes. Use when
+  the user asks to release, bump Hermes, adopt a new agent or webui base,
+  publish an image, write release notes, tag v0.x.z, or run the upgrade chore.
 ---
 
 # hermes-all-in-one Release
 
-End-to-end playbook from real cycles (v0.10.0, v0.11.0, v0.12.0) and maintainer
-instructions. Do **not** stop at pin bump + tag — vendor trees, local patches,
-detailed PR body, and **edited GitHub Release notes** are required every time.
+End-to-end playbook. Do **not** stop at pin bump + tag — a detailed PR body and
+**edited GitHub Release notes** are required every time. Do **not** vendor
+upstream trees. Do **not** re-add Hermes Vault.
 
 **Location:** `.agents/skills/hermes-all-in-one-release/` (repo-local only).
 Not under `.cursor/skills/` and not installed into `~/.agents/skills`.
@@ -21,90 +20,74 @@ Invoke by path: read this `SKILL.md` when releasing.
 
 ## Version model
 
-Root `VERSION` (5 fields):
+Root `VERSION`:
 
 ```text
-0.12.0
-hermes-base=v2026.8.31
-agent-base=v2026.8.31
+0.15.0
+hermes-base=v2026.9.24
 webui-base=v0.52.113
-vault-base=v0.25.0
+webui-sha=c67fd2dd270a1128c2754200406bca58e9d9a25a
 ```
 
 | Field | Meaning |
 |-------|---------|
 | Line 1 `x.y.z` | Package semver → git tag `vX.Y.Z`, GHCR tag |
 | `hermes-base` | Docker Hub `nousresearch/hermes-agent` → `Dockerfile` `HERMES_IMAGE` |
-| `agent-base` | Vendored `vendor/hermes-agent` tag (usually == hermes-base) |
-| `webui-base` | Vendored `vendor/hermes-webui` tag |
-| `vault-base` | Vendored `vendor/hermes-vault` tag |
+| `webui-base` | Human label for the WebUI release |
+| `webui-sha` | Commit the image fetches. Not the tag. |
+
+There is no `vendor/` tree and no Vault. Do not archive-replace a vendor tree. Do not re-add Vault.
+Agent bytes are the base image. WebUI bytes are
+`https://github.com/nesquena/hermes-webui/archive/<webui-sha>.tar.gz`.
 
 ### Version **class** (what kind of semver)
 
 | Change | Semver class | Example |
 |--------|--------------|---------|
-| `hermes-base` / `agent-base` / `webui-base` advance | **minor** (y+1, z→0) | `0.11.0` → `0.12.0` |
-| `vault-base` or any container-only fix/feature | **patch** (z+1) | `0.10.0` → `0.10.1` |
-| Breaking packaging (volume/env contract) | **major** (x+1) | rare |
+| `hermes-base` or `webui-base` advance | **minor** (y+1, z→0) | `0.14.3` → `0.15.0` |
+| container-only fix/feature | **patch** (z+1) | `0.15.0` → `0.15.1` |
+| Breaking packaging (volume/env contract) | **major** (x+1) | rare; Vault left in unreleased 0.15.0 by maintainer call |
 
-Class ≠ script. `bump-patch.sh` only means “z+1”; it does **not** write
-`webui-base` / `vault-base`. Those pins are advanced separately (see below).
+`bump-patch.sh` only means z+1. It does not write `webui-base` or `webui-sha`.
 
 ### What the scripts actually do
 
 | Script / helper | Writes |
 |-----------------|--------|
-| `./scripts/bump-hermes.sh <tag>` | package y+1/z=0, `hermes-base`, `agent-base`, Dockerfile `HERMES_IMAGE` |
-| `./scripts/bump-patch.sh` | package z+1 only; **preserves** all `*_base` lines unchanged |
+| `./scripts/bump-hermes.sh <tag>` | package y+1/z=0, `hermes-base`, Dockerfile `HERMES_IMAGE` |
+| `./scripts/bump-patch.sh` | package z+1 only; preserves `webui-base` and `webui-sha` |
 | `./scripts/set-version.sh X.Y.Z [hermes-tag]` | explicit package (+ optional hermes pin/Dockerfile) |
-| `pin_webui_base` / `pin_vault_base` / `pin_agent_base` in `scripts/version-lib.sh` | one pin line each |
-| `.github/workflows/sync-upstreams.yml` | **only** automation that calls `pin_webui_base` / `pin_vault_base` today |
+| `pin_webui_base` / `pin_webui_sha` in `scripts/version-lib.sh` | one pin line each |
+| `./scripts/sync-upstreams.sh` | resolves `webui-base` to `webui-sha`. Does not vendor |
+| `.github/workflows/sync-upstreams.yml` | opens a PR that advances those two WebUI pins |
 
-`write_version_file()` re-reads and **preserves** `agent-base` / `webui-base` /
-`vault-base`; it never advances them.
+`write_version_file()` preserves `webui-base` and `webui-sha`. It does not write `agent-base` or `vault-base`. Those helpers are gone.
 
-**Local webui-only bump (minor class):**
-
-```bash
-. scripts/version-lib.sh
-read_version_file .
-# set minor package version explicitly, e.g. 0.13.0
-./scripts/set-version.sh 0.13.0          # keeps hermes-base; does not touch webui
-pin_webui_base "v0.52.200"               # advances webui-base
-# then vendor webui + patch-vendor-models.py + smoke
-```
-
-**Local vault-only bump (patch class):**
+**WebUI pin move (minor class if that is the only upstream move, else ride the Hermes minor):**
 
 ```bash
 . scripts/version-lib.sh
 read_version_file .
-pin_vault_base "v0.26.0"
-./scripts/bump-patch.sh                  # z+1; preserves the new vault-base
-# vendor vault, re-apply #42, smoke
+pin_webui_base "v0.52.200"
+./scripts/sync-upstreams.sh          # writes webui-sha from the tag
+# Dockerfile reads webui-sha from VERSION. No vendor tree. Smoke.
 ```
-
-Or hand-edit the `webui-base=` / `vault-base=` line in `VERSION`, then run the
-matching semver script.
 
 Pushing to `main` publishes **nothing**. Only `git push origin vX.Y.Z` triggers
 `.github/workflows/release.yml`.
 
 ## Hard requirements (every cycle)
 
-From maintainer sessions — acceptance criteria:
+1. **Check Hermes and stable WebUI** (ignore `exp-*`). Vault is not installed. Do not re-add it.
+2. **Do not vendor.** A pin-only Hermes PR is complete once `HERMES_IMAGE` matches `hermes-base`. A WebUI move is `webui-base` plus `webui-sha`. The image fetches that commit from `VERSION`.
+3. **Run `./scripts/smoke.sh`** when Dockerfile or VERSION pins changed.
+4. **PR body is the release draft** — pin table, layer changes, curated upstream feat/fix delta, test plan. Rewrite thin automation stubs.
+5. **After tag + `release.yml` green**, **`gh release edit`** full notes. The workflow stub will not overwrite an existing body.
+6. **Assistant**: explicit-path commits, push, open/update PR. Merge when user says. Tag + release notes when asked to publish.
 
-1. **Check all three upstreams** (agent, webui, vault), not only Hermes.
-2. **Vendor the trees** that moved — pin-only `check-upstream` PRs are incomplete.
-3. **Diff pre-replace vs old upstream tag** so local patches are not lost.
-4. **Re-apply local patches** after every relevant vendor replace.
-5. **Run `./scripts/smoke.sh`** when vendor or Dockerfile changed.
-6. **PR body is the release draft** — pin table, layer changes, curated upstream
-   feat/fix delta, test plan. Rewrite thin automation stubs.
-7. **After tag + `release.yml` green**, **`gh release edit`** full notes —
-   workflow only writes a 2-line stub and will **not** overwrite an existing body.
-8. **Assistant**: explicit-path commits, push, open/update PR. Merge when user
-   says. Tag + release notes when asked to publish.
+Pushing to `main` publishes **nothing**. Only `git push origin vX.Y.Z` triggers
+`.github/workflows/release.yml`.
+
 
 ### Literal user arcs (source sessions)
 
@@ -118,13 +101,9 @@ From maintainer sessions — acceptance criteria:
 
 | Area | What | When |
 |------|------|------|
-| **Agent `mcp_tool_transport.py`** | MCP HTTP/SSE transports honour `HTTPS_PROXY`/`ALL_PROXY` + shared `NO_PROXY`. Upstream hands httpx an explicit `transport=`, killing `trust_env` proxy mounts — every MCP server behind a proxy fails `[Errno -2]`. | **Every** `vendor/hermes-agent` replace until upstream ships it. Re-apply to the vendored file, then refresh **both** hashes in `docker/patches/apply-agent-patches.sh` |
-| Vault `#42` | `_AnyNameTemplate` in vault `service_ids.py` (+ test) so custom env names work (e.g. `HINDSIGHT_API_KEY=hv://hindsight`) | **Every** `vendor/hermes-vault` replace until upstream ships it |
-| WebUI models | `python3 scripts/patch-vendor-models.py` | After agent and/or webui vendor change |
-| Upstream junk | Strip accidental paths (e.g. `apps/desktop/'/var/folders/...` mutex files) | After agent archive replace if present |
+| WebUI models | `scripts/patch-vendor-models.py` inside the image build, reading `/opt/hermes` | Every image build. Do not commit a patched WebUI tree |
 
-Before replace: diff `vendor/<name>` against the **old** pin tag; list runtime
-deltas; replace; re-apply; targeted tests.
+Vault is not installed. Do not re-apply patch #42. Do not diff a `vendor/` tree; there is not one.
 
 ### Agent-tree patches are not shipped by the vendor copy
 
@@ -136,52 +115,30 @@ installs it over `/opt/hermes` at build time. This cost a full release cycle
 
 That script pins the base **and** patched hash per file and fails the build on
 either mismatch, so a vendor refresh that reverts a patch is a red build rather
-than a silent revert. After any agent vendor change:
+than a silent revert. The table is currently empty, so the build step is a no-op
+(`agent-patch: done (0 applied, 0 already present)`); the harness stays tested
+against a synthetic patch. After any agent vendor change:
 
 ```bash
 bash docker/patches/test-apply-agent-patches.sh
 ```
 
-and confirm `agent-patch: applied <path>` in the smoke build log. A green build
-alone does **not** prove an agent-level patch reached the image — verify on the
-running container:
+A green build alone does **not** prove an agent-level patch reached the image —
+when the table is non-empty, confirm `agent-patch: applied <path>` in the smoke
+build log and verify the marker on the running container, e.g.:
 
 ```bash
-grep -c _env_proxy_for /opt/hermes/tools/mcp_tool_transport.py   # non-zero
+grep -c _mcp_proxy_mounts /opt/hermes/tools/mcp_tool_transport.py   # non-zero
 ```
 
-## Vendor strategy
+## Fetch strategy
 
-Prefer `./scripts/sync-upstreams.sh` (subtree pull for **agent + webui only**;
-clean tree required; does **not** vendor vault or write pins).
+Do not vendor. Do not `git subtree pull`. Do not `git archive` into `vendor/`.
 
-When subtree is unmergeable (common across large tag gaps):
-
-```bash
-TAG=v2026.8.31
-OLD_TAG=$(sed -n 's/^agent-base=//p' VERSION)   # pin currently in tree
-# Tags land in refs/tags/, not refs/remotes/<remote>/$TAG.
-git fetch hermes-agent-upstream tag "$TAG" tag "$OLD_TAG"
-# Pre-replace: MUST resolve the old pin to a real tree (not an empty dir).
-#   tmp=$(mktemp -d) && git archive "$OLD_TAG" | tar -x -C "$tmp"
-#   diff -rq "$tmp" vendor/hermes-agent | grep ' differ$'   # local patches
-#   rm -rf "$tmp"
-rm -rf vendor/hermes-agent
-mkdir -p vendor/hermes-agent
-git archive "$TAG" | tar -x -C vendor/hermes-agent
-# strip junk, re-apply patches
-python3 scripts/patch-vendor-models.py   # gate: OpenRouter/Codex counts must be non-zero
-git add vendor/hermes-agent   # explicit paths
-```
-
-Same pattern for webui/vault with their remotes. Commit message must note
-archive-replace + re-applied patches.
-
-Remotes (create if missing):
-
-- `hermes-agent-upstream` → `https://github.com/NousResearch/hermes-agent.git`
-- `hermes-webui-upstream` → `https://github.com/nesquena/hermes-webui.git`
-- vault → `https://github.com/asimons81/hermes-vault.git`
+- Agent: `./scripts/bump-hermes.sh <tag>` writes `hermes-base` and `Dockerfile` `HERMES_IMAGE`.
+- WebUI: set `webui-base` to the stable tag (ignore `exp-*`), then `./scripts/sync-upstreams.sh` writes `webui-sha`. The Dockerfile reads that line from `VERSION`.
+- Model lists: `scripts/patch-vendor-models.py` runs inside the image build, reading `/opt/hermes` and writing `/app/hermes-webui`.
+- Vault: removed in 0.15.0. Do not install it, do not re-apply patch #42, do not add `vault-base`.
 
 ## Command cheat sheet
 
@@ -190,17 +147,13 @@ Remotes (create if missing):
 cat VERSION
 ./scripts/latest-hermes-tag.sh
 
-./scripts/bump-hermes.sh v2026.9.7      # hermes/agent minor + Dockerfile
-./scripts/bump-patch.sh                 # z+1 only; does not pin webui/vault
-./scripts/set-version.sh 0.12.1 [tag]
+./scripts/bump-hermes.sh v2026.9.24     # hermes minor + Dockerfile HERMES_IMAGE
+./scripts/bump-patch.sh                 # z+1 only; preserves webui pins
+./scripts/set-version.sh 0.15.1 [tag]
 
-# webui/vault pins (no dedicated bump-*.sh):
 . scripts/version-lib.sh && read_version_file .
 pin_webui_base "v0.52.200"
-pin_vault_base "v0.26.0"
-
-./scripts/sync-upstreams.sh
-python3 scripts/patch-vendor-models.py
+./scripts/sync-upstreams.sh             # writes webui-sha; does not vendor
 ./scripts/smoke.sh
 ```
 
@@ -208,7 +161,6 @@ Detect other upstreams:
 
 ```bash
 gh api repos/nesquena/hermes-webui/tags --jq '.[].name' | head -20
-gh api repos/asimons81/hermes-vault/releases --jq '.[].tag_name' | head -10
 gh api repos/NousResearch/hermes-agent/releases --jq '.[:5]|.[]|{tag:.tag_name,name:.name}'
 ```
 
@@ -224,32 +176,26 @@ Skip experimental WebUI tags (`exp-*`) unless the user explicitly wants them.
 - [ ] Clean branch from main (or adopt existing chore/bump-*)
 
 ### 1. Detect upstreams
-- [ ] hermes-agent vs hermes-base / agent-base
+- [ ] hermes-agent vs hermes-base
 - [ ] stable hermes-webui vs webui-base (ignore exp-*)
-- [ ] hermes-vault vs vault-base
-- [ ] Decide minor vs patch vs multi-pin; which scripts + pin_* calls
+- [ ] Decide minor vs patch. Vault is not a pin.
 
 ### 2. Branch + pins
 - [ ] Branch: chore/bump-hermes-<tag> or chore/release-vX.Y.Z
-- [ ] If check-upstream PR exists: checkout it; do not leave pin-only
-- [ ] bump-hermes / bump-patch / set-version + pin_webui_base / pin_vault_base as needed
+- [ ] If check-upstream PR exists: checkout it
+- [ ] bump-hermes / bump-patch / set-version + pin_webui_base + sync-upstreams.sh as needed
 - [ ] Dockerfile HERMES_IMAGE matches hermes-base when hermes moved
+- [ ] webui-sha is the commit of webui-base. Dockerfile reads it from VERSION
 
-### 3. Vendor
-- [ ] Each moved pin: subtree or archive-replace
-- [ ] Pre-replace diff vs old pin → local patches list
-- [ ] Re-apply patches (**agent mcp_tool_transport.py**, vault #42, etc.)
-- [ ] Agent vendor changed → refresh both hashes in `docker/patches/apply-agent-patches.sh`
-- [ ] patch-vendor-models.py after agent/webui vendor
-- [ ] Strip upstream junk if present
+### 3. Glue
+- [ ] No vendor/ directory. Do not subtree-pull or archive-replace
 - [ ] README VERSION example matches pins
+- [ ] Agent patch table still empty, or a new row has a file under docker/patches/agent/
 
 ### 4. Verify
-- [ ] ./scripts/smoke.sh PASS (or document skip)
-- [ ] `bash docker/patches/test-apply-agent-patches.sh` PASS (if agent patches exist)
-- [ ] Smoke log shows `agent-patch: applied <path>` for every registered patch
-- [ ] Vault patch: pytest vendor/hermes-vault/tests/test_service_ids.py
-- [ ] Optional compileall on touched vendor trees
+- [ ] ./scripts/smoke.sh PASS
+- [ ] `bash docker/patches/test-apply-agent-patches.sh` PASS
+- [ ] Smoke log shows the WebUI fetch of webui-sha and WebUI version v<package>
 
 ### 5. PR
 - [ ] git add <specific paths> only
@@ -294,19 +240,17 @@ Upstream refresh and release prep for **hermes-all-in-one vX.Y.Z**.
 | Pin | Was (main / vOLD) | Now |
 |-----|-------------------|-----|
 | package | … | **X.Y.Z** (minor|patch: reason) |
-| hermes-base / agent-base | … (Agent v…) | **…** |
-| webui-base | … | … |
-| vault-base | … | … |
+| hermes-base | … (Agent v…) | **…** |
+| webui-base / webui-sha | … | … |
 
 ### Changes in this PR
 - Dockerfile / VERSION pins
-- Vendor method (subtree vs archive) + re-applied patches
-- patch-vendor-models / layer fixes
+- Layer fixes. No vendor tree. No Vault.
 - README VERSION example
 
 ### Other upstreams checked
 - hermes-webui: …
-- hermes-vault: …
+- hermes-vault: not installed. Do not re-add.
 
 ---
 
@@ -357,11 +301,11 @@ Body structure (see published v0.11.0 / v0.12.0):
 
 ## Agent instructions (ordered)
 
-1. Read `VERSION`; classify Hermes vs webui vs vault vs layer-only.
-2. Detect latest tags for all three; report moves vs holds.
-3. Use scripts + `pin_*` correctly — do not claim `bump-patch` advances webui/vault.
-4. Vendor every moved pin; archive-replace if subtree fails; diff + re-apply.
-5. `patch-vendor-models.py` after agent/webui vendor changes.
+1. Read `VERSION`. Classify Hermes vs WebUI vs layer-only. Vault is gone.
+2. Detect latest Hermes and stable WebUI tags. Report moves vs holds.
+3. `bump-patch.sh` does not write `webui-base` or `webui-sha`. Do not claim it does.
+4. Do not vendor. A WebUI pin move is `pin_webui_base` plus `./scripts/sync-upstreams.sh`.
+5. Model-list rewrite runs in the image build. Do not commit a patched WebUI tree.
 6. README VERSION example matches.
 7. `./scripts/smoke.sh` before merge/tag confidence.
 8. PR with full body; explicit path staging.
@@ -370,14 +314,14 @@ Body structure (see published v0.11.0 / v0.12.0):
 11. **`gh release edit`** full notes. Never leave the stub.
 12. Summarize: pins, PR URL, tag, image, release URL.
 
-**Commit messages:** `chore(release): 0.12.0 on hermes v…` · `chore(sync): vendor …` · `fix(scope): …` + patch bump.
+**Commit messages:** `chore(release): 0.15.0 on hermes v…` · `chore(sync): pin webui-sha …` · `fix(scope): …` + patch bump.
 
 ## Automation vs ad-hoc
 
 | What | How |
 |------|-----|
-| New Hermes on Docker Hub | `check-upstream.yml` → often **pin-only** PR — still vendor + notes |
-| Vendor subtree | `sync-upstreams.yml` or `scripts/sync-upstreams.sh` |
+| New Hermes on Docker Hub | `check-upstream.yml` → pin-only PR. Do not vendor. Rewrite the PR body. |
+| Newer stable WebUI tag | `sync-upstreams.yml` writes `webui-base` + `webui-sha`. Does not vendor. |
 | PR validation | `ci.yml`: **vendor syntax** + **smoke** |
 | Publish image + stub Release | Tag `vX.Y.Z` → `release.yml` |
 | Curated notes | **Manual** `gh release edit` |
@@ -389,8 +333,8 @@ Bot PRs may stall (`action_required`). Prefer human-user push.
 | Issue | Action |
 |-------|--------|
 | `bump-hermes` no-op | Already on that hermes-base |
-| Subtree unmergeable | Archive-replace after local-patch diff |
-| Vault custom env broken | Re-apply #42 |
+| WebUI pin moved but image unchanged | `webui-sha` missing or Dockerfile not reading `VERSION`. `./scripts/sync-upstreams.sh`, then smoke. |
+| Someone asks to re-apply vault #42 | Vault is not installed. Do not. |
 | Smoke apt fail (macOS) | `docker build --network=host` then `SMOKE_SKIP_BUILD=1 ./scripts/smoke.sh` |
 | Release preflight fail | Tag must match VERSION line 1 |
 | Notes still stub | `gh release edit` after green |

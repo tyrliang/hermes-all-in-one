@@ -45,9 +45,17 @@ PATCH_SRC="${PATCH_SRC:-/app/patches/agent}"
 #     sha256sum /opt/hermes/tools/mcp_tool_transport.py
 # Refresh the patched hash from the vendored tree:
 #   sha256sum vendor/hermes-agent/tools/mcp_tool_transport.py
+#
+# EMPTY as of hermes-base v2026.9.24. The one entry that lived here
+# (tools/mcp_tool_transport.py — env proxy for MCP HTTP/SSE transports) was
+# retired when upstream shipped the equivalent fix as _mcp_proxy_mounts().
+# A new patch also needs its file COPYed to $PATCH_SRC in the Dockerfile.
 PATCHES="
-tools/mcp_tool_transport.py 691901e3bee4c8f49975b77a802a146d28c3970963753fbc539bb1a30809b3a2 64c4e32e3b2cc4f25bb96f38ea9aaeca4d2d61a2100ac3a39890fe4f5edee684
 "
+
+# The upgrade-survival matrix injects a synthetic table so the guard keeps its
+# tests while no real patch is registered (docker/patches/test-apply-agent-patches.sh).
+PATCHES="${PATCHES_OVERRIDE:-$PATCHES}"
 
 fail() {
     echo "agent-patch: FAILED $1" >&2

@@ -1,6 +1,0 @@
-verifiers:
-  vercel:
-    type: http
-    url: https://api.vercel.com/v2/user
-    headers:
-      Authorization: "Bearer {secret}"

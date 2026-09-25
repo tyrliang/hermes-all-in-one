@@ -1,7 +1,8 @@
 # Release examples
 
-Condensed from real maintainer cycles and session instructions.
+Historical cycles below vendored trees and shipped Vault. That stopped in 0.15.0. Do not repeat it.
 
+Current cycle: bump `hermes-base` and/or `webui-base`+`webui-sha`, smoke, PR, tag, `gh release edit`. No `vendor/`. No Vault.
 ## Example A: Hermes + webui (v0.10.0 / PR #53)
 
 **Session:** `…/2026-08-17T16-07-45-415Z_01a0107a-*.jsonl`
@@ -56,12 +57,9 @@ Condensed from real maintainer cycles and session instructions.
 
 ## Example D: Layer-only patch
 
-Same hermes/webui bases → optional `pin_vault_base` if vault moved → `./scripts/bump-patch.sh` (z+1 only) → smoke → PR → merge → tag → notes focused on layer changes.
+Same hermes and webui pins → `./scripts/bump-patch.sh` (z+1 only) → smoke → PR → merge → tag → notes focused on layer changes.
 
 ```bash
-# vault pin example (patch class)
-. scripts/version-lib.sh && read_version_file .
-pin_vault_base "v0.26.0"
 ./scripts/bump-patch.sh
 ./scripts/smoke.sh
 # … PR, merge …

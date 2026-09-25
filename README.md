@@ -8,10 +8,10 @@ No terminal setup. Deploy it, open `/admin`, paste an API key, connect a channel
 
 | | |
 |---|---|
-| **Package version** | `0.14.0` |
-| **Base image** | `nousresearch/hermes-agent:v2026.9.14` |
-| **Vendored** | agent `v2026.9.14` · webui `v0.52.113` · vault `v0.25.0` |
-| **Published image** | `ghcr.io/tyrliang/hermes-all-in-one:v0.14.0` / `:latest` |
+| **Package version** | `0.15.0` |
+| **Base image** | `nousresearch/hermes-agent:v2026.9.24` |
+| **Fetched at build** | webui `v0.52.113` (`c67fd2dd270a1128c2754200406bca58e9d9a25a`) |
+| **Published image** | `ghcr.io/tyrliang/hermes-all-in-one:v0.15.0` / `:latest` |
 | **Volume mount** | `/opt/data` (required) |
 | **Public port** | `$PORT` (Railway-injected) or `8787` |
 
@@ -37,7 +37,7 @@ Deterministic operating contract. Every statement here is verifiable in-tree. Do
 | Base image | `nousresearch/hermes-agent` pinned by `ARG HERMES_IMAGE` | `Dockerfile:7` |
 | PID 1 | `/init` (s6-overlay), inherited ENTRYPOINT; `CMD ["sleep","infinity"]` holds the tree | `Dockerfile:181-183` |
 | Public listener | `uvicorn control_plane.server:app` on `${CONTROL_PLANE_HOST}:${PORT:-8787}` | `docker/s6-rc.d/control-plane/run:25-27` |
-| Internal WebUI | `vendor/hermes-webui/server.py` on `127.0.0.1:8788`, loopback only, reverse-proxied | `docker/s6-rc.d/hermes-webui/run:22-26`, `control_plane/proxy.py` |
+| Internal WebUI | `/app/hermes-webui/server.py` on `127.0.0.1:8788`, loopback only, reverse-proxied | `docker/s6-rc.d/hermes-webui/run`, `control_plane/proxy.py` |
 | Gateway | s6 slot `/run/service/gateway-default`, driven by `hermes gateway start\|stop` | `control_plane/gateway_manager.py:19`, `control_plane/s6_ops.py:69-81` |
 | Volume | `/opt/data` = `HERMES_DATA_DIR`; agent state in `/opt/data/.hermes` | `Dockerfile:165-166` |
 | Supervision switch | s6 mode iff `CONTROL_PLANE_RUNTIME=s6`; otherwise control plane subprocess-manages children | `control_plane/runtime_mode.py:6-7` |
@@ -50,19 +50,18 @@ Deterministic operating contract. Every statement here is verifiable in-tree. Do
 | `control_plane/` | Starlette app: `/admin`, `/admin/api/*`, `/health`, catch-all WebUI proxy | Admin UI, auth, provider/channel persistence, gateway control |
 | `docker/cont-init.d/` | One-shot boot scripts `03`→`06` (volume bootstrap, tailscale env, PATH, ssh keys) | Volume layout, env fan-out into `/run/s6/container_environment` |
 | `docker/s6-rc.d/` | Longrun definitions: `control-plane`, `hermes-webui`, `tailscaled`, `lightpanda`, `healthwatch` | Service lifecycle, ports, boot deps |
-| `docker/scripts/` | `hermes-with-vault` (gateway pre-exec shim), `hermes-vault-env-inject.py`, `gateway_autostart.py` | Vault secret injection |
+| `docker/scripts/` | `gateway_autostart.py` | Gateway autostart decision |
 | `docker/sshd/`, `docker/profile.d/` | sshd config (loopback:22), `HOME=/opt/data` forcing | SSH / interactive-shell behavior |
-| `scripts/` | Version + release + vendor-sync + smoke tooling | Release mechanics |
-| `vendor/` | `git subtree` copies of hermes-agent, hermes-webui, hermes-vault | **Never hand-edit**; only via sync tooling |
-| `tests/` | `unittest`-style tests for control plane + vault inject | Behavior changes in `control_plane/` or vault shim |
+| `scripts/` | Version, release, webui SHA resolve, smoke | Release mechanics |
+| `tests/` | Tests for the control plane | Behavior changes in `control_plane/` |
 
 ## Invariants — do not break these
 
 1. **`/opt/data` is the only durable state.** No feature may depend on anything outside it surviving a redeploy. Wiping it destroys agent memory, Tailscale node identity, TLS certs, SSH keys, and the admin signing key.
 2. **The internal WebUI stays on `127.0.0.1:8788`.** It is unauthenticated at the socket level; the control plane is the only intended ingress. Binding it to `0.0.0.0` is a security regression.
 3. **Never set `PORT` in Railway variables.** The platform injects it (usually `8080`); hardcoding desyncs routing. `8787` is a code default for local use only.
-4. **Vendor trees are read-only.** Refresh via `scripts/sync-upstreams.sh` or the `sync-upstreams` workflow. A local patch to a vendor tree must be re-applied after every sync and recorded in the sync commit message (precedent: `b3c09890db`).
-5. **`hermes` on `PATH` inside the image is the vault shim**, not the stock console script. Stock is preserved at `/opt/hermes/.venv/bin/hermes.stock.bak` (`Dockerfile:135-136`). Do not overwrite the shim without preserving the pre-exec inject.
+4. **No vendored upstream trees.** Agent bytes are the base image. WebUI is fetched from `webui-sha` in `VERSION` at build time. Do not add `vendor/` back.
+5. **`hermes` on `PATH` is the stock console script.** There is no vault shim and no `hermes.stock.bak`. Hermes Vault is not installed.
 6. **`TERMINAL_HOME_MODE=real` is forced** at the s6 container-environment level (`docker/cont-init.d/05-hermes-path:27`). Upstream defaults to an isolated fake home at `${HERMES_HOME}/home`, which scatters pip/npm state and loses it on rebuild. Do not revert to isolated mode.
 7. **Minor version bumps are reserved for upstream base advances.** See [Releases & versioning](#releases--versioning). Everything else is a patch, no matter how large.
 8. **`git tag` is manual.** No workflow auto-tags on `VERSION` change. Pushing to `main` publishes nothing.
@@ -140,9 +139,8 @@ python3 -m unittest discover -s tests -v
 | Admin UI / API / auth | `control_plane/` (+ `tests/test_control_plane.py`) | `python3 -m unittest discover -s tests`, then `./scripts/smoke.sh` |
 | Boot / volume layout | `docker/cont-init.d/*` | `dash -n` **and** `shellcheck` clean; smoke covers volume bootstrap |
 | Service lifecycle / ports | `docker/s6-rc.d/<svc>/{type,run,dependencies.d}` + `user/contents.d/<svc>` marker | `dash -n`, smoke |
-| Vault injection | `docker/scripts/hermes-with-vault`, `hermes-vault-env-inject.py` (+ `tests/test_vault_gateway_inject.py`) | unittest + smoke |
 | New env var | consume it in code, **then** add it to `.env.example` **and** the [reference table](#environment-variable-reference) | both, or it is undocumented drift |
-| Upstream bump | `./scripts/bump-hermes.sh <tag>` (writes `hermes-base`, `agent-base`, and `Dockerfile` `ARG HERMES_IMAGE`) | CI + manual tag |
+| Upstream bump | `./scripts/bump-hermes.sh <tag>` (writes `hermes-base` and `Dockerfile` `ARG HERMES_IMAGE`) | CI + manual tag |
 | Anything else | `./scripts/bump-patch.sh` (patch only, never touches the Dockerfile) | CI + manual tag |
 
 CI required checks are the exact job names **`vendor syntax`** and **`smoke`** (`.github/workflows/ci.yml:26-27,61-62`); branch protection is strict, so a PR must be up to date with `main`.
@@ -157,7 +155,7 @@ CI required checks are the exact job names **`vendor syntax`** and **`smoke`** (
 | Admin sessions | In-process dict, not persisted. Any control-plane restart logs every admin out. `control_plane/auth.py:19,62-64` |
 | `/health` status code | Always 200, by design, so Railway liveness never flaps. Degradation is in the body only. `control_plane/server.py:129-148` |
 | Red lines in Railway logs | s6, cont-init and Tailscale write informational output to **stderr**, so Railway tags it `severity: error`. Look for non-zero exits, crash loops, HTTP 5xx — not colored lines. |
-| `scripts/sync-upstreams.sh` and the vault | The **script** syncs only `vendor/hermes-agent` + `vendor/hermes-webui` and advances no pins. Only the **workflow** syncs the vault and writes `*_base` pins. `scripts/sync-upstreams.sh:71-72` vs `.github/workflows/sync-upstreams.yml:64-147` |
+| `scripts/sync-upstreams.sh` | Resolves `webui-base` to `webui-sha`. Does not vendor. Hermes pin bumps are `check-upstream.yml`. |
 | `.github/workflows/test.yml` | A `workflow_dispatch`-only `echo hello` stub. Not a test suite. |
 | `check-upstream` workflow | Needs `secrets.SYNC_PAT`; there is no `GITHUB_TOKEN` fallback, so the PR step fails silently-ish without it. `sync-upstreams` does fall back. |
 | `git tag --list 'v0.*'` | ~1340 tags, mostly dragged in by vendored subtrees (`v0.52.*` = webui, `v2026.*` = agent). Resolve this repo's releases with `git tag --merged HEAD`. |
@@ -530,46 +528,10 @@ Railway blocks `NET_ADMIN`, so an iptables MSS clamp is unavailable. The image t
 
 To confirm before redeploying, temporarily lower the MTU on your Mac's Tailscale interface: `sudo ifconfig utun<N> mtu 1220` (find it with `ifconfig | grep -B1 "100\."`).
 
-## Hermes Vault — secrets off the volume
+## Credentials
 
-[Hermes Vault](https://github.com/asimons81/hermes-vault) is vendored and baked in, so credentials can live as `hv://` bindings instead of plaintext in `.env`. Plaintext `.env` and `/admin` still work; the vault is optional.
+Plaintext env and `/admin` are the credential path. Hermes Vault is not installed. `hv://` bindings and `HERMES_VAULT_*` are ignored. A volume that still has `hermes-vault-data/` is leftover state; this image does not read it.
 
-| Path | Role |
-|---|---|
-| `/usr/local/bin/hermes-vault` | CLI, isolated venv at `/opt/hermes-vault` |
-| `/opt/hermes/plugins/hermes-vault-secret-source/` | Bundled Secret Source plugin, discovered every boot |
-| `/opt/hermes/.venv/bin/hermes` | **Gateway vault shim** — preloads `hv://` secrets before `hermes gateway run` |
-| `/opt/hermes/.venv/bin/hermes.stock.bak` | The stock console script, kept for reference |
-| `/app/docker/scripts/hermes-vault-env-inject.py` | Fetch helper the shim calls |
-
-**Why the shim exists.** Hermes applies secret sources during the first `load_hermes_dotenv()`, which runs *before* Python plugins are discovered. Cron sessions re-pull secrets and keep working; the gateway parent does not. With a vault-only `TELEGRAM_BOT_TOKEN` that gives you outbound cron → Telegram working while inbound DMs get no reply. The shim materializes the vault env into the process before importing `hermes_cli.main`, so the stock s6 `hermes gateway run` invocation still receives the tokens.
-
-Setup:
-
-```bash
-HERMES_VAULT_PASSPHRASE=...        # platform secret — never on the volume
-# optional:
-# HERMES_VAULT_HOME=/opt/data/.hermes/hermes-vault-data
-```
-
-```yaml
-# /opt/data/.hermes/config.yaml
-secrets:
-  sources:
-    - hermes_vault
-  hermes_vault:
-    binary: hermes-vault
-    env:
-      TELEGRAM_BOT_TOKEN: hv://telegram
-      # OPENROUTER_API_KEY: hv://openrouter
-```
-
-Restart the gateway, then verify (names and lengths only, never values):
-
-```bash
-python3 /app/docker/scripts/hermes-vault-env-inject.py --check
-cat /opt/data/.hermes/hermes-vault-data/last-env-inject.json
-```
 
 ## Lightpanda — headless browser backend
 
@@ -692,14 +654,7 @@ Defaults below are what the **image** provides (`Dockerfile:161-177`) or what th
 | `TAILSCALE_SOCKET` | `/run/tailscale/tailscaled.sock` | tailscaled control socket |
 | `RAILWAY_SERVICE_NAME` | *(platform-injected)* | Hostname fallback when `TAILSCALE_HOSTNAME` is unset |
 
-## Hermes Vault (all optional)
 
-| Variable | Default | Description |
-|---|---|---|
-| `HERMES_VAULT_PASSPHRASE` | *(none)* | Unlock secret. Required for `hv://` resolution. Keep it a platform secret, never on the volume. |
-| `HERMES_VAULT_HOME` | `${HERMES_HOME}/hermes-vault-data` | Vault data directory and inject stamp |
-| `HERMES_VAULT_BINARY` | auto-detected | Overrides CLI discovery (`/usr/local/bin/hermes-vault` → `/opt/hermes-vault/bin/hermes-vault` → `PATH`) |
-| `HERMES_VAULT_INJECT_SCRIPT` | `/app/docker/scripts/hermes-vault-env-inject.py` | Helper the gateway shim executes |
 
 ## Lightpanda browser backend
 
@@ -738,15 +693,15 @@ Defaults below are what the **image** provides (`Dockerfile:161-177`) or what th
 
 | `ARG` | Default | Purpose |
 |---|---|---|
-| `HERMES_IMAGE` | `nousresearch/hermes-agent:v2026.9.14` | Base image pin; kept in sync with `hermes-base` in `VERSION` |
+| `HERMES_IMAGE` | `nousresearch/hermes-agent:v2026.9.24` | Base image pin; kept in sync with `hermes-base` in `VERSION` |
 | `HERMES_WEBUI_VERSION` | `unknown` | Baked into the vendored WebUI's `_version.py` |
 | `MICRO_VERSION` | `2.0.14` | `micro` editor for interactive shells |
 | `LIGHTPANDA_VERSION` | `0.3.7` | Lightpanda release, SHA256-verified per arch |
 
 ```bash
 docker build \
-  --build-arg HERMES_IMAGE=nousresearch/hermes-agent:v2026.9.14 \
-  --build-arg HERMES_WEBUI_VERSION=v0.14.0 \
+  --build-arg HERMES_IMAGE=nousresearch/hermes-agent:v2026.9.24 \
+  --build-arg HERMES_WEBUI_VERSION=v0.15.0 \
   -t hermes-all-in-one .
 ```
 
@@ -804,7 +759,7 @@ Container (FROM nousresearch/hermes-agent)
 │   ├── cont-init 06: OpenSSH host keys + authorized_keys on the volume
 │   │
 │   ├── longrun tailscaled     → userspace tailnet, SOCKS/HTTP :1055   (no-op without an auth key)
-│   ├── longrun hermes-webui   → vendor/hermes-webui/server.py 127.0.0.1:8788
+│   ├── longrun hermes-webui   → /app/hermes-webui/server.py 127.0.0.1:8788
 │   ├── longrun control-plane  → uvicorn on 0.0.0.0:$PORT  (/, /admin, /health, proxy)
 │   ├── longrun lightpanda     → CDP 127.0.0.1:9222        (no-op unless enabled)
 │   ├── longrun healthwatch    → /health poll → container halt on sustained failure
@@ -842,20 +797,18 @@ Two version concepts: this package's semver, and the upstream tags baked into th
 ## The `VERSION` file
 
 ```text
-0.14.3
-hermes-base=v2026.9.14
-agent-base=v2026.9.14
+0.15.0
+hermes-base=v2026.9.24
 webui-base=v0.52.113
-vault-base=v0.25.0
+webui-sha=c67fd2dd270a1128c2754200406bca58e9d9a25a
 ```
 
 | Line | Field | Meaning |
 |---|---|---|
-| 1 | package semver | GHCR tag + git tag: `v0.14.0` |
+| 1 | package semver | GHCR tag + git tag: `v0.15.0` |
 | 2 | `hermes-base` | Pinned `nousresearch/hermes-agent` tag in the Dockerfile |
-| 3 | `agent-base` | Pinned upstream tag for `vendor/hermes-agent` |
-| 4 | `webui-base` | Pinned upstream tag for `vendor/hermes-webui` |
-| 5 | `vault-base` | Pinned upstream tag for `vendor/hermes-vault` |
+| 3 | `webui-base` | WebUI release tag. Human label. The image fetches `webui-sha`, not the tag. |
+| 4 | `webui-sha` | Commit archive URL: `https://github.com/nesquena/hermes-webui/archive/<sha>.tar.gz` |
 
 ## Bump rules
 
@@ -863,22 +816,22 @@ Minor is reserved for upstream agent/webui base advances. Everything else is a p
 
 | Change | Bump | Example |
 |---|---|---|
-| New Hermes Agent / `agent-base` or `webui-base` release | **y**+1, **z**→0 | `0.13.0` → `0.14.0` on Hermes `v2026.9.14` |
-| `vault-base` bump, or any all-in-one-only fix or feature (control plane, docker glue, new bundled dependency, watchdog, SSH persistence…) | **z**+1 | `0.10.0` → `0.10.1` |
-| Breaking packaging change (volume layout, env contract) | **x**+1, manual | Rare |
+| New Hermes Agent or WebUI release | **y**+1, **z**→0 | `0.14.3` → `0.15.0` on Hermes `v2026.9.24` |
+| Container-only fix or feature | **z**+1 | `0.10.0` → `0.10.1` |
+| Breaking packaging change (volume layout, env contract) | **x**+1, manual | Rare. Vault left in 0.15.0, before that tag existed, so it stayed a minor. |
 
-The rule is **not** "how big is the change" — it is whether `hermes-base` / `agent-base` / `webui-base` moved. A brand-new capability confined to this repo's container layer is still a patch. Precedent: `v0.6.2` (SSH host-key persistence), `v0.7.1` (healthwatch watchdog) and `v0.10.1` (Lightpanda) were all patches despite adding whole new capabilities. `v0.8.0` was once mis-released as a minor for a vault addition, then corrected to `v0.7.2`.
+The rule is whether `hermes-base` or `webui-base` moved. A container-only change is still a patch. Breaking the env or volume contract is a major.
 
 ## Maintainer scripts
 
 ```bash
-./scripts/bump-hermes.sh v2026.9.14   # new Hermes base → y+1, z=0; writes hermes-base + agent-base + Dockerfile ARG
-./scripts/bump-patch.sh              # package z+1 only; preserves all *_base pins (does not write webui/vault)
-./scripts/set-version.sh 0.14.1 [v2026.9.14]   # explicit set; pins the Dockerfile only if a hermes tag is given
-./scripts/read-version.sh            # emit semver / *_base as GITHUB_OUTPUT key=value pairs
+./scripts/bump-hermes.sh v2026.9.24   # new Hermes base → y+1, z=0; writes hermes-base + Dockerfile ARG
+./scripts/bump-patch.sh              # package z+1 only; preserves webui pins
+./scripts/set-version.sh 1.0.1 [v2026.9.24]   # explicit set; pins the Dockerfile only if a hermes tag is given
+./scripts/read-version.sh            # emit semver / pins as GITHUB_OUTPUT key=value pairs
 ./scripts/latest-hermes-tag.sh       # newest nousresearch/hermes-agent v20* tag from Docker Hub
-./scripts/sync-upstreams.sh          # manual subtree pull: hermes-agent + hermes-webui only (NOT vault, no pin writes)
-./scripts/patch-vendor-models.py     # align vendored WebUI model lists with the agent's; run by both sync paths
+./scripts/sync-upstreams.sh          # resolve webui-base to webui-sha; does not vendor
+./scripts/patch-vendor-models.py     # rewrite fetched WebUI model lists from /opt/hermes; runs in the image build
 ./scripts/smoke.sh                   # build + runtime smoke; what CI runs
 ```
 
@@ -915,22 +868,21 @@ Only a matching `v*.*.*` git tag publishes an image.
 
 | Workflow | When | What | Notes |
 |---|---|---|---|
-| [`ci.yml`](.github/workflows/ci.yml) | PRs, push to `main` | Job **`vendor syntax`** (conflict-marker scan, `compileall` of vendored webui + vault, `dash -n` on every cont-init and s6 script), then job **`smoke`** running `./scripts/smoke.sh` | These two job names are the required checks in branch protection |
+| [`ci.yml`](.github/workflows/ci.yml) | PRs, push to `main` | Job **`vendor syntax`** (`compileall` of `control_plane`, `dash -n` on cont-init and s6 scripts), then job **`smoke`** | These two job names are the required checks in branch protection |
 | [`release.yml`](.github/workflows/release.yml) | Tag push `v*.*.*` | `preflight` (tag must equal `VERSION` line 1) → `build (linux/amd64)` + `build (linux/arm64)` → `merge manifest` → GHCR `:vX.Y.Z` and `:latest` → GitHub Release | No smoke: branch protection already ran it on the merge commit |
 | [`check-upstream.yml`](.github/workflows/check-upstream.yml) | Daily 03:00 UTC, or manual | Opens a `chore/bump-hermes-<tag>` PR when Docker Hub has a newer Hermes tag than `hermes-base` | Requires `secrets.SYNC_PAT`; no `GITHUB_TOKEN` fallback |
-| [`sync-upstreams.yml`](.github/workflows/sync-upstreams.yml) | Daily 04:00 UTC, or manual | Subtree-pulls `vendor/hermes-agent`, `vendor/hermes-webui`, `vendor/hermes-vault` when a strictly newer tag exists, advances the matching pins, runs `patch-vendor-models.py`, opens/updates the `automation/sync-upstreams` PR | `SYNC_PAT` preferred; falls back to `GITHUB_TOKEN`, which may not re-trigger `ci.yml` |
 | [`test.yml`](.github/workflows/test.yml) | Manual only | `echo hello` stub | Placeholder, not a test suite |
+| [`sync-upstreams.yml`](.github/workflows/sync-upstreams.yml) | Daily 04:00 UTC, or manual | Opens a PR that advances `webui-base` and `webui-sha` when a newer stable WebUI tag exists. Does not vendor. | `SYNC_PAT` preferred; falls back to `GITHUB_TOKEN` |
 
-Release notes should name both versions, e.g. **hermes-all-in-one v0.14.0** on **Hermes Agent v2026.9.14**.
+Release notes should name both versions, e.g. **hermes-all-in-one v0.15.0** on **Hermes Agent v2026.9.24**.
 
-**Vendor strategy.** Upstream trees are vendored with `git subtree --squash` so every dependency is reviewable, diffable against upstream, and survives a volume wipe. When `git subtree pull` becomes unmergeable across a large tag gap, replace the tree from `git archive` of the target tag — and diff the pre-replace tree against the old upstream tag first, so local patches are not silently lost.
+**Upstream bytes.** The agent is the Docker base image. WebUI is fetched by `webui-sha` at build time. There is no `vendor/` tree. Hermes Vault is not installed.
 
 **GitHub Actions quirk.** PRs authored by `github-actions[bot]` require manual approval for every workflow run in the same repo. Pushing automation PRs as a real user avoids the stall. If CI shows `action_required` with 0 jobs, re-run the latest run rather than assuming failure.
 
 ## Release skill
 
-`.agents/skills/hermes-all-in-one-release/` (`SKILL.md` + [`examples.md`](.agents/skills/hermes-all-in-one-release/examples.md)) is the full upgrade playbook: detect agent/webui/vault tags, bump pins (and `pin_webui_base` / `pin_vault_base` when those move — `bump-patch.sh` only does z+1), vendor-replace (archive if needed), re-apply local patches (vault #42, `patch-vendor-models.py`), smoke, detailed PR body, tag after merge, watch `release.yml`, and **`gh release edit`** curated notes (workflow only writes a 2-line stub). Ask in plain language — *"bump to the latest Hermes"*, *"release a patch for the Tailscale fix"*.
-
+`.agents/skills/hermes-all-in-one-release/` is the upgrade playbook: detect Hermes and WebUI tags, bump pins, smoke, detailed PR body, tag after merge, watch `release.yml`, and **`gh release edit`** curated notes. Do not vendor. Do not re-add Vault.
 
 ---
 
@@ -939,7 +891,6 @@ Release notes should name both versions, e.g. **hermes-all-in-one v0.14.0** on *
 This repository is a deployment wrapper: control plane, WebUI proxy, s6 supervision, volume contract. The agent and UI live upstream.
 
 - **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** — official base image and agent runtime (NousResearch)
-- **[Hermes WebUI](https://github.com/nesquena/hermes-webui)** — browser chat interface, vendored at `vendor/hermes-webui`
-- **[Hermes Vault](https://github.com/asimons81/hermes-vault)** — credential broker, vendored at `vendor/hermes-vault`
+- **[Hermes WebUI](https://github.com/nesquena/hermes-webui)** — browser chat interface, fetched at build from `webui-sha`
 
-Forked from [sphinxcode/hermes-all-in-one](https://github.com/sphinxcode/hermes-all-in-one) and rebuilt on the official Hermes Docker image with s6-managed services and `/opt/data` volume persistence.
+

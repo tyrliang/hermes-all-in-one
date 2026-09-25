@@ -13,16 +13,21 @@ Idempotent — safe to run multiple times.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
+# Build image sets these. Defaults are the old vendor paths so a local run
+# still fails loudly if those trees are gone, instead of patching the wrong file.
+AGENT_ROOT = Path(os.environ.get("HERMES_AGENT_ROOT", ROOT / "vendor/hermes-agent"))
+WEBUI_ROOT = Path(os.environ.get("HERMES_WEBUI_ROOT", ROOT / "vendor/hermes-webui"))
 # v0.21.1+ keeps curated tables in models_catalog_static; models.py re-exports.
-AGENT_MODELS_CATALOG = ROOT / "vendor/hermes-agent/hermes_cli/models_catalog_static.py"
-AGENT_MODELS = ROOT / "vendor/hermes-agent/hermes_cli/models.py"
-AGENT_CODEX = ROOT / "vendor/hermes-agent/hermes_cli/codex_models.py"
-WEBUI_CONFIG = ROOT / "vendor/hermes-webui/api/config.py"
+AGENT_MODELS_CATALOG = AGENT_ROOT / "hermes_cli/models_catalog_static.py"
+AGENT_MODELS = AGENT_ROOT / "hermes_cli/models.py"
+AGENT_CODEX = AGENT_ROOT / "hermes_cli/codex_models.py"
+WEBUI_CONFIG = WEBUI_ROOT / "api/config.py"
 
 # provider-prefix → display name used in webui _FALLBACK_MODELS
 PROVIDER_MAP: dict[str, str] = {
@@ -304,13 +309,10 @@ def main() -> None:
     try:
         compile(text, str(WEBUI_CONFIG), "exec")
     except SyntaxError as exc:
-        sys.exit(
-            f"[patch] refusing to write {WEBUI_CONFIG.relative_to(ROOT)}: "
-            f"result does not parse ({exc})"
-        )
+        sys.exit(f"[patch] refusing to write {WEBUI_CONFIG}: result does not parse ({exc})")
 
     WEBUI_CONFIG.write_text(text, encoding="utf-8")
-    print(f"[patch] Updated {WEBUI_CONFIG.relative_to(ROOT)}")
+    print(f"[patch] Updated {WEBUI_CONFIG}")
 
 
 if __name__ == "__main__":

@@ -27,19 +27,12 @@ read_version_file() {
     HERMES_BASE="v${HERMES_BASE}"
   fi
 
-  # Pinned upstream tag for the vendored hermes-agent subtree.
-  # shellcheck disable=SC2034  # consumed by scripts that source this lib
-  AGENT_BASE="$(grep -E '^agent-base=' "$file" | head -1 | cut -d= -f2- | tr -d ' \t\r\n' || true)"
-
-  # Pinned upstream ref (tag or commit sha) for the vendored hermes-webui
-  # subtree. Empty when unset — sync falls back to tracking the branch head.
-  # Not normalised to a 'v' prefix: it may be a bare commit sha.
-  # shellcheck disable=SC2034  # consumed by scripts that source this lib
+  # Pinned WebUI tag. The bytes fetched at build time are webui-sha, not this tag.
+  # shellcheck disable=SC2034
   WEBUI_BASE="$(grep -E '^webui-base=' "$file" | head -1 | cut -d= -f2- | tr -d ' \t\r\n' || true)"
 
-  # Pinned upstream tag for the vendored hermes-vault subtree.
-  # shellcheck disable=SC2034  # consumed by scripts that source this lib
-  VAULT_BASE="$(grep -E '^vault-base=' "$file" | head -1 | cut -d= -f2- | tr -d ' \t\r\n' || true)"
+  # shellcheck disable=SC2034
+  WEBUI_SHA="$(grep -E '^webui-sha=' "$file" | head -1 | cut -d= -f2- | tr -d ' \t\r\n' || true)"
 }
 
 write_version_file() {
@@ -61,16 +54,12 @@ write_version_file() {
     hermes_base="v${hermes_base}"
   fi
 
-  # Preserve the existing agent-base, webui-base, and vault-base pins —
-  # version bumps must not silently drop them (mirrors the hermes-base
-  # preservation contract).
-  local agent_base=""
+  # Preserve webui pins. Hermes bumps must not drop them.
   local webui_base=""
-  local vault_base=""
+  local webui_sha=""
   if [[ -f "$file" ]]; then
-    agent_base="$(grep -E '^agent-base=' "$file" | head -1 | cut -d= -f2- | tr -d ' \t\r\n' || true)"
     webui_base="$(grep -E '^webui-base=' "$file" | head -1 | cut -d= -f2- | tr -d ' \t\r\n' || true)"
-    vault_base="$(grep -E '^vault-base=' "$file" | head -1 | cut -d= -f2- | tr -d ' \t\r\n' || true)"
+    webui_sha="$(grep -E '^webui-sha=' "$file" | head -1 | cut -d= -f2- | tr -d ' \t\r\n' || true)"
   fi
 
   {
@@ -78,14 +67,11 @@ write_version_file() {
     if [[ -n "$hermes_base" ]]; then
       printf 'hermes-base=%s\n' "$hermes_base"
     fi
-    if [[ -n "$agent_base" ]]; then
-      printf 'agent-base=%s\n' "$agent_base"
-    fi
     if [[ -n "$webui_base" ]]; then
       printf 'webui-base=%s\n' "$webui_base"
     fi
-    if [[ -n "$vault_base" ]]; then
-      printf 'vault-base=%s\n' "$vault_base"
+    if [[ -n "$webui_sha" ]]; then
+      printf 'webui-sha=%s\n' "$webui_sha"
     fi
   } >"$file"
 }
@@ -112,34 +98,8 @@ dockerfile.write_text(updated)
 PY
 }
 
-pin_agent_base() {
-  # Set (or insert) the agent-base pin in the VERSION file. Tag.
-  local ref="$1"
-  local file="${2:-${VERSION_FILE}}"
-
-  python3 - "$ref" "$file" <<'PY'
-import pathlib
-import re
-import sys
-
-ref, file = sys.argv[1], pathlib.Path(sys.argv[2])
-text = file.read_text()
-if re.search(r"(?m)^agent-base=.*$", text):
-    text = re.sub(r"(?m)^agent-base=.*$", f"agent-base={ref}", text, count=1)
-else:
-    # Insert after hermes-base= line if present, else after first line
-    if re.search(r"(?m)^hermes-base=.*$", text):
-        text = re.sub(r"(?m)^(hermes-base=.*)", r"\1\nagent-base=" + ref, text, count=1)
-    else:
-        lines = text.splitlines(keepends=True)
-        lines.insert(1, f"agent-base={ref}\n")
-        text = "".join(lines)
-file.write_text(text)
-PY
-}
-
 pin_webui_base() {
-  # Set (or insert) the webui-base pin in the VERSION file. Tag or sha.
+  # Set (or insert) the webui-base tag. Build fetches webui-sha, not this tag.
   local ref="$1"
   local file="${2:-${VERSION_FILE}}"
 
@@ -160,8 +120,8 @@ file.write_text(text)
 PY
 }
 
-pin_vault_base() {
-  # Set (or insert) the vault-base pin in the VERSION file. Tag.
+pin_webui_sha() {
+  # Set (or insert) the webui-sha pin. Full commit SHA used as the archive URL.
   local ref="$1"
   local file="${2:-${VERSION_FILE}}"
 
@@ -172,12 +132,12 @@ import sys
 
 ref, file = sys.argv[1], pathlib.Path(sys.argv[2])
 text = file.read_text()
-if re.search(r"(?m)^vault-base=.*$", text):
-    text = re.sub(r"(?m)^vault-base=.*$", f"vault-base={ref}", text, count=1)
+if re.search(r"(?m)^webui-sha=.*$", text):
+    text = re.sub(r"(?m)^webui-sha=.*$", f"webui-sha={ref}", text, count=1)
 else:
     if not text.endswith("\n"):
         text += "\n"
-    text += f"vault-base={ref}\n"
+    text += f"webui-sha={ref}\n"
 file.write_text(text)
 PY
 }

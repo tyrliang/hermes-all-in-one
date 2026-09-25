@@ -124,6 +124,9 @@ if [[ "${SMOKE_SKIP_BUILD:-0}" != "1" ]]; then
   if [[ -n "${HERMES_BASE:-}" ]]; then
     build_args+=(--build-arg "HERMES_IMAGE=nousresearch/hermes-agent:${HERMES_BASE}")
   fi
+  if [[ -n "${WEBUI_SHA:-}" ]]; then
+    build_args+=(--build-arg "HERMES_WEBUI_SHA=${WEBUI_SHA}")
+  fi
   docker build "${build_args[@]}" -t "${IMAGE_TAG}" . || exit 1
 else
   echo "[smoke] skipping build (SMOKE_SKIP_BUILD=1)"
@@ -194,30 +197,19 @@ docker exec "${CONTAINER_NAME}" /bin/sh -lc '
   test -x /usr/local/bin/micro
   test -x /usr/local/bin/node
   command -v zsh >/dev/null
-  test -x /usr/local/bin/hermes-vault
-  /usr/local/bin/hermes-vault secret-source --help >/dev/null
-  test -f /opt/hermes/plugins/hermes-vault-secret-source/plugin.yaml
-  test -f /opt/hermes/plugins/hermes-vault-secret-source/__init__.py
-  /opt/hermes/.venv/bin/python -c "import hermes_vault.crypto"
   test -x /opt/hermes/.venv/bin/hermes
-  test -f /opt/hermes/.venv/bin/hermes.stock.bak
-  # Use double quotes: this block is already single-quoted for sh -lc, so
-  # nested singles + \| would end the string early and pipe to a bogus
-  # "preloaded" command (CI failure: /bin/sh: preloaded: not found).
-  grep -qE "hermes-with-vault|preloaded" /opt/hermes/.venv/bin/hermes
-  # --no-deps must not leave a PATH-shadowing broken CLI stub
+  test ! -e /usr/local/bin/hermes-vault
+  test ! -d /opt/hermes/plugins/hermes-vault-secret-source
   test ! -e /opt/hermes/.venv/bin/hermes-vault
-  test -x /usr/local/bin/hermes-vault
-  test -x /app/docker/scripts/hermes-vault-env-inject.py
-  /opt/hermes/.venv/bin/python /app/docker/scripts/hermes-vault-env-inject.py --check >/dev/null
+  test -f /app/hermes-webui/server.py
   curl --silent --show-error --fail http://127.0.0.1:8788/health >/dev/null
 ' || { echo "[smoke] volume bootstrap / tooling checks failed" >&2; exit 1; }
-echo "[smoke] bootstrap dirs, agent mount, shell tools, baked-in hermes-vault, gateway vault shim, internal WebUI OK"
+echo "[smoke] bootstrap dirs, agent mount, shell tools, internal WebUI OK"
 
 if [[ -n "${PACKAGE_VERSION:-}" && "${SMOKE_SKIP_BUILD:-0}" != "1" ]]; then
   expected_webui_version="v${PACKAGE_VERSION}"
   actual_webui_version="$(docker exec "${CONTAINER_NAME}" /opt/hermes/.venv/bin/python -c \
-    "import importlib.util; spec=importlib.util.spec_from_file_location('v','/app/vendor/hermes-webui/api/_version.py'); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print(m.__version__)")"
+    "import importlib.util; spec=importlib.util.spec_from_file_location('v','/app/hermes-webui/api/_version.py'); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print(m.__version__)")"
   assert_eq "$actual_webui_version" "$expected_webui_version" "WebUI version should match VERSION file"
   echo "[smoke] WebUI version ${actual_webui_version} OK"
 fi

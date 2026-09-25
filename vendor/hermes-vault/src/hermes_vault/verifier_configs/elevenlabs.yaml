@@ -1,6 +1,0 @@
-verifiers:
-  elevenlabs:
-    type: http
-    url: https://api.elevenlabs.io/v1/user
-    headers:
-      xi-api-key: "{secret}"

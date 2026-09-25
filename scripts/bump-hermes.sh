@@ -23,9 +23,8 @@ fi
 NEW_VERSION="$(bump_minor_reset_patch "${PACKAGE_VERSION}")"
 
 write_version_file "$NEW_VERSION" "$HERMES_TAG"
-pin_agent_base "$HERMES_TAG"
 pin_dockerfile_hermes "$HERMES_TAG" Dockerfile
 
 echo "[bump-hermes] ${PACKAGE_VERSION} → ${NEW_VERSION} on hermes ${HERMES_TAG}"
-echo "[bump-hermes] updated VERSION (hermes-base + agent-base) and Dockerfile HERMES_IMAGE pin"
-echo "[bump-hermes] next: review vendor sync, run ./scripts/smoke.sh, commit and tag v${NEW_VERSION}"
+echo "[bump-hermes] updated VERSION (hermes-base) and Dockerfile HERMES_IMAGE pin"
+echo "[bump-hermes] next: run ./scripts/smoke.sh, commit and tag v${NEW_VERSION}"

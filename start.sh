@@ -8,7 +8,7 @@ export HERMES_HOME="${HERMES_HOME:-/data/.hermes}"
 export HERMES_CONFIG_PATH="${HERMES_CONFIG_PATH:-${HERMES_HOME}/config.yaml}"
 export TERMINAL_HOME_MODE="${TERMINAL_HOME_MODE:-real}"
 export HERMES_WEBUI_STATE_DIR="${HERMES_WEBUI_STATE_DIR:-/data/webui}"
-export HERMES_WEBUI_AGENT_DIR="${HERMES_WEBUI_AGENT_DIR:-/app/vendor/hermes-agent}"
+export HERMES_WEBUI_AGENT_DIR="${HERMES_WEBUI_AGENT_DIR:-/opt/hermes}"
 export HERMES_WORKSPACE_DIR="${HERMES_WORKSPACE_DIR:-/data/workspace}"
 export CONTROL_PLANE_HOST="${CONTROL_PLANE_HOST:-0.0.0.0}"
 export CONTROL_PLANE_INTERNAL_WEBUI_HOST="${CONTROL_PLANE_INTERNAL_WEBUI_HOST:-127.0.0.1}"
@@ -33,13 +33,8 @@ for f in telegram-approved.json telegram-pending.json _rate_limits.json; do
 done
 chmod 600 "${HERMES_HOME}"/pairing/*.json 2>/dev/null || true
 
-# Seed vendored built-in skills on first run (no-clobber preserves user edits)
-if [ -d "/app/vendor/hermes-agent/skills" ]; then
-  cp -rn /app/vendor/hermes-agent/skills/. "${HERMES_HOME}/skills/" 2>/dev/null || true
-fi
-if [ -d "/app/vendor/hermes-agent/optional-skills" ]; then
-  cp -rn /app/vendor/hermes-agent/optional-skills/. "${HERMES_HOME}/optional-skills/" 2>/dev/null || true
-fi
+# Skills ship inside the Hermes base image at /opt/hermes/skills. This launcher
+# does not copy a vendored tree.
 
 echo "[start] launching Hermes control plane on 0.0.0.0:${PORT:-8787}"
 echo "[start] internal WebUI target ${CONTROL_PLANE_INTERNAL_WEBUI_HOST}:${CONTROL_PLANE_INTERNAL_WEBUI_PORT}"

@@ -23,4 +23,4 @@ export HERMES_WEBUI_HOST="${CONTROL_PLANE_INTERNAL_WEBUI_HOST:-127.0.0.1}"
 export HERMES_WEBUI_PORT="${CONTROL_PLANE_INTERNAL_WEBUI_PORT:-8788}"
 export CONTROL_PLANE_RUNTIME=s6
 
-exec s6-setuidgid hermes python /app/vendor/hermes-webui/server.py
+exec s6-setuidgid hermes python /app/hermes-webui/server.py
