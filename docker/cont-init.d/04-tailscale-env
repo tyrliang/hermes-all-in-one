@@ -26,6 +26,15 @@ case "${TAILSCALE_OUTBOUND_PROXY:-}" in
     1|true|TRUE|True|yes|YES|Yes) TS_OUTBOUND=1 ;;
 esac
 
+# Subnet routes advertised by other tailnet nodes (e.g. a homelab LAN behind a subnet
+# router). Mirrors the flag read by s6-rc.d/tailscaled/run: with userspace networking
+# those prefixes exist ONLY behind the proxy, which is why the RFC1918 bypass below is
+# conditional on this being off.
+TS_ACCEPT_ROUTES=0
+case "${TAILSCALE_ACCEPT_ROUTES:-}" in
+    1|true|TRUE|True|yes|YES|Yes) TS_ACCEPT_ROUTES=1 ;;
+esac
+
 if [ "${TS_HTTPS}" = "0" ] && [ "${TS_OUTBOUND}" = "0" ]; then
     exit 0
 fi
@@ -43,9 +52,18 @@ if [ "${TS_OUTBOUND}" = "1" ]; then
     printf '%s' 'http://127.0.0.1:1055/' > "${CONT_ENV}/HTTPS_PROXY"
     # Public cloud APIs must bypass the tailnet SOCKS proxy (e.g. Bedrock model catalog).
     NO_PROXY_DEFAULT='localhost,127.0.0.1,::1,.railway.internal,.amazonaws.com,amazonaws.com,.tailscale.com,tailscale.com,controlplane.tailscale.com,log.tailscale.com'
+    # Local inference servers (LM Studio, Ollama, vLLM on a LAN box at 192.168.x.x / 10.x /
+    # 172.16-31.x) are dialled by this container's own routing table, never by the tailnet
+    # proxy. Leaving them out of NO_PROXY sends every call to localhost:1055, which stalls
+    # until the proxy times out and then fails with a 5xx after ~2 minutes -- which looks
+    # exactly like a hung model. Bypass RFC1918, but ONLY when subnet routes are off: with
+    # TAILSCALE_ACCEPT_ROUTES=1 those ranges are reachable solely through the proxy.
+    if [ "${TS_ACCEPT_ROUTES}" = "0" ]; then
+        NO_PROXY_DEFAULT="${NO_PROXY_DEFAULT},192.168.0.0/16,10.0.0.0/8,172.16.0.0/12"
+    fi
     if [ -n "${TAILSCALE_NO_PROXY_EXTRA:-}" ]; then
         NO_PROXY_DEFAULT="${NO_PROXY_DEFAULT},${TAILSCALE_NO_PROXY_EXTRA}"
     fi
     printf '%s' "${NO_PROXY_DEFAULT}" > "${CONT_ENV}/NO_PROXY"
-    echo "[tailscale-env] outbound tailnet proxy enabled (ALL_PROXY + NO_PROXY for loopback)" >&2
+    echo "[tailscale-env] outbound tailnet proxy enabled (ALL_PROXY + NO_PROXY: loopback, cloud APIs, RFC1918 LAN)" >&2
 fi
