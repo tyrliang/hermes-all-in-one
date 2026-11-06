@@ -125,8 +125,15 @@ RUN ARCH="$(dpkg --print-architecture)" \
 # its own change; the PR smoke job is what proves the mix still works.
 # chown the venv to hermes so the non-root user can run lazy installs at runtime.
 # Hermes Vault is not installed. Credentials are plaintext env / /admin.
-RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/hermes-webui/api/_version.py \
-    && uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir \
+# uv is NOT on PATH in the v0.23.0 base image any more (v2026.9.24 copied it to
+# /usr/local/bin from an astral image). Upstream now resolves it through pm, and
+# `uv` is an internal pm package (`on_path = False`), so installed_package() refuses
+# it — uv_launcher() is the supported accessor. Resolve it the same way PM does and
+# fail the build loudly if that path is gone rather than silently skipping the installs.
+RUN UV="$(python3 -c 'from pm import ensure, uv_launcher; ensure("uv", explicit=True); print(uv_launcher("uv") or "")' | tail -n 1)" \
+    && test -n "$UV" && test -x "$UV" \
+    && printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/hermes-webui/api/_version.py \
+    && "$UV" pip install --python /opt/hermes/.venv/bin/python --no-cache-dir \
         -r /app/hermes-webui/requirements.txt \
         -r /app/requirements-control-plane.txt \
         "mcp>=1.24.0" \

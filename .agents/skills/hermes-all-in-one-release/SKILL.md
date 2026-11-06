@@ -216,6 +216,7 @@ Read the upstream repo at the tag — `gh api "repos/NousResearch/hermes-agent/c
 |---|---|
 | `ENTRYPOINT` is `/opt/hermes/docker/entrypoint-dispatch.sh` and `main-wrapper.sh` still routes args | `Dockerfile` CMD, `railway.toml` |
 | `/opt/hermes/.venv` exists and is writable/owned as we chown it | `docker/s6-rc.d/*/run`, Dockerfile `uv pip` |
+| **`uv` is resolvable at build time** — it left PATH in v0.23.0 and now comes from PM (`pm.uv_launcher("uv")`, `on_path = False`) | Dockerfile `uv pip install` block |
 | `/opt/hermes/bin/hermes`, `plugins/`, `skills/`, `optional-skills/` ship in the image | `control_plane/s6_ops.py`, `cont-init.d/03-all-in-one-setup` |
 | Node version baked at `/usr/local/bin/node` (`HERMES_NODE`) | README § Railway shells, Dockerfile ENV |
 | `pyproject.toml [project.optional-dependencies] web` pins (fastapi/uvicorn/starlette) | Dockerfile `uv pip` block, `requirements-control-plane.txt` |
@@ -475,6 +476,7 @@ Bot PRs may stall (`action_required`). Prefer human-user push.
 | Local tag collision | `git tag -d vX.Y.Z` if unrelated SHA; retag |
 | `latest-hermes-tag.sh` exits 1 | Neither GitHub `releases/latest` nor the Docker Hub scan produced a validated tag (rate limit, outage, or a release with no image). Read the stderr reasons; pin an explicitly verified tag or re-run. Do not fall back to the old CalVer filter. |
 | Build fails: "OpenRouter/Codex model list is empty" | Upstream renamed or retyped the catalog table (v0.23.0 changed `List[str]` → `list[str]` in `codex_models.py`). Fix `scripts/patch-vendor-models.py` to accept both shapes; never edit the generated WebUI file. |
+| Build fails: `uv: not found` | v0.23.0 dropped uv from PATH — it is an internal PM package now. Resolve it with `pm.uv_launcher("uv")` (after `pm.ensure("uv", explicit=True)`); do not re-add a `COPY --from=ghcr.io/astral-sh/uv` or pip install. |
 | `check-upstream` says "Up to date" after a scheme change | The compare must rank semver above retired CalVer tags; a numeric tuple/`sort -V` compare ranks `v2026.9.24` above `v0.23.0`. |
 | Skill not found | Open `.agents/skills/hermes-all-in-one-release/SKILL.md` in-repo (not global) |
 
