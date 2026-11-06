@@ -23,8 +23,8 @@ Invoke by path: read this `SKILL.md` when releasing.
 Root `VERSION`:
 
 ```text
-0.15.0
-hermes-base=v2026.9.24
+0.16.0
+hermes-base=v0.23.0
 webui-base=v0.52.113
 webui-sha=c67fd2dd270a1128c2754200406bca58e9d9a25a
 ```
@@ -147,9 +147,9 @@ Do not vendor. Do not `git subtree pull`. Do not `git archive` into `vendor/`.
 cat VERSION
 ./scripts/latest-hermes-tag.sh
 
-./scripts/bump-hermes.sh v2026.9.24     # hermes minor + Dockerfile HERMES_IMAGE
+./scripts/bump-hermes.sh v0.23.0        # hermes minor + Dockerfile HERMES_IMAGE
 ./scripts/bump-patch.sh                 # z+1 only; preserves webui pins
-./scripts/set-version.sh 0.15.1 [tag]
+./scripts/set-version.sh 0.16.1 [tag]
 
 . scripts/version-lib.sh && read_version_file .
 pin_webui_base "v0.52.200"
@@ -165,6 +165,140 @@ gh api repos/NousResearch/hermes-agent/releases --jq '.[:5]|.[]|{tag:.tag_name,n
 ```
 
 Skip experimental WebUI tags (`exp-*`) unless the user explicitly wants them.
+
+## Routine upstream upgrade (keep this repo current)
+
+The routine lane: **detect → validate the image tag → compatibility check → bump → doc
+sweep → static checks → PR for human review → after merge, tag/release → deploy**.
+Steps 1-7 are safe to run autonomously inside an approved "keep this repo up to date"
+outcome. Steps 8-9 are maintainer actions: never merge, tag, publish an image, or deploy
+on your own initiative.
+
+### 1. Detect
+
+```bash
+./scripts/latest-hermes-tag.sh          # prints vX.Y.Z, or exits non-zero — it never guesses
+./scripts/read-version.sh              # hermes_base / webui_base as key=value
+```
+
+Compare the printed tag with `VERSION` line `hermes-base`. Same → nothing to do.
+
+**Tag scheme changed upstream (2026-11-05).** Image tags were CalVer (`v2026.9.24`) through
+2026-11-04 and are semver (`v0.23.0`) since. The two are *not* comparable as version tuples:
+`v2026.9.24` sorts above `v0.23.0`. `latest-hermes-tag.sh` therefore:
+
+1. asks GitHub `releases/latest` for the current release tag,
+2. validates that a Docker Hub image actually exists for it (`tag_status: active`),
+3. falls back to a Docker Hub tag scan (both schemes) that ranks **semver above CalVer**
+   and, within a scheme, the higher version,
+4. exits **1** with the reason on stderr when no tag can be validated, instead of printing
+   a stale CalVer tag.
+
+`check-upstream.yml` uses the same ranking when it decides "needs bump". A numeric
+`sort -V`/tuple compare there would report "Up to date" forever after the scheme change.
+
+### 2. Validate the image tag exists before pinning
+
+```bash
+curl -fsS "https://hub.docker.com/v2/repositories/nousresearch/hermes-agent/tags/<tag>"
+gh release view <tag> -R NousResearch/hermes-agent
+```
+
+Do not pin a tag that exists only as a git tag. A base pin with no image fails at
+`FROM ${HERMES_IMAGE}` for everyone.
+
+### 3. Base-image compatibility check (no docker daemon needed)
+
+Read the upstream repo at the tag — `gh api "repos/NousResearch/hermes-agent/contents/<path>?ref=<tag>"`
+— and record `assumption | still true | evidence` for:
+
+| Assumption this image makes | Where |
+|---|---|
+| `ENTRYPOINT` is `/opt/hermes/docker/entrypoint-dispatch.sh` and `main-wrapper.sh` still routes args | `Dockerfile` CMD, `railway.toml` |
+| `/opt/hermes/.venv` exists and is writable/owned as we chown it | `docker/s6-rc.d/*/run`, Dockerfile `uv pip` |
+| **`uv` is resolvable at build time** — it left PATH in v0.23.0 and now comes from PM (`pm.uv_launcher("uv")`, `on_path = False`) | Dockerfile `uv pip install` block |
+| `/opt/hermes/bin/hermes`, `plugins/`, `skills/`, `optional-skills/` ship in the image | `control_plane/s6_ops.py`, `cont-init.d/03-all-in-one-setup` |
+| Node version baked at `/usr/local/bin/node` (`HERMES_NODE`) | README § Railway shells, Dockerfile ENV |
+| `pyproject.toml [project.optional-dependencies] web` pins (fastapi/uvicorn/starlette) | Dockerfile `uv pip` block, `requirements-control-plane.txt` |
+| `docker/patches/` table is still empty (retired patch still absorbed upstream) | `docker/patches/apply-agent-patches.sh` |
+| The `webui-sha` archive fetch URL still resolves | Dockerfile webui RUN |
+| `scripts/patch-vendor-models.py` still parses upstream catalogs | Dockerfile webui RUN |
+
+Prove the model-list rewrite without docker (it is the step that fails a bump most often —
+upstream renamed `List[str]` to `list[str]` in v0.23.0 and the parser exited 1):
+
+```bash
+# fetch the new catalogs into a scratch agent root + unpack the pinned WebUI
+HERMES_AGENT_ROOT=<scratch>/agent HERMES_WEBUI_ROOT=<scratch>/webui \
+  python3 scripts/patch-vendor-models.py     # must exit 0 and report model counts
+# run twice: the second run must say "already up to date" (idempotent)
+python3 -m py_compile <scratch>/webui/api/config.py
+```
+
+If a parser assumption broke, fix `scripts/patch-vendor-models.py` (tolerate old and new
+shapes), never the generated file. Empty OpenRouter/Codex parses are fatal by design.
+
+### 4. Bump
+
+```bash
+git fetch origin --prune
+git checkout main && git merge --ff-only origin/main    # not FF? stop and report
+git switch -c chore/bump-hermes-<tag>
+./scripts/bump-hermes.sh <tag>
+```
+
+Expect: package `y+1`, `z→0`; `hermes-base=<tag>`; Dockerfile `ARG HERMES_IMAGE`; and
+`webui-base`/`webui-sha` byte-identical. If the script mangles a line, fix
+`scripts/version-lib.sh`, not the output.
+
+### 5. Doc sweep
+
+```bash
+grep -rn "<previous-tag>" --exclude-dir=.git .    # every live pin/example
+```
+
+README (base-image table, `HERMES_IMAGE` row, build example, `VERSION` example, bump-rule
+example, maintainer scripts, release-flow examples, release-notes example), this skill's
+version block + cheat sheet, `docker/patches/README.md`'s "empty as of" claim (re-check
+before relabelling), and Dockerfile comments that assert a base-image fact. Leave genuine
+history and published release-note text alone.
+
+### 6. Static checks
+
+```bash
+bash -n <every modified shell script>
+bash docker/patches/test-apply-agent-patches.sh
+python3 -m pytest tests/
+./scripts/smoke.sh          # only with a reachable docker daemon; otherwise say the gap
+```
+
+No docker here? Record the gap explicitly and rely on the PR's `ci.yml` `vendor syntax` +
+`smoke` jobs. Do not claim smoke passed.
+
+### 7. PR for human review
+
+Conventional commit (`chore(release): X.Y.Z on hermes <tag>`), push the branch, `gh pr
+create --base main` with: pin table, why this tag, the compatibility table from step 3,
+verification actually run **plus gaps**, and rollback. Required checks: `vendor syntax` +
+`smoke`. The maintainer merges.
+
+### 8. After merge — maintainer only
+
+Tag must equal `VERSION` line 1: `git tag vX.Y.Z && git push origin vX.Y.Z` → `release.yml`
+preflight → amd64 + arm64 → manifest → GHCR `:vX.Y.Z` + `:latest` → stub GitHub Release →
+`gh release edit` with curated notes.
+
+### 9. Deploy — human-gated
+
+Publishing an image is not deploying. Moving a Railway/consumer workload onto the new tag
+is a human decision; an agent may prepare the pin and the rollback, not perform the deploy.
+
+### Rollback
+
+The bump is one reversible commit pair (`VERSION`, `Dockerfile`): `git revert` the merge
+commit, or re-pin the previous base with `./scripts/set-version.sh <old-package> <old-tag>`
+and bump a patch. Then republish. Never delete or force-push a published tag; ship the
+revert as a new version.
 
 ## Full cycle checklist
 
@@ -320,7 +454,7 @@ Body structure (see published v0.11.0 / v0.12.0):
 
 | What | How |
 |------|-----|
-| New Hermes on Docker Hub | `check-upstream.yml` → pin-only PR. Do not vendor. Rewrite the PR body. |
+| New Hermes on Docker Hub | `check-upstream.yml` → pin-only PR, comparing tags scheme-aware (semver outranks retired CalVer). Do not vendor. Rewrite the PR body. |
 | Newer stable WebUI tag | `sync-upstreams.yml` writes `webui-base` + `webui-sha`. Does not vendor. |
 | PR validation | `ci.yml`: **vendor syntax** + **smoke** |
 | Publish image + stub Release | Tag `vX.Y.Z` → `release.yml` |
@@ -340,6 +474,10 @@ Bot PRs may stall (`action_required`). Prefer human-user push.
 | Notes still stub | `gh release edit` after green |
 | Draft release stuck unpublished | Never pre-create `--draft`; edit after workflow create |
 | Local tag collision | `git tag -d vX.Y.Z` if unrelated SHA; retag |
+| `latest-hermes-tag.sh` exits 1 | Neither GitHub `releases/latest` nor the Docker Hub scan produced a validated tag (rate limit, outage, or a release with no image). Read the stderr reasons; pin an explicitly verified tag or re-run. Do not fall back to the old CalVer filter. |
+| Build fails: "OpenRouter/Codex model list is empty" | Upstream renamed or retyped the catalog table (v0.23.0 changed `List[str]` → `list[str]` in `codex_models.py`). Fix `scripts/patch-vendor-models.py` to accept both shapes; never edit the generated WebUI file. |
+| Build fails: `uv: not found` | v0.23.0 dropped uv from PATH — it is an internal PM package now. Resolve it with `pm.uv_launcher("uv")` (after `pm.ensure("uv", explicit=True)`); do not re-add a `COPY --from=ghcr.io/astral-sh/uv` or pip install. |
+| `check-upstream` says "Up to date" after a scheme change | The compare must rank semver above retired CalVer tags; a numeric tuple/`sort -V` compare ranks `v2026.9.24` above `v0.23.0`. |
 | Skill not found | Open `.agents/skills/hermes-all-in-one-release/SKILL.md` in-repo (not global) |
 
 ## More detail

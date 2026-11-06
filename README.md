@@ -8,10 +8,10 @@ No terminal setup. Deploy it, open `/admin`, paste an API key, connect a channel
 
 | | |
 |---|---|
-| **Package version** | `0.15.0` |
-| **Base image** | `nousresearch/hermes-agent:v2026.9.24` |
+| **Package version** | `0.16.0` |
+| **Base image** | `nousresearch/hermes-agent:v0.23.0` |
 | **Fetched at build** | webui `v0.52.113` (`c67fd2dd270a1128c2754200406bca58e9d9a25a`) |
-| **Published image** | `ghcr.io/tyrliang/hermes-all-in-one:v0.15.0` / `:latest` |
+| **Published image** | `ghcr.io/tyrliang/hermes-all-in-one:v0.16.0` / `:latest` |
 | **Volume mount** | `/opt/data` (required) |
 | **Public port** | `$PORT` (Railway-injected) or `8787` |
 
@@ -557,7 +557,7 @@ Tune with `HEALTHWATCH_INTERVAL_SECONDS`, `HEALTHWATCH_GRACE_SECONDS`, or disabl
 /command/s6-svstat /run/service/gateway-default
 ```
 
-Node 22 is baked in at `/usr/local/bin/node`. Some shells (notably `railway ssh`) start with a minimal `PATH`; cont-init patches this for current deploys, but if `hermes --tui` ever offers to install Node:
+Node 26 is baked in at `/usr/local/bin/node`. Some shells (notably `railway ssh`) start with a minimal `PATH`; cont-init patches this for current deploys, but if `hermes --tui` ever offers to install Node:
 
 ```bash
 export PATH="/usr/local/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:$PATH"
@@ -693,15 +693,15 @@ Defaults below are what the **image** provides (`Dockerfile:161-177`) or what th
 
 | `ARG` | Default | Purpose |
 |---|---|---|
-| `HERMES_IMAGE` | `nousresearch/hermes-agent:v2026.9.24` | Base image pin; kept in sync with `hermes-base` in `VERSION` |
+| `HERMES_IMAGE` | `nousresearch/hermes-agent:v0.23.0` | Base image pin; kept in sync with `hermes-base` in `VERSION` |
 | `HERMES_WEBUI_VERSION` | `unknown` | Baked into the vendored WebUI's `_version.py` |
 | `MICRO_VERSION` | `2.0.14` | `micro` editor for interactive shells |
 | `LIGHTPANDA_VERSION` | `0.3.7` | Lightpanda release, SHA256-verified per arch |
 
 ```bash
 docker build \
-  --build-arg HERMES_IMAGE=nousresearch/hermes-agent:v2026.9.24 \
-  --build-arg HERMES_WEBUI_VERSION=v0.15.0 \
+  --build-arg HERMES_IMAGE=nousresearch/hermes-agent:v0.23.0 \
+  --build-arg HERMES_WEBUI_VERSION=v0.16.0 \
   -t hermes-all-in-one .
 ```
 
@@ -797,15 +797,15 @@ Two version concepts: this package's semver, and the upstream tags baked into th
 ## The `VERSION` file
 
 ```text
-0.15.0
-hermes-base=v2026.9.24
+0.16.0
+hermes-base=v0.23.0
 webui-base=v0.52.113
 webui-sha=c67fd2dd270a1128c2754200406bca58e9d9a25a
 ```
 
 | Line | Field | Meaning |
 |---|---|---|
-| 1 | package semver | GHCR tag + git tag: `v0.15.0` |
+| 1 | package semver | GHCR tag + git tag: `v0.16.0` |
 | 2 | `hermes-base` | Pinned `nousresearch/hermes-agent` tag in the Dockerfile |
 | 3 | `webui-base` | WebUI release tag. Human label. The image fetches `webui-sha`, not the tag. |
 | 4 | `webui-sha` | Commit archive URL: `https://github.com/nesquena/hermes-webui/archive/<sha>.tar.gz` |
@@ -816,7 +816,7 @@ Minor is reserved for upstream agent/webui base advances. Everything else is a p
 
 | Change | Bump | Example |
 |---|---|---|
-| New Hermes Agent or WebUI release | **y**+1, **z**→0 | `0.14.3` → `0.15.0` on Hermes `v2026.9.24` |
+| New Hermes Agent or WebUI release | **y**+1, **z**→0 | `0.15.0` → `0.16.0` on Hermes `v0.23.0` |
 | Container-only fix or feature | **z**+1 | `0.10.0` → `0.10.1` |
 | Breaking packaging change (volume layout, env contract) | **x**+1, manual | Rare. Vault left in 0.15.0, before that tag existed, so it stayed a minor. |
 
@@ -825,17 +825,19 @@ The rule is whether `hermes-base` or `webui-base` moved. A container-only change
 ## Maintainer scripts
 
 ```bash
-./scripts/bump-hermes.sh v2026.9.24   # new Hermes base → y+1, z=0; writes hermes-base + Dockerfile ARG
+./scripts/bump-hermes.sh v0.23.0   # new Hermes base → y+1, z=0; writes hermes-base + Dockerfile ARG
 ./scripts/bump-patch.sh              # package z+1 only; preserves webui pins
-./scripts/set-version.sh 1.0.1 [v2026.9.24]   # explicit set; pins the Dockerfile only if a hermes tag is given
+./scripts/set-version.sh 1.0.1 [v0.23.0]   # explicit set; pins the Dockerfile only if a hermes tag is given
 ./scripts/read-version.sh            # emit semver / pins as GITHUB_OUTPUT key=value pairs
-./scripts/latest-hermes-tag.sh       # newest nousresearch/hermes-agent v20* tag from Docker Hub
+./scripts/latest-hermes-tag.sh       # current hermes-agent release tag, validated against Docker Hub; exits non-zero rather than guess
 ./scripts/sync-upstreams.sh          # resolve webui-base to webui-sha; does not vendor
 ./scripts/patch-vendor-models.py     # rewrite fetched WebUI model lists from /opt/hermes; runs in the image build
 ./scripts/smoke.sh                   # build + runtime smoke; what CI runs
 ```
 
 `scripts/version-lib.sh` is the shared parser/writer (`read_version_file`, `write_version_file`, `pin_*_base`, `pin_dockerfile_hermes`). `write_version_file` re-reads and preserves the pins it is not asked to change.
+
+**Tag scheme.** Upstream image tags were CalVer (`v2026.9.24`) until 2026-11-05 and are semver (`v0.23.0`) since. The two are not comparable numerically — `v2026.9.24` sorts above `v0.23.0` as a version tuple. `scripts/latest-hermes-tag.sh` therefore asks GitHub for `releases/latest`, validates that tag exists on Docker Hub, falls back to a Docker Hub scan that ranks semver above CalVer, and exits non-zero rather than print an unvalidated tag.
 
 ## Release flow
 
@@ -844,22 +846,22 @@ Tagging is **manual**. No workflow auto-tags on a `VERSION` change, and pushing 
 **Upstream bump** (or merge the daily `check-upstream` PR):
 
 ```bash
-./scripts/bump-hermes.sh v2026.9.14
+./scripts/bump-hermes.sh v0.23.0
 ./scripts/sync-upstreams.sh          # optional: refresh vendored agent/webui
 ./scripts/smoke.sh
-git add VERSION Dockerfile && git commit -m "chore(release): 0.14.0 on hermes v2026.9.14"
+git add VERSION Dockerfile && git commit -m "chore(release): 0.16.0 on hermes v0.23.0"
 # open a PR, land it once `vendor syntax` + `smoke` are green, then:
-git tag v0.14.0 && git push origin v0.14.0     # triggers release.yml
+git tag v0.16.0 && git push origin v0.16.0     # triggers release.yml
 ```
 
 **Layer patch** (same hermes/agent/webui base — includes vault bumps and container-only features):
 
 ```bash
-./scripts/bump-patch.sh              # e.g. 0.14.0 → 0.14.1
+./scripts/bump-patch.sh              # e.g. 0.16.0 → 0.16.1
 ./scripts/smoke.sh
 git commit -am "fix: …"
 # land via PR, then:
-git tag v0.14.1 && git push origin v0.14.1
+git tag v0.16.1 && git push origin v0.16.1
 ```
 
 Only a matching `v*.*.*` git tag publishes an image.
@@ -874,7 +876,7 @@ Only a matching `v*.*.*` git tag publishes an image.
 | [`test.yml`](.github/workflows/test.yml) | Manual only | `echo hello` stub | Placeholder, not a test suite |
 | [`sync-upstreams.yml`](.github/workflows/sync-upstreams.yml) | Daily 04:00 UTC, or manual | Opens a PR that advances `webui-base` and `webui-sha` when a newer stable WebUI tag exists. Does not vendor. | `SYNC_PAT` preferred; falls back to `GITHUB_TOKEN` |
 
-Release notes should name both versions, e.g. **hermes-all-in-one v0.15.0** on **Hermes Agent v2026.9.24**.
+Release notes should name both versions, e.g. **hermes-all-in-one v0.16.0** on **Hermes Agent v0.23.0**.
 
 **Upstream bytes.** The agent is the Docker base image. WebUI is fetched by `webui-sha` at build time. There is no `vendor/` tree. Hermes Vault is not installed.
 

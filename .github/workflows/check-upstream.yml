@@ -40,9 +40,15 @@ jobs:
                   return (0, 0, 0, 0)
               return tuple(int(part or 0) for part in match.groups())
 
+          def rank(tag: str) -> tuple[int, tuple[int, ...]]:
+              # Upstream tags were CalVer (v2026.9.24) and are semver (v0.23.0) since
+              # 2026-11-05. Comparing tuples across schemes ranks every CalVer tag above
+              # every semver one, so this check would report "up to date" forever.
+              return (0 if re.match(r"^v?20\\d\\d\\.", tag or "") else 1, key(tag))
+
           latest = "${latest}"
           current = "${hermes_base}"
-          print("true" if (not current or key(latest) > key(current)) else "false")
+          print("true" if (not current or rank(latest) > rank(current)) else "false")
           PY
           )"
           echo "latest=${latest}" >> "$GITHUB_OUTPUT"

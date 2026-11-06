@@ -4,7 +4,7 @@
 # Build:  docker build --build-arg HERMES_IMAGE=nousresearch/hermes-agent:latest .
 # Pin:    HERMES_IMAGE=nousresearch/hermes-agent:<tag>
 
-ARG HERMES_IMAGE=nousresearch/hermes-agent:v2026.9.24
+ARG HERMES_IMAGE=nousresearch/hermes-agent:v0.23.0
 FROM ${HERMES_IMAGE}
 ENV HOME=/opt/data
 
@@ -23,7 +23,7 @@ COPY docker/scripts/ /app/docker/scripts/
 COPY docker/profile.d/ /app/docker/profile.d/
 
 # Local patches to the agent tree that ships in the base image. The patch table
-# is empty as of hermes-base v2026.9.24. A new patch is a file under
+# is empty as of hermes-base v0.23.0. A new patch is a file under
 # docker/patches/agent/ plus one row in apply-agent-patches.sh. See
 # docker/patches/README.md.
 COPY docker/patches/ /app/docker/patches/
@@ -111,17 +111,29 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && /usr/local/bin/lightpanda version
 
 # fastapi + uvicorn[standard] + starlette are the `hermes dashboard` / `web` extra
-# deps: keep them in sync with the base image's tools/lazy_deps.py and
-# pyproject.toml `[project.optional-dependencies] web`.
+# deps: keep them in sync with the base image's pyproject.toml
+# `[project.optional-dependencies] web`. (tools/lazy_deps.py no longer lists the
+# web deps — on v0.23.0 it is a retired-API shim.)
 # uvicorn[standard] (not plain uvicorn) is required — it pulls in `websockets`,
 # which the dashboard's /api/pty and /api/ws WebSocket endpoints depend on.
-# starlette==1.3.1 is required for CVE-2026-48710 (BadHost); fastapi alone can
-# resolve Starlette into the vulnerable <1.0.1 range and bypass path-gating
+# starlette==1.3.1 is the first release with the CVE-2026-48710 (BadHost) fix; fastapi
+# alone can resolve Starlette into the vulnerable <1.0.1 range and bypass path-gating
 # middleware (this image gates /admin that way).
+# KNOWN DIVERGENCE (v0.23.0): upstream now pins fastapi==0.133.1, uvicorn==0.54.0,
+# starlette==1.9.0. Our starlette/uvicorn pins are older and will hold the venv back.
+# Left as-is deliberately — re-pinning changes control-plane runtime behaviour and is
+# its own change; the PR smoke job is what proves the mix still works.
 # chown the venv to hermes so the non-root user can run lazy installs at runtime.
 # Hermes Vault is not installed. Credentials are plaintext env / /admin.
-RUN printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/hermes-webui/api/_version.py \
-    && uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir \
+# uv is NOT on PATH in the v0.23.0 base image any more (v2026.9.24 copied it to
+# /usr/local/bin from an astral image). Upstream now resolves it through pm, and
+# `uv` is an internal pm package (`on_path = False`), so installed_package() refuses
+# it — uv_launcher() is the supported accessor. Resolve it the same way PM does and
+# fail the build loudly if that path is gone rather than silently skipping the installs.
+RUN UV="$(python3 -c 'from pm import ensure, uv_launcher; ensure("uv", explicit=True); print(uv_launcher("uv") or "")' | tail -n 1)" \
+    && test -n "$UV" && test -x "$UV" \
+    && printf "__version__ = '%s'\n" "$HERMES_WEBUI_VERSION" > /app/hermes-webui/api/_version.py \
+    && "$UV" pip install --python /opt/hermes/.venv/bin/python --no-cache-dir \
         -r /app/hermes-webui/requirements.txt \
         -r /app/requirements-control-plane.txt \
         "mcp>=1.24.0" \
@@ -155,7 +167,7 @@ RUN chmod +x /app/docker/patches/apply-agent-patches.sh \
     && chown -R hermes:hermes /opt/hermes/tools
 
 # Volume at /opt/data; agent state under /opt/data/.hermes (see cont-init migration).
-# /usr/local/bin: Node 22 from the base image (TUI, npm tools). cont-init 05-hermes-path
+# /usr/local/bin: Node 26 from the base image (TUI, npm tools). cont-init 05-hermes-path
 # also patches PATH for railway ssh shells that inherit a minimal PATH.
 ENV PATH="/usr/local/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}" \
     HERMES_NODE=/usr/local/bin/node \
@@ -177,6 +189,10 @@ ENV PATH="/usr/local/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/
 
 EXPOSE 8787
 
-# Inherits ENTRYPOINT ["/init", "/opt/hermes/docker/main-wrapper.sh"] from the base image.
+# Inherits ENTRYPOINT ["/opt/hermes/docker/entrypoint-dispatch.sh"] from the base image.
+# That dispatcher execs `/init /opt/hermes/docker/main-wrapper.sh <args>` when it owns
+# PID 1 (s6-overlay stage 2, cont-init, supervised services) and falls back to
+# stage2-hook + main-wrapper when the platform's init already holds PID 1. Our CMD is
+# the main program /init execs once the tree is up.
 # Hold the container open while s6 supervises control-plane, hermes-webui, and gateways.
 CMD ["sleep", "infinity"]
