@@ -53,7 +53,7 @@ Run it after touching the script or re-basing a patch. Reverting the source veri
 
 ## Current patches
 
-**None.** The table in `apply-agent-patches.sh` is empty as of `hermes-base` `v2026.9.24`.
+**None.** The table in `apply-agent-patches.sh` is empty (re-checked on the v0.23.1 base: `_mcp_proxy_mounts()` is still present in `tools/mcp_tool_transport.py`, so the one retired patch stays retired).
 
 | File | Fix | Retired |
 |------|-----|---------|

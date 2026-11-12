@@ -46,7 +46,7 @@ PATCH_SRC="${PATCH_SRC:-/app/patches/agent}"
 # Refresh the patched hash from the vendored tree:
 #   sha256sum vendor/hermes-agent/tools/mcp_tool_transport.py
 #
-# EMPTY as of hermes-base v2026.9.24. The one entry that lived here
+# EMPTY as of hermes-base v0.23.0. The one entry that lived here
 # (tools/mcp_tool_transport.py — env proxy for MCP HTTP/SSE transports) was
 # retired when upstream shipped the equivalent fix as _mcp_proxy_mounts().
 # A new patch also needs its file COPYed to $PATCH_SRC in the Dockerfile.

@@ -173,13 +173,18 @@ def _load_codex_models() -> list[str]:
     ``"…"`` scrape treated those as model ids and wrote bogus picker rows.
     """
     src = AGENT_CODEX.read_text(encoding="utf-8")
+    # Accept both annotation spellings: typing.List[str] (through v2026.9.x) and
+    # PEP 585 list[str] (v0.23.0+). A bare value without annotation also parses.
     m = re.search(
-        r"DEFAULT_CODEX_MODELS\s*:\s*List\[str\]\s*=\s*\[(.*?)\]",
+        r"DEFAULT_CODEX_MODELS\s*(?::[^=\n]+)?\s*=\s*\[(.*?)\]",
         src,
         re.DOTALL,
     )
     if not m:
-        print("[patch] Warning: could not parse DEFAULT_CODEX_MODELS — skipping codex sync")
+        print(
+            "[patch] Warning: could not parse DEFAULT_CODEX_MODELS "
+            f"in {AGENT_CODEX.name} — skipping codex sync"
+        )
         return []
     # Drop full-line and trailing comments before extracting strings.
     body = re.sub(r"#[^\n]*", "", m.group(1))
