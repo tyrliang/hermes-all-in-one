@@ -4,7 +4,7 @@
 # Build:  docker build --build-arg HERMES_IMAGE=nousresearch/hermes-agent:latest .
 # Pin:    HERMES_IMAGE=nousresearch/hermes-agent:<tag>
 
-ARG HERMES_IMAGE=nousresearch/hermes-agent:v0.23.0
+ARG HERMES_IMAGE=nousresearch/hermes-agent:v0.23.1
 FROM ${HERMES_IMAGE}
 ENV HOME=/opt/data
 
@@ -52,7 +52,7 @@ RUN curl -fsSL https://tailscale.com/install.sh | sh
 
 # docker exec shell: micro editor, zsh + Oh My Zsh (root and hermes).
 # OMZ/plugins match hermes-agent-docker/Dockerfile (RUNZSH=no … zsh-syntax-highlighting).
-ARG MICRO_VERSION=2.0.14
+ARG MICRO_VERSION=2.0.15
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         zsh git curl ca-certificates openssh-server \
@@ -96,12 +96,12 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
 # Debian. Served via browser.cdp_url=http://127.0.0.1:9222 (agent-browser
 # --cdp attach; the --engine lightpanda spawn path is broken upstream —
 # "Multiple targets").
-ARG LIGHTPANDA_VERSION=0.3.7
+ARG LIGHTPANDA_VERSION=1.0.3
 # SHA256 digests published on the GitHub release assets (per-arch).
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "$ARCH" in \
-         amd64) LP_ARCH="x86_64-linux"; LP_SHA256="895339b02205171a181dde743ae0068bb4564884076feac8482baca9c212aa5a" ;; \
-         arm64) LP_ARCH="aarch64-linux"; LP_SHA256="4c0ecb28b4fcfb6d5bce82ec86e15fc6cde89cea168cf3840494f0ee26755852" ;; \
+         amd64) LP_ARCH="x86_64-linux"; LP_SHA256="53eb34da09159dcf8f04865dbfe3e63e9a652062684495aa7ced5ddd7c82e8b0" ;; \
+         arm64) LP_ARCH="aarch64-linux"; LP_SHA256="20a5348bf3b6f71e41088223b188552ab550c1b9c9a9cbd8f099e6f7f3d78549" ;; \
          *) echo "unsupported architecture for lightpanda: $ARCH" >&2; exit 1 ;; \
        esac \
     && curl -fsSL -o /usr/local/bin/lightpanda \
@@ -116,13 +116,8 @@ RUN ARCH="$(dpkg --print-architecture)" \
 # web deps — on v0.23.0 it is a retired-API shim.)
 # uvicorn[standard] (not plain uvicorn) is required — it pulls in `websockets`,
 # which the dashboard's /api/pty and /api/ws WebSocket endpoints depend on.
-# starlette==1.3.1 is the first release with the CVE-2026-48710 (BadHost) fix; fastapi
-# alone can resolve Starlette into the vulnerable <1.0.1 range and bypass path-gating
-# middleware (this image gates /admin that way).
-# KNOWN DIVERGENCE (v0.23.0): upstream now pins fastapi==0.133.1, uvicorn==0.54.0,
-# starlette==1.9.0. Our starlette/uvicorn pins are older and will hold the venv back.
-# Left as-is deliberately — re-pinning changes control-plane runtime behaviour and is
-# its own change; the PR smoke job is what proves the mix still works.
+# Keep the dashboard stack aligned with Hermes v0.23.1's web extra instead of
+# downgrading its venv. Starlette includes the CVE-2026-48710 (BadHost) fix.
 # chown the venv to hermes so the non-root user can run lazy installs at runtime.
 # Hermes Vault is not installed. Credentials are plaintext env / /admin.
 # uv is NOT on PATH in the v0.23.0 base image any more (v2026.9.24 copied it to
@@ -136,10 +131,10 @@ RUN UV="$(python3 -c 'from pm import ensure, uv_launcher; ensure("uv", explicit=
     && "$UV" pip install --python /opt/hermes/.venv/bin/python --no-cache-dir \
         -r /app/hermes-webui/requirements.txt \
         -r /app/requirements-control-plane.txt \
-        "mcp>=1.24.0" \
+        "mcp==2.3.0" \
         "fastapi==0.133.1" \
-        "uvicorn[standard]==0.41.0" \
-        "starlette==1.3.1" \
+        "uvicorn[standard]==0.54.0" \
+        "starlette==1.9.0" \
     && chown -R hermes:hermes /opt/hermes/.venv /app/hermes-webui \
     && chmod +x /etc/cont-init.d/03-all-in-one-setup \
     && chmod +x /etc/cont-init.d/04-tailscale-env \
