@@ -38,7 +38,7 @@ Deterministic operating contract. Every statement here is verifiable in-tree. Do
 | PID 1 | `/init` (s6-overlay), inherited ENTRYPOINT; `CMD ["sleep","infinity"]` holds the tree | `Dockerfile:181-183` |
 | Public listener | `uvicorn control_plane.server:app` on `${CONTROL_PLANE_HOST}:${PORT:-8787}` | `docker/s6-rc.d/control-plane/run:25-27` |
 | Internal WebUI | `/app/hermes-webui/server.py` on `127.0.0.1:8788`, loopback only, reverse-proxied | `docker/s6-rc.d/hermes-webui/run`, `control_plane/proxy.py` |
-| Gateway | s6 slot `/run/service/gateway-default`, driven by `hermes gateway start\|stop` | `control_plane/gateway_manager.py:19`, `control_plane/s6_ops.py:69-81` |
+| Gateway | s6 slot `/run/hermes-service/gateway-default`, driven by `hermes gateway start\|stop` | `control_plane/gateway_manager.py:19`, `control_plane/s6_ops.py:69-81` |
 | Volume | `/opt/data` = `HERMES_DATA_DIR`; agent state in `/opt/data/.hermes` | `Dockerfile:165-166` |
 | Supervision switch | s6 mode iff `CONTROL_PLANE_RUNTIME=s6`; otherwise control plane subprocess-manages children | `control_plane/runtime_mode.py:6-7` |
 | Config writes | provider → `config.yaml` (`model.*`) + `.env` (api key); channels → `.env` only | `control_plane/config.py:189-224`, `319-323` |
@@ -118,7 +118,7 @@ curl -s -b /tmp/c http://127.0.0.1:8787/admin/api/status | python3 -m json.tool
 # 4. Service state (s6 binaries are only on PATH inside supervised processes).
 docker compose exec hermes /command/s6-svstat /run/service/control-plane
 docker compose exec hermes /command/s6-svstat /run/service/hermes-webui
-docker compose exec hermes /command/s6-svstat /run/service/gateway-default
+docker compose exec hermes /command/s6-svstat /run/hermes-service/gateway-default
 
 # 5. Full build + runtime contract (what CI runs).
 ./scripts/smoke.sh                 # SMOKE_SKIP_BUILD=1 to reuse an existing image
@@ -609,7 +609,7 @@ Tune with `HEALTHWATCH_INTERVAL_SECONDS`, `HEALTHWATCH_GRACE_SECONDS`, or disabl
 `s6` binaries live under `/command/` and are only on `PATH` inside supervised processes. Use full paths by hand:
 
 ```bash
-/command/s6-svstat /run/service/gateway-default
+/command/s6-svstat /run/hermes-service/gateway-default
 ```
 
 Node 26 is baked in at `/usr/local/bin/node`. Some shells (notably `railway ssh`) start with a minimal `PATH`; cont-init patches this for current deploys, but if `hermes --tui` ever offers to install Node:
