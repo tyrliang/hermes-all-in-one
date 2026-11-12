@@ -30,7 +30,8 @@ require() {
 wait_for_health() {
   local url="$1"
   for ((i=1; i<=60; i++)); do
-    if curl --silent --show-error --fail "$url" >/dev/null 2>&1; then
+    if curl --silent --show-error --fail "$url" 2>/dev/null \
+      | python3 -c 'import json,sys; p=json.load(sys.stdin); sys.exit(0 if p.get("status") == "ok" and (p.get("webui") or {}).get("healthy") is True else 1)' 2>/dev/null; then
       return 0
     fi
     sleep 1
@@ -133,13 +134,13 @@ else
 fi
 
 echo "[smoke] starting container with PORT=${CONTAINER_PORT}"
-smoke_run_container
+smoke_run_container || exit 1
 
 wait_for_health "${BASE_URL}/health" || exit 1
 
 echo "[smoke] checking /health payload"
 health_json="$(curl --silent --show-error --fail "${BASE_URL}/health")" || exit 1
-python3 - <<'PY' "$health_json"
+python3 - <<'PY' "$health_json" || exit 1
 import json, sys
 payload = json.loads(sys.argv[1])
 assert payload.get("service") == "hermes-control-plane", payload
@@ -227,7 +228,7 @@ if [[ ! "$login_status" =~ ^(302|303)$ ]]; then
 fi
 
 status_json="$(curl --silent --show-error --fail -b "${COOKIE_JAR}" "${BASE_URL}/admin/api/status")" || exit 1
-python3 - <<'PY' "$status_json"
+python3 - <<'PY' "$status_json" || exit 1
 import json, sys
 payload = json.loads(sys.argv[1])
 paths = payload["paths"]
@@ -250,7 +251,7 @@ echo "[smoke] checking read-only admin APIs"
 channels_json="$(curl --silent --show-error --fail -b "${COOKIE_JAR}" "${BASE_URL}/admin/api/channels")" || exit 1
 pending_json="$(curl --silent --show-error --fail -b "${COOKIE_JAR}" "${BASE_URL}/admin/api/pairing/pending")" || exit 1
 approved_json="$(curl --silent --show-error --fail -b "${COOKIE_JAR}" "${BASE_URL}/admin/api/pairing/approved")" || exit 1
-python3 - <<'PY' "$channels_json" "$pending_json" "$approved_json"
+python3 - <<'PY' "$channels_json" "$pending_json" "$approved_json" || exit 1
 import json, sys
 channels, pending, approved = map(json.loads, sys.argv[1:])
 assert channels.get("ok") is True, channels
@@ -277,7 +278,7 @@ fi
 echo "[smoke] restarting container with same /opt/data volume"
 docker rm -f "${CONTAINER_NAME}" >/dev/null
 
-smoke_run_container
+smoke_run_container || exit 1
 
 wait_for_health "${BASE_URL}/health" || exit 1
 signing_after="$(docker exec "${CONTAINER_NAME}" /bin/sh -lc 'test -f /opt/data/.admin_signing_key && sha256sum /opt/data/.admin_signing_key | awk "{print \$1}"')"

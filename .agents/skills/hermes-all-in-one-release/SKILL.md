@@ -23,7 +23,7 @@ Invoke by path: read this `SKILL.md` when releasing.
 Root `VERSION`:
 
 ```text
-0.16.0
+0.16.1
 hermes-base=v0.23.1
 webui-base=v0.52.544
 webui-sha=687d80333870c3797d6858738621fca13d1bf27a
@@ -84,6 +84,12 @@ Pushing to `main` publishes **nothing**. Only `git push origin vX.Y.Z` triggers
 4. **PR body is the release draft** — pin table, layer changes, curated upstream feat/fix delta, test plan. Rewrite thin automation stubs.
 5. **After tag + `release.yml` green**, **`gh release edit`** full notes. The workflow stub will not overwrite an existing body.
 6. **Assistant**: explicit-path commits, push, open/update PR. Merge when user says. Tag + release notes when asked to publish.
+
+**Target-server acceptance:** after preparing an upgraded image and before a production
+rollout, follow [hermes-target-server-smoke](../hermes-target-server-smoke/SKILL.md).
+It runs the isolated named-volume fixture on the target host with a dedicated Bifrost
+key and a `hermes-smoke-test-*` Hindsight bank. Pass the exact candidate via `--image`;
+do not infer it from the runner's previous-release default. A pass is not deploy approval.
 
 Pushing to `main` publishes **nothing**. Only `git push origin vX.Y.Z` triggers
 `.github/workflows/release.yml`.
