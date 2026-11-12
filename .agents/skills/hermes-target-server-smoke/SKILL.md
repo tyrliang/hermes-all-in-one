@@ -205,10 +205,42 @@ Web/admin passwords are generated per container start. Retrieve them privately v
 approved secret-access path if browser login is needed; never paste `docker inspect`
 environment output into chat. CLI attachment needs no browser password.
 
-Stop when requested with the runner's `stop` command. Preserve the known reusable
-volume/bank unless cleanup is explicitly requested. Delete only clearly identified
-smoke-owned volumes/banks; never use broad Docker prune or delete production memory.
-Removing a Docker volume does not remove its Hindsight bank or revoke credentials.
+### Take down the container; retain the reusable fixture
+
+After testing, take down the smoke container unless the user requests an interactive
+instance be left running. `test` already removes its temporary container automatically;
+an instance created with `start` must be removed explicitly:
+
+```bash
+# From the repository root, using the same HOST and NAME as the test:
+python3 scripts/functional-smoke.py stop --host "$HOST" --name "$NAME"
+
+# Confirm the container is absent and the named volume is still present:
+ssh "$HOST" "sudo -n docker ps -a --filter name='$NAME' --format '{{.Names}} {{.Status}}'"
+ssh "$HOST" "sudo -n docker volume inspect '$NAME-data' --format '{{.Name}} {{json .Labels}}'"
+```
+
+`stop` runs `docker rm -f` on the named test container only. It does **not** remove
+`$NAME-data`, the Hindsight test bank, or the root-only host credential files.
+If the container is already absent after `test`, skip `stop`; still verify the volume.
+Never use `docker compose down -v`, `docker volume rm`, or broad prune commands for
+normal teardown. Preserve the test bank alongside the volume for reuse.
+
+### Next upgrade: reuse the volume, do not initialize again
+
+Select/pull the next exact candidate as in step 1, then run:
+
+```bash
+python3 scripts/functional-smoke.py test \
+  --host "$HOST" --name "$NAME" --port "$PORT" --image "$IMAGE"
+```
+
+Do **not** rerun `init` for the existing volume: the runner mounts the retained fixture,
+recreates a fresh container from the new image, and checks persistence and isolated
+memory again. Report container absence and retained volume/bank in the handoff.
+Delete smoke-owned volumes/banks only on explicit cleanup approval; never delete
+production memory. Removing a Docker volume does not remove its Hindsight bank or
+revoke credentials.
 
 ## Delivery checklist
 
