@@ -106,23 +106,32 @@ def execute(code, *args):
     return docker(["exec", "--user", "hermes", "-i", "-w", "/opt/hermes", options.name, PYTHON, "-c", launcher, *args], code.encode()).decode()
 
 
+def remove_owned_container():
+    metadata = json.loads(docker(["container", "inspect", options.name]))[0]
+    if (metadata.get("Config", {}).get("Labels") or {}).get("hermes.smoke-test") != "true":
+        raise RuntimeError("Not a smoke-test-owned container")
+    # Remove the inspected ID, not a name that could be reassigned before removal.
+    docker(["rm", "-f", metadata["Id"]])
+
+
 def main():
     global options
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["init", "test", "start", "stop"])
     parser.add_argument("--host", default="richard@server-elrond")
-    parser.add_argument("--image", default="ghcr.io/tyrliang/hermes-all-in-one:v0.16.0")
+    parser.add_argument("--image", default="ghcr.io/tyrliang/hermes-all-in-one:v0.16.1")
     parser.add_argument("--source-container", default="hermes-personal-richard-hermes-1")
-    parser.add_argument("--name", default="hermes-smoke-test-managed")
+    parser.add_argument("--name", default="e2e-test")
+    parser.add_argument("--volume", default="hermes-smoke-test-managed-data", help="smoke-owned named volume; independent of the container name")
     parser.add_argument("--key-file", default="/opt/hermes-smoke/bifrost.env", help="root-readable env file on Docker host")
     parser.add_argument("--memory-key-file", default="/opt/hermes-smoke/hindsight.env", help="root-readable Hindsight env file on Docker host")
     parser.add_argument("--port", type=int, default=18789)
     options = parser.parse_args()
-    if not re.fullmatch(r"hermes-smoke-test(?:-[a-z0-9-]+)?", options.name):
-        parser.error("name must be hermes-smoke-test or begin hermes-smoke-test-")
-    volume = options.name + "-data"
+    if not re.fullmatch(r"e2e-test(?:-[a-z0-9][a-z0-9-]*)?", options.name):
+        parser.error("name must be e2e-test or begin e2e-test- with a lowercase alphanumeric suffix")
+    volume = options.volume
     if options.action == "stop":
-        docker(["rm", "-f", options.name]); return
+        remove_owned_container(); return
     if options.action == "init":
         fixture = json.loads(docker(["exec", "-i", options.source_container, PYTHON, "-"], Path(__file__).with_name("functional-fixture.py").read_bytes()))
         bank = "hermes-smoke-test-" + uuid.uuid4().hex[:12]
@@ -135,7 +144,7 @@ def main():
         print(f"Initialized {volume}; isolated Hindsight bank {bank}; plugin SHA256 {fixture['plugin_sha256']}")
         return
     metadata = json.loads(docker(["volume", "inspect", volume]))[0]
-    if metadata.get("Labels", {}).get("hermes.smoke-test") != "true": raise RuntimeError("Not a smoke-test-owned volume")
+    if (metadata.get("Labels") or {}).get("hermes.smoke-test") != "true": raise RuntimeError("Not a smoke-test-owned volume")
     docker(["run", "-d", "--name", options.name, "--label", "hermes.smoke-test=true", "-p", f"127.0.0.1:{options.port}:8787", "--env-file", options.key_file, "--env-file", options.memory_key_file, "-e", "HERMES_ADMIN_PASSWORD="+secrets.token_urlsafe(24), "-e", "HERMES_WEBUI_PASSWORD="+secrets.token_urlsafe(24), "-e", "HERMES_GATEWAY_AUTOSTART=0", "-e", "HERMES_DASHBOARD=0", "-v", volume+":/opt/data", options.image])
     try:
         print(execute(INSTALL).strip())
@@ -166,7 +175,7 @@ def main():
         print("[functional-smoke] PASS")
     finally:
         if options.action != "start" or sys.exc_info()[0] is not None:
-            docker(["rm", "-f", options.name])
+            remove_owned_container()
 
 
 if __name__ == "__main__":

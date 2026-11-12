@@ -24,8 +24,11 @@ and remote passwordless `sudo docker`; no local Docker image storage is required
 
 - Never mount the production volume into a candidate container or change production
   Hermes, its bot credentials, cron jobs, identity, history, or plugin files.
-- Use only a labeled smoke-owned named volume. Container names must be
-  `hermes-smoke-test` or begin `hermes-smoke-test-`; keep the published port loopback-only.
+- Use only a named volume labeled `hermes.smoke-test=true`; `--volume` selects it
+  independently of the container name. Container names must be `e2e-test` or begin
+  `e2e-test-` with a lowercase alphanumeric suffix (hyphens allowed after its first
+  character); keep the published port loopback-only. `stop` requires the container's
+  same ownership label and removes its inspected ID, never an unrelated name collision.
 - Hindsight must use **`hermes-smoke-test-<unique-id>`**, never `personal`, `hermes`,
   `user-richard`, or another production bank. No bank template, additional recall
   banks, or mirrored writes. Do not copy production memories. The runner guards this
@@ -45,7 +48,7 @@ and remote passwordless `sudo docker`; no local Docker image storage is required
 |---|---|
 | SSH target | `richard@server-elrond` |
 | Read-only fixture source | `hermes-personal-richard-hermes-1` |
-| Test container | `hermes-smoke-test-managed` |
+| Test container | `e2e-test` |
 | Test volume | `hermes-smoke-test-managed-data` |
 | Port | `127.0.0.1:18789` → container `8787` |
 | Hindsight endpoint | `https://ai-memory.liangacy.com` |
@@ -71,10 +74,11 @@ old default image; always pass `--image`. A merge does not publish an image.
 
 ```bash
 python3 scripts/functional-smoke.py --help
-# Set this to the actual candidate, not the example of a previous release.
-IMAGE='ghcr.io/tyrliang/hermes-all-in-one:v0.16.0'
+# Set this to the exact candidate being accepted.
+IMAGE='ghcr.io/tyrliang/hermes-all-in-one:v0.16.1'
 HOST='richard@server-elrond'
-NAME='hermes-smoke-test-managed'
+NAME='e2e-test'
+VOLUME='hermes-smoke-test-managed-data' # preserve the existing fixture and bank
 PORT=18789
 ssh "$HOST" 'sudo -n docker ps --format "{{.Names}} {{.Image}} {{.Ports}}"; df -h /var/lib/docker'
 ssh "$HOST" "sudo -n docker pull '$IMAGE'"
@@ -98,14 +102,14 @@ Inspect smoke containers and the exact volume first:
 
 ```bash
 ssh "$HOST" "sudo -n docker ps -a --filter name='$NAME' --format '{{.Names}} {{.Status}}'"
-ssh "$HOST" "sudo -n docker volume inspect '$NAME-data'"
+ssh "$HOST" "sudo -n docker volume inspect '$VOLUME'"
 ```
 
 If the known interactive smoke container is running, stop **only that smoke instance**
 before a test; the test creates a fresh container and refuses a name collision:
 
 ```bash
-python3 scripts/functional-smoke.py stop --host "$HOST" --name "$NAME"
+python3 scripts/functional-smoke.py stop --host "$HOST" --name "$NAME" --volume "$VOLUME" --image "$IMAGE"
 ```
 
 Do not run `stop` against an absent container and assume a failure means production
@@ -116,7 +120,7 @@ Only if the fixture volume does not exist:
 
 ```bash
 python3 scripts/functional-smoke.py init \
-  --host "$HOST" --name "$NAME" --image "$IMAGE" \
+  --host "$HOST" --name "$NAME" --volume "$VOLUME" --image "$IMAGE" \
   --source-container hermes-personal-richard-hermes-1
 ```
 
@@ -126,8 +130,10 @@ plugin source, and endpoint; it does not export production bank selection or sec
 It generates a new explicitly labeled bank, seeds a new named volume, records the
 plugin source hash, and refuses to overwrite an existing fixture.
 
-For a deliberately refreshed fixture, choose a new `--name` rather than deleting a
-working volume. If switching hosts, pass that host's actual `--source-container`.
+For a deliberately refreshed fixture, choose a new `--volume` (and an optional new
+`--name`) rather than deleting a working volume. Changing `--name` alone keeps the
+same selected volume and bank. If switching hosts, pass that host's actual
+`--source-container`.
 If production configuration differs from the fixture exporter's Bifrost/Hindsight
 schema, investigate and update the exporter intentionally; never copy all config as
 a shortcut. Existing volumes are not automatically reseeded after an upstream move.
@@ -136,7 +142,7 @@ a shortcut. Existing volumes are not automatically reseeded after an upstream mo
 
 ```bash
 python3 scripts/functional-smoke.py test \
-  --host "$HOST" --name "$NAME" --port "$PORT" --image "$IMAGE"
+  --host "$HOST" --name "$NAME" --volume "$VOLUME" --port "$PORT" --image "$IMAGE"
 ```
 
 Require **exit 0 and `[functional-smoke] PASS`**. Preserve the stage output and exact
@@ -191,7 +197,7 @@ When requested, leave a separate fresh instance running after a successful test:
 
 ```bash
 python3 scripts/functional-smoke.py start \
-  --host "$HOST" --name "$NAME" --port "$PORT" --image "$IMAGE"
+  --host "$HOST" --name "$NAME" --volume "$VOLUME" --port "$PORT" --image "$IMAGE"
 ssh -t "$HOST" "sudo -n docker exec -it --user hermes '$NAME' /bin/bash"
 ```
 
@@ -205,10 +211,57 @@ Web/admin passwords are generated per container start. Retrieve them privately v
 approved secret-access path if browser login is needed; never paste `docker inspect`
 environment output into chat. CLI attachment needs no browser password.
 
-Stop when requested with the runner's `stop` command. Preserve the known reusable
-volume/bank unless cleanup is explicitly requested. Delete only clearly identified
-smoke-owned volumes/banks; never use broad Docker prune or delete production memory.
-Removing a Docker volume does not remove its Hindsight bank or revoke credentials.
+### Take down the container; retain the reusable fixture
+
+After testing, take down the smoke container unless the user requests an interactive
+instance be left running. `test` already removes its temporary container automatically;
+an instance created with `start` must be removed explicitly:
+
+```bash
+# From the repository root, using the same HOST, NAME, VOLUME and IMAGE as the test:
+python3 scripts/functional-smoke.py stop \
+  --host "$HOST" --name "$NAME" --volume "$VOLUME" --image "$IMAGE"
+
+# Confirm the container is absent and the exact named volume is still present:
+ssh "$HOST" "sudo -n docker ps -a --filter name='$NAME' --format '{{.Names}} {{.Status}}'"
+ssh "$HOST" "sudo -n docker volume inspect '$VOLUME' --format '{{.Name}} {{json .Labels}}'"
+```
+
+`stop` inspects the named container's `hermes.smoke-test=true` ownership label, then
+runs `docker rm -f` on that inspected container ID only. It does **not** remove
+`$VOLUME`, the Hindsight test bank, or the root-only host credential files.
+If the container is already absent after `test`, skip `stop`; still verify the volume.
+Never use `docker compose down -v`, `docker volume rm`, or broad prune commands for
+normal teardown. Preserve the test bank alongside the volume for reuse.
+
+### Next upgrade: reuse the volume, do not initialize again
+
+Select/pull the next exact candidate as in step 1, then run:
+
+```bash
+python3 scripts/functional-smoke.py test \
+  --host "$HOST" --name "$NAME" --volume "$VOLUME" --port "$PORT" --image "$IMAGE"
+```
+
+Do **not** rerun `init` for the existing volume: the runner mounts the retained fixture,
+recreates a fresh container from the new image, and checks persistence and isolated
+memory again. Report container absence and retained volume/bank in the handoff.
+Delete smoke-owned volumes/banks only on explicit cleanup approval; never delete
+production memory. Removing a Docker volume does not remove its Hindsight bank or
+revoke credentials.
+
+## Elrond production is not an ordinary Compose image swap
+
+The accepted production container is a custom migration-preserved runtime. Its
+host startup guard, acceptance proof, and backup controller pin the exact image
+and container identity. The homelab_iac Elrond runbook forbids recreating an accepted
+container with `docker compose up` or hand-writing `ready.json`.
+
+Before a production upgrade, audit preserved runtime additions against the new base
+and use a reviewed, coordinated upgrade/rollback path for runtime and backup acceptance.
+Do not drop the guard or overwrite proof to force a newer image to start.
+At the v0.16.1 release, the user explicitly chose to hold production unchanged
+pending that upgrade capability; isolated e2e-test success does not lift that hold.
 
 ## Delivery checklist
 
