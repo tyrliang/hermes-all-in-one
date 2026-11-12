@@ -849,11 +849,13 @@ upstream alignment. Jinja2 `3.1.6`, HTTPX `0.28.1`, and PyYAML `6.0.3` already f
 existing ranges. micro and Lightpanda advance to the stable versions above; checkout and
 setup-python use their Node 24-based v7 actions.
 
-**Inherited dependency warning:** `uv pip check` reports that `browser-harness==0.1.13`
-requires `pillow==12.3.0`, while Hermes v0.23.1 pins `Pillow==13.0.0`. The same conflict
-exists in the unmodified upstream image, and `0.1.13` is the latest harness release.
-Keep Hermes' Pillow pin; this refresh does not downgrade it or rewrite package metadata
-to conceal the conflict. Container smoke and Lightpanda CDP verification pass despite it.
+**Intentional security override:** raw `uv pip check` reports that
+`browser-harness==0.1.13` requires `pillow==12.3.0`, while Hermes v0.23.1 deliberately
+overrides Pillow to `13.0.0` in `pyproject.toml` and `uv.lock`. Installed package metadata
+retains the original requirement. Checking the built image with upstream
+`pm.pip_check.unexpected_incompatibilities(report, Path("uv.lock"))` returns `[]`:
+**no unexpected incompatibilities**. Keep the upstream override; do not downgrade Pillow
+or rewrite metadata. Container smoke and Lightpanda CDP verification also pass.
 
 ## Release flow
 
