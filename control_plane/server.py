@@ -148,14 +148,22 @@ async def health(request: Request) -> JSONResponse:
     readiness (``ok`` vs ``degraded``), not the HTTP status code.
     """
     status = _current_status()
+    # Healthwatch treats a persistent non-ok status as "app degraded" and restarts the
+    # container, so the gateway's liveness must be part of ``status``: a dead s6 gateway
+    # slot never touches the WebUI, and on Oct 7 2026 a gateway that died after a config
+    # restart sat down for 77 minutes (02:05-03:22 UTC) while /health kept reporting ok.
+    # Gateway autostart can be legitimately disabled (autostart_eligible=False); only
+    # count a gateway as degraded when it was supposed to be running.
     webui_ok = bool(status["webui"]["healthy"])
+    gw = status["gateway"]
+    gw_ok = (not bool(gw.get("autostart_eligible", True))) or bool(gw.get("healthy"))
     payload = {
-        "status": "ok" if webui_ok else "degraded",
+        "status": "ok" if webui_ok and gw_ok else "degraded",
         "service": "hermes-control-plane",
         "webui": status["webui"],
         "gateway": {
-            "running": status["gateway"]["running"],
-            "healthy": status["gateway"]["healthy"],
+            "running": gw["running"],
+            "healthy": gw["healthy"],
         },
     }
     return JSONResponse(payload, status_code=200)
