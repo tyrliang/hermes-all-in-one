@@ -139,6 +139,8 @@ bash docker/patches/test-apply-agent-patches.sh
 `0.16.1` hardens the shell smoke gate: failed health/admin assertions and failed
 container starts now exit nonzero instead of reaching a misleading PASS. CI runs
 the full Python suite, including failing-payload and startup/restart regressions.
+Readiness polling also requires JSON `status: ok` and `webui.healthy: true`, including
+after WebUI, gateway, and container restarts; HTTP 200 alone is not readiness.
 
 The opt-in functional runner uses SSH and a **Docker named volume on server-elrond**,
 not local Mac storage. It exports only minimal Bifrost configuration and the installed

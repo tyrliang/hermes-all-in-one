@@ -77,17 +77,23 @@ status = 200
 payload = {}
 scenario = os.environ.get("SMOKE_STUB_SCENARIO", "healthy")
 if path == "/health":
+    state["health_probes"] = state.get("health_probes", 0) + 1
     payload = {
         "service": "hermes-control-plane",
         "status": "ok",
         "webui": {
-            "healthy": scenario != "health",
+            "healthy": scenario != "health" or state["health_probes"] == 1,
             "running": True,
             "supervisor": "s6",
             "service": "/run/service/hermes-webui",
         },
         "gateway": {"running": False, "healthy": False},
     }
+    if (scenario == "webui_restart" and state.get("webui_restart")) or (
+        scenario == "gateway_restart" and state.get("gateway_restart")
+    ) or (scenario == "container_restart" and state["runs"] > 1):
+        payload["status"] = "degraded"
+        payload["webui"]["healthy"] = False
 elif path == "/admin/login" and method == "POST":
     assert options["--data-urlencode"] == "password=smoke-test-password"
     Path(options["-c"]).write_text("admin-session")
@@ -124,6 +130,7 @@ elif path.startswith("/admin/api/"):
     else:
         assert method == "POST", method
         assert path in {"/admin/api/webui/restart", "/admin/api/gateway/restart"}, path
+        state["webui_restart" if "/webui/" in path else "gateway_restart"] = True
         payload = {"ok": True}
 else:
     raise AssertionError(f"unexpected URL: {url}")
@@ -145,6 +152,9 @@ def run_smoke(tmp_path: Path):
             f"#!{sys.executable}\n" + textwrap.dedent(STUB_SOURCE), encoding="utf-8"
         )
         executable.chmod(0o755)
+    sleeper = binaries / "sleep"
+    sleeper.write_text("#!/bin/sh\nexit 0\n")
+    sleeper.chmod(0o755)
 
     def run(scenario="healthy", *, fail_run=0):
         state_path = tmp_path / "state.json"
@@ -238,3 +248,13 @@ def test_smoke_exits_immediately_when_docker_run_fails(run_smoke, failed_run):
     # After run fails, only the EXIT cleanup may execute; polling a stale
     # service or continuing to later checks must not mask launch failure.
     assert commands[-2][:2] == ["docker", "run"]
+
+
+@pytest.mark.parametrize("scenario", ["webui_restart", "gateway_restart", "container_restart"])
+def test_http_200_degraded_after_restart_cannot_pass(run_smoke, scenario):
+    result, _, _ = run_smoke(scenario)
+    assert "[smoke] /health payload OK" in result.stdout
+    assert "exercising control-plane actions" in result.stdout
+    assert result.returncode != 0
+    assert "timed out waiting for health" in result.stderr
+    assert "[smoke] PASS" not in result.stdout

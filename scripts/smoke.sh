@@ -30,7 +30,8 @@ require() {
 wait_for_health() {
   local url="$1"
   for ((i=1; i<=60; i++)); do
-    if curl --silent --show-error --fail "$url" >/dev/null 2>&1; then
+    if curl --silent --show-error --fail "$url" 2>/dev/null \
+      | python3 -c 'import json,sys; p=json.load(sys.stdin); sys.exit(0 if p.get("status") == "ok" and (p.get("webui") or {}).get("healthy") is True else 1)' 2>/dev/null; then
       return 0
     fi
     sleep 1
