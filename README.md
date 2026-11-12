@@ -957,6 +957,11 @@ Release notes should name both versions, e.g. **hermes-all-in-one v0.16.0** on *
 
 `.agents/skills/hermes-all-in-one-release/` is the upgrade playbook: detect Hermes and WebUI tags, bump pins, smoke, detailed PR body, tag after merge, watch `release.yml`, and **`gh release edit`** curated notes. Do not vendor. Do not re-add Vault.
 
+For post-upgrade target-host acceptance, invoke
+[`hermes-target-server-smoke`](.agents/skills/hermes-target-server-smoke/SKILL.md).
+It codifies candidate selection, remote Docker/credential preflight, isolated volume
+and Hindsight bank, full real-provider checks, failure diagnosis, and interactive handoff.
+
 ---
 
 # Credits
