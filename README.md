@@ -8,10 +8,10 @@ No terminal setup. Deploy it, open `/admin`, paste an API key, connect a channel
 
 | | |
 |---|---|
-| **Package version** | `0.16.1` (release preparation) |
+| **Package version** | `0.16.2` (release preparation) |
 | **Base image** | `nousresearch/hermes-agent:v0.23.1` |
 | **Fetched at build** | webui `v0.52.544` (`687d80333870c3797d6858738621fca13d1bf27a`) |
-| **Published image** | `ghcr.io/tyrliang/hermes-all-in-one:v0.16.0` / `:latest` |
+| **Image (after tag publication)** | `ghcr.io/tyrliang/hermes-all-in-one:v0.16.2` / `:latest` |
 | **Volume mount** | `/opt/data` (required) |
 | **Public port** | `$PORT` (Railway-injected) or `8787` |
 
@@ -756,7 +756,7 @@ Defaults below are what the **image** provides (`Dockerfile:161-177`) or what th
 ```bash
 docker build \
   --build-arg HERMES_IMAGE=nousresearch/hermes-agent:v0.23.1 \
-  --build-arg HERMES_WEBUI_VERSION=v0.16.1 \
+  --build-arg HERMES_WEBUI_VERSION=v0.16.2 \
   -t hermes-all-in-one .
 ```
 
@@ -852,7 +852,7 @@ Two version concepts: this package's semver, and the upstream tags baked into th
 ## The `VERSION` file
 
 ```text
-0.16.1
+0.16.2
 hermes-base=v0.23.1
 webui-base=v0.52.544
 webui-sha=687d80333870c3797d6858738621fca13d1bf27a
@@ -860,7 +860,7 @@ webui-sha=687d80333870c3797d6858738621fca13d1bf27a
 
 | Line | Field | Meaning |
 |---|---|---|
-| 1 | package semver | GHCR tag + git tag: `v0.16.1` |
+| 1 | package semver | GHCR tag + git tag: `v0.16.2` |
 | 2 | `hermes-base` | Pinned `nousresearch/hermes-agent` tag in the Dockerfile |
 | 3 | `webui-base` | WebUI release tag. Human label. The image fetches `webui-sha`, not the tag. |
 | 4 | `webui-sha` | Commit archive URL: `https://github.com/nesquena/hermes-webui/archive/<sha>.tar.gz` |
@@ -928,11 +928,11 @@ git tag v0.16.0 && git push origin v0.16.0     # triggers release.yml
 **Layer patch** (same Hermes/WebUI bases — container-only fixes and features):
 
 ```bash
-./scripts/bump-patch.sh              # e.g. 0.16.0 → 0.16.1
+./scripts/bump-patch.sh              # e.g. 0.16.1 → 0.16.2
 ./scripts/smoke.sh
 git commit -am "fix: …"
 # land via PR, then:
-git tag v0.16.1 && git push origin v0.16.1
+git tag v0.16.2 && git push origin v0.16.2
 ```
 
 Only a matching `v*.*.*` git tag publishes an image.
