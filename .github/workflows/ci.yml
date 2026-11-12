@@ -36,6 +36,12 @@ jobs:
       - name: Byte-compile control plane
         run: python -m compileall -q control_plane scripts/patch-vendor-models.py
 
+      - name: Run behavior and smoke-gate regressions
+        run: |
+          python -m pip install -r requirements-control-plane.txt pytest
+          python -m pytest tests/ -q
+          bash docker/patches/test-apply-agent-patches.sh
+
 
       - name: Shell-syntax check docker init/s6 scripts
         run: |

@@ -23,7 +23,7 @@ Invoke by path: read this `SKILL.md` when releasing.
 Root `VERSION`:
 
 ```text
-0.16.0
+0.16.1
 hermes-base=v0.23.1
 webui-base=v0.52.544
 webui-sha=687d80333870c3797d6858738621fca13d1bf27a

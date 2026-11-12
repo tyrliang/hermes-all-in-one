@@ -8,7 +8,7 @@ No terminal setup. Deploy it, open `/admin`, paste an API key, connect a channel
 
 | | |
 |---|---|
-| **Package version** | `0.16.0` |
+| **Package version** | `0.16.1` (release preparation) |
 | **Base image** | `nousresearch/hermes-agent:v0.23.1` |
 | **Fetched at build** | webui `v0.52.544` (`687d80333870c3797d6858738621fca13d1bf27a`) |
 | **Published image** | `ghcr.io/tyrliang/hermes-all-in-one:v0.16.0` / `:latest` |
@@ -133,6 +133,57 @@ python3 -m pip install -r requirements-control-plane.txt pytest
 python3 -m pytest tests/ -v
 bash docker/patches/test-apply-agent-patches.sh
 ```
+
+### Credentialed functional acceptance on server-elrond
+
+`0.16.1` hardens the shell smoke gate: failed health/admin assertions and failed
+container starts now exit nonzero instead of reaching a misleading PASS. CI runs
+the full Python suite, including failing-payload and startup/restart regressions.
+
+The opt-in functional runner uses SSH and a **Docker named volume on server-elrond**,
+not local Mac storage. It exports only minimal Bifrost configuration and the installed
+Hindsight plugin source from production, never chat databases, identity files, bot
+tokens, cron jobs, or production memory-bank settings.
+
+```bash
+# Once: create the sanitized fixture and a unique hermes-smoke-test-* bank.
+python3 scripts/functional-smoke.py init
+# Before deploying a candidate (real cloud calls; not run in public CI):
+python3 scripts/functional-smoke.py test --image ghcr.io/tyrliang/hermes-all-in-one:v0.16.0
+# Keep an interactive instance running, then remove it without deleting its volume:
+python3 scripts/functional-smoke.py start
+ssh -t richard@server-elrond 'sudo docker exec -it hermes-smoke-test-managed /bin/bash'
+python3 scripts/functional-smoke.py stop
+```
+
+Defaults: volume `hermes-smoke-test-managed-data`, container `hermes-smoke-test-managed`, loopback-only
+port `18789`; `--host`, `--name`, `--port`, and `--image` select another test target.
+`init` refuses an existing fixture; `test` removes only its own temporary container and
+preserves the volume and isolated bank for later runs. `start` leaves the instance up.
+Hindsight targets `https://ai-memory.liangacy.com` with a bank named
+`hermes-smoke-test-<unique-id>`. The runner refuses production/multi-bank configuration.
+Synthetic facts stay in this clearly labeled bank; no production memories are copied.
+
+Root-only host credentials are injected using Docker `--env-file`, never committed:
+`/opt/hermes-smoke/bifrost.env` (`BIFROST_API_KEY`) and
+`/opt/hermes-smoke/hindsight.env` (`HINDSIGHT_API_KEY`), both mode `0600`.
+The Bifrost key is restricted to `ollama-cloud/deepseek-v4.1-flash:1017`,
+$0.10/day, 20 requests/hour, and 250,000 tokens/hour. Its durable GitOps declaration
+is maintained in homelab_iac (PR #461), not in this image repository.
+The Hindsight tenant credential is shared with the backend; isolation is enforced by
+the test fixture's bank selection, not a server-issued bank-scoped credential.
+Do not expose these files or the Docker daemon to untrusted users.
+
+Checks cover WebUI readiness/admin auth, a real cloud-agent workspace write/read,
+Hindsight plugin retain/recall, container restart, file persistence, and an agent
+answer recovered from Hindsight after restart. Missing credentials, model errors,
+memory errors, and mismatched markers fail the run. No messaging bots are started.
+Plugin dependencies are provisioned through Hermes' PM-managed environment selection,
+not by modifying the sealed base venv or disabling its consistency guard.
+The fixture adds this image's web requirements to its local plugin dependency
+declaration before PM synchronization, and performs provisioning as the `hermes` user.
+This keeps the selected environment complete and writable across container restarts.
+Production plugin source/configuration is never modified.
 
 ## Change protocol
 
@@ -703,7 +754,7 @@ Defaults below are what the **image** provides (`Dockerfile:161-177`) or what th
 ```bash
 docker build \
   --build-arg HERMES_IMAGE=nousresearch/hermes-agent:v0.23.1 \
-  --build-arg HERMES_WEBUI_VERSION=v0.16.0 \
+  --build-arg HERMES_WEBUI_VERSION=v0.16.1 \
   -t hermes-all-in-one .
 ```
 
@@ -799,7 +850,7 @@ Two version concepts: this package's semver, and the upstream tags baked into th
 ## The `VERSION` file
 
 ```text
-0.16.0
+0.16.1
 hermes-base=v0.23.1
 webui-base=v0.52.544
 webui-sha=687d80333870c3797d6858738621fca13d1bf27a
@@ -807,7 +858,7 @@ webui-sha=687d80333870c3797d6858738621fca13d1bf27a
 
 | Line | Field | Meaning |
 |---|---|---|
-| 1 | package semver | GHCR tag + git tag: `v0.16.0` |
+| 1 | package semver | GHCR tag + git tag: `v0.16.1` |
 | 2 | `hermes-base` | Pinned `nousresearch/hermes-agent` tag in the Dockerfile |
 | 3 | `webui-base` | WebUI release tag. Human label. The image fetches `webui-sha`, not the tag. |
 | 4 | `webui-sha` | Commit archive URL: `https://github.com/nesquena/hermes-webui/archive/<sha>.tar.gz` |
