@@ -17,8 +17,9 @@ upgrade production. Publishing and deploying remain separately user-gated.
 
 **Location:** `.agents/skills/hermes-target-server-smoke/` (repo-local).
 **Working directory:** repository root. Every `scripts/...` command below is relative
-**to the repo root**, not this skill directory. Requires local Python 3 stdlib, SSH,
-and remote passwordless `sudo docker`; no local Docker image storage is required.
+**to the repo root**, not this skill directory. Requires local and target Python 3
+stdlib, SSH, and remote passwordless `sudo python3` / `sudo docker`; no local Docker
+image storage is required.
 
 ## Safety contract
 
@@ -75,7 +76,7 @@ old default image; always pass `--image`. A merge does not publish an image.
 ```bash
 python3 scripts/functional-smoke.py --help
 # Set this to the exact candidate being accepted.
-IMAGE='ghcr.io/tyrliang/hermes-all-in-one:v0.16.1'
+IMAGE='ghcr.io/tyrliang/hermes-all-in-one:v0.16.2'
 HOST='richard@server-elrond'
 NAME='e2e-test'
 VOLUME='hermes-smoke-test-managed-data' # preserve the existing fixture and bank
@@ -134,6 +135,13 @@ For a deliberately refreshed fixture, choose a new `--volume` (and an optional n
 `--name`) rather than deleting a working volume. Changing `--name` alone keeps the
 same selected volume and bank. If switching hosts, pass that host's actual
 `--source-container`.
+
+Host-side per-volume locks serialize creation and attachment. `test`/`start` refuse
+any existing container consumer, including a stopped container. Choose a different
+volume for concurrent tests; otherwise remove only the verified smoke-owned consumer
+with `stop` before reusing its volume. `init` verifies a unique per-initialization
+ownership label before mounting or seeding; an ownership mismatch is a hard failure.
+
 If production configuration differs from the fixture exporter's Bifrost/Hindsight
 schema, investigate and update the exporter intentionally; never copy all config as
 a shortcut. Existing volumes are not automatically reseeded after an upstream move.
@@ -260,8 +268,16 @@ container with `docker compose up` or hand-writing `ready.json`.
 Before a production upgrade, audit preserved runtime additions against the new base
 and use a reviewed, coordinated upgrade/rollback path for runtime and backup acceptance.
 Do not drop the guard or overwrite proof to force a newer image to start.
-At the v0.16.1 release, the user explicitly chose to hold production unchanged
-pending that upgrade capability; isolated e2e-test success does not lift that hold.
+
+Elrond now uses the reviewed
+[homelab_iac guarded upgrade procedure](https://github.com/tyrliang/homelab_iac/blob/master/metal/hermes/linux/README.md#upgrade-the-image-using-existing-daily-backups).
+It can reuse the existing daily recovery point without forcing a backup.
+Audit per-profile plugin overrides as well as image dependencies: old copied plugins
+can shadow the new bundled contract even when their version string is unchanged.
+After deployment, verify configured messaging platforms in the root gateway state:
+each expected connection must belong to the current gateway PID/start identity.
+An isolated E2E PASS or a served-profile count does not prove production Discord
+connectivity. Deployment still requires the user's separate approval.
 
 ## Delivery checklist
 

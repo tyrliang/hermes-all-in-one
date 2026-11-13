@@ -16,7 +16,7 @@ from control_plane.s6_ops import (
     s6_service_up,
 )
 
-_GATEWAY_SLOT = "/run/service/gateway-default"
+_GATEWAY_SLOT = "/run/hermes-service/gateway-default"
 
 
 class GatewayManager:

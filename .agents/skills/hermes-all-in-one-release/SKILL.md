@@ -23,7 +23,7 @@ Invoke by path: read this `SKILL.md` when releasing.
 Root `VERSION`:
 
 ```text
-0.16.1
+0.16.2
 hermes-base=v0.23.1
 webui-base=v0.52.544
 webui-sha=687d80333870c3797d6858738621fca13d1bf27a
@@ -159,7 +159,7 @@ cat VERSION
 
 ./scripts/bump-hermes.sh v0.23.0        # hermes minor + Dockerfile HERMES_IMAGE
 ./scripts/bump-patch.sh                 # z+1 only; preserves webui pins
-./scripts/set-version.sh 0.16.1 [tag]
+./scripts/set-version.sh 0.16.2 [tag]
 
 . scripts/version-lib.sh && read_version_file .
 pin_webui_base "v0.52.200"

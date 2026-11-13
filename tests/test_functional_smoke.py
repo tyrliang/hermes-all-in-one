@@ -11,6 +11,12 @@ spec = importlib.util.spec_from_file_location("functional_smoke", Path(__file__)
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 
+volume_spec = importlib.util.spec_from_file_location(
+    "functional_volume_smoke", Path(__file__).resolve().parents[1] / "scripts/functional-volume.py"
+)
+volume_helper = importlib.util.module_from_spec(volume_spec)
+volume_spec.loader.exec_module(volume_helper)
+
 
 @pytest.mark.parametrize("config", [
     {"bank_id": "personal"},
@@ -78,35 +84,32 @@ def test_rejects_unsafe_or_obsolete_container_names(monkeypatch, name):
 
 @pytest.mark.parametrize("action", ["test", "start"])
 @pytest.mark.parametrize("labels", [None, {}, {"hermes.smoke-test": "false"}])
-def test_rejects_unowned_explicit_volume_before_starting_container(monkeypatch, action, labels):
-    def docker(args):
-        assert args == ["volume", "inspect", "production-data"]
-        return json.dumps([{"Labels": labels}]).encode()
+def test_rejects_unowned_explicit_volume_before_starting_container(monkeypatch, tmp_path, action, labels):
+    volumes = {"production-data": {"Labels": labels}}
+    containers = {}
+    retained = tmp_path / "production-data"
+    retained.write_bytes(b"production data")
 
-    monkeypatch.setattr(runner, "docker", docker)
+    def docker(args, data=None):
+        if args[:2] == ["volume", "inspect"]:
+            return json.dumps([volumes[args[-1]]]).encode()
+        if args[:2] == ["container", "ls"]:
+            return "\n".join(containers).encode()
+        if args[0] == "run":
+            containers[args[args.index("--name") + 1]] = args[args.index("-v") + 1]
+            return b"unexpected-container"
+        pytest.fail(f"Unexpected Docker operation: {args!r}")
+
+    def unexpected_runner_docker(*args, **kwargs):
+        pytest.fail("Fixture volume access must go through the host transaction")
+
+    monkeypatch.setattr(volume_helper, "LOCK_ROOT", tmp_path / "locks")
+    monkeypatch.setattr(volume_helper, "docker", docker)
+    monkeypatch.setattr(runner, "fixture_operation", volume_helper.run)
+    monkeypatch.setattr(runner, "docker", unexpected_runner_docker)
     monkeypatch.setattr(sys, "argv", ["functional-smoke.py", action, "--volume", "production-data"])
     with pytest.raises(RuntimeError, match="Not a smoke-test-owned volume"):
         runner.main()
-
-
-@pytest.mark.parametrize("volume_args,expected_volume", [
-    ([], "hermes-smoke-test-managed-data"),
-    (["--volume", "another-smoke-fixture"], "another-smoke-fixture"),
-])
-def test_start_reuses_selected_owned_volume_without_reinitializing(monkeypatch, volume_args, expected_volume):
-    started = []
-
-    def docker(args):
-        if args == ["volume", "inspect", expected_volume]:
-            return json.dumps([{"Labels": {"hermes.smoke-test": "true"}}]).encode()
-        assert args[:2] == ["run", "-d"]
-        assert args[args.index("--name") + 1] == "e2e-test"
-        assert args[args.index("-v") + 1] == expected_volume + ":/opt/data"
-        started.append(args)
-        return b"container-id"
-
-    monkeypatch.setattr(runner, "docker", docker)
-    monkeypatch.setattr(runner, "execute", lambda *args: "ready")
-    monkeypatch.setattr(sys, "argv", ["functional-smoke.py", "start", *volume_args])
-    runner.main()
-    assert len(started) == 1
+    assert containers == {}
+    assert volumes == {"production-data": {"Labels": labels}}
+    assert retained.read_bytes() == b"production data"

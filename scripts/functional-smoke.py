@@ -26,6 +26,11 @@ def docker(args, data=None, timeout=900):
     return remote(options.host, ["sudo", "-n", "docker", *args], data, timeout)
 
 
+def fixture_operation(request):
+    helper = Path(__file__).with_name("functional-volume.py").read_text()
+    return remote(options.host, ["sudo", "-n", "python3", "-c", helper], json.dumps(request).encode())
+
+
 SEED = r'''
 import base64,json,pathlib,secrets,sys
 x=json.load(sys.stdin); root=pathlib.Path('/opt/data/.hermes')
@@ -119,7 +124,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["init", "test", "start", "stop"])
     parser.add_argument("--host", default="richard@server-elrond")
-    parser.add_argument("--image", default="ghcr.io/tyrliang/hermes-all-in-one:v0.16.1")
+    parser.add_argument("--image", default="ghcr.io/tyrliang/hermes-all-in-one:v0.16.2")
     parser.add_argument("--source-container", default="hermes-personal-richard-hermes-1")
     parser.add_argument("--name", default="e2e-test")
     parser.add_argument("--volume", default="hermes-smoke-test-managed-data", help="smoke-owned named volume; independent of the container name")
@@ -136,16 +141,12 @@ def main():
         fixture = json.loads(docker(["exec", "-i", options.source_container, PYTHON, "-"], Path(__file__).with_name("functional-fixture.py").read_bytes()))
         bank = "hermes-smoke-test-" + uuid.uuid4().hex[:12]
         fixture["memory"] = {"mode": "local_external", "api_url": fixture.pop("memory_url"), "bank_id": bank, "auto_recall": True, "auto_retain": True, "retain_async": False, "memory_mode": "hybrid", "retain_tags": ["smoke-test"], "recall_tags": ["smoke-test"], "recall_tags_match": "any_strict", "timeout": 120}
-        # Never let a typo silently select an existing production volume.
-        existing = docker(["volume", "ls", "--format", "{{.Name}}", "--filter", "name="+volume]).decode().splitlines()
-        if volume in existing: raise RuntimeError("Fixture volume already exists; use test, not init")
-        docker(["volume", "create", "--label", "hermes.smoke-test=true", volume])
-        docker(["run", "--rm", "-i", "--entrypoint", PYTHON, "-v", volume+":/opt/data", options.image, "-c", SEED], json.dumps(fixture).encode())
+        fixture_operation({"action": "init", "volume": volume, "image": options.image,
+                           "python": PYTHON, "fixture": fixture, "seed": SEED})
         print(f"Initialized {volume}; isolated Hindsight bank {bank}; plugin SHA256 {fixture['plugin_sha256']}")
         return
-    metadata = json.loads(docker(["volume", "inspect", volume]))[0]
-    if (metadata.get("Labels") or {}).get("hermes.smoke-test") != "true": raise RuntimeError("Not a smoke-test-owned volume")
-    docker(["run", "-d", "--name", options.name, "--label", "hermes.smoke-test=true", "-p", f"127.0.0.1:{options.port}:8787", "--env-file", options.key_file, "--env-file", options.memory_key_file, "-e", "HERMES_ADMIN_PASSWORD="+secrets.token_urlsafe(24), "-e", "HERMES_WEBUI_PASSWORD="+secrets.token_urlsafe(24), "-e", "HERMES_GATEWAY_AUTOSTART=0", "-e", "HERMES_DASHBOARD=0", "-v", volume+":/opt/data", options.image])
+    args = ["run", "-d", "--name", options.name, "--label", "hermes.smoke-test=true", "-p", f"127.0.0.1:{options.port}:8787", "--env-file", options.key_file, "--env-file", options.memory_key_file, "-e", "HERMES_ADMIN_PASSWORD="+secrets.token_urlsafe(24), "-e", "HERMES_WEBUI_PASSWORD="+secrets.token_urlsafe(24), "-e", "HERMES_GATEWAY_AUTOSTART=0", "-e", "HERMES_DASHBOARD=0", "-v", volume+":/opt/data", options.image]
+    fixture_operation({"action": "run", "volume": volume, "args": args})
     try:
         print(execute(INSTALL).strip())
         try:

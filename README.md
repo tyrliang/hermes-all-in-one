@@ -8,10 +8,10 @@ No terminal setup. Deploy it, open `/admin`, paste an API key, connect a channel
 
 | | |
 |---|---|
-| **Package version** | `0.16.1` (release preparation) |
+| **Package version** | `0.16.2` |
 | **Base image** | `nousresearch/hermes-agent:v0.23.1` |
 | **Fetched at build** | webui `v0.52.544` (`687d80333870c3797d6858738621fca13d1bf27a`) |
-| **Published image** | `ghcr.io/tyrliang/hermes-all-in-one:v0.16.1` / `:latest` |
+| **Published image** | `ghcr.io/tyrliang/hermes-all-in-one:v0.16.2` / `:latest` |
 | **Volume mount** | `/opt/data` (required) |
 | **Public port** | `$PORT` (Railway-injected) or `8787` |
 
@@ -38,7 +38,7 @@ Deterministic operating contract. Every statement here is verifiable in-tree. Do
 | PID 1 | `/init` (s6-overlay), inherited ENTRYPOINT; `CMD ["sleep","infinity"]` holds the tree | `Dockerfile:181-183` |
 | Public listener | `uvicorn control_plane.server:app` on `${CONTROL_PLANE_HOST}:${PORT:-8787}` | `docker/s6-rc.d/control-plane/run:25-27` |
 | Internal WebUI | `/app/hermes-webui/server.py` on `127.0.0.1:8788`, loopback only, reverse-proxied | `docker/s6-rc.d/hermes-webui/run`, `control_plane/proxy.py` |
-| Gateway | s6 slot `/run/service/gateway-default`, driven by `hermes gateway start\|stop` | `control_plane/gateway_manager.py:19`, `control_plane/s6_ops.py:69-81` |
+| Gateway | s6 slot `/run/hermes-service/gateway-default`, driven by `hermes gateway start\|stop` | `control_plane/gateway_manager.py:19`, `control_plane/s6_ops.py:69-81` |
 | Volume | `/opt/data` = `HERMES_DATA_DIR`; agent state in `/opt/data/.hermes` | `Dockerfile:165-166` |
 | Supervision switch | s6 mode iff `CONTROL_PLANE_RUNTIME=s6`; otherwise control plane subprocess-manages children | `control_plane/runtime_mode.py:6-7` |
 | Config writes | provider → `config.yaml` (`model.*`) + `.env` (api key); channels → `.env` only | `control_plane/config.py:189-224`, `319-323` |
@@ -118,7 +118,7 @@ curl -s -b /tmp/c http://127.0.0.1:8787/admin/api/status | python3 -m json.tool
 # 4. Service state (s6 binaries are only on PATH inside supervised processes).
 docker compose exec hermes /command/s6-svstat /run/service/control-plane
 docker compose exec hermes /command/s6-svstat /run/service/hermes-webui
-docker compose exec hermes /command/s6-svstat /run/service/gateway-default
+docker compose exec hermes /command/s6-svstat /run/hermes-service/gateway-default
 
 # 5. Full build + runtime contract (what CI runs).
 ./scripts/smoke.sh                 # SMOKE_SKIP_BUILD=1 to reuse an existing image
@@ -146,9 +146,10 @@ The opt-in functional runner uses SSH and a **Docker named volume on server-elro
 not local Mac storage. It exports only minimal Bifrost configuration and the installed
 Hindsight plugin source from production, never chat databases, identity files, bot
 tokens, cron jobs, or production memory-bank settings.
+The target requires Python 3 and passwordless `sudo python3` / `sudo docker`.
 
 ```bash
-IMAGE='ghcr.io/tyrliang/hermes-all-in-one:v0.16.1' # select the exact candidate
+IMAGE='ghcr.io/tyrliang/hermes-all-in-one:v0.16.2' # select the exact candidate
 HOST='richard@server-elrond'
 NAME='e2e-test'
 VOLUME='hermes-smoke-test-managed-data' # retained fixture; independent of NAME
@@ -171,6 +172,12 @@ Only `e2e-test` and safe lowercase `e2e-test-*` container names are accepted; ch
 the container name does not change its volume. `test`/`start` require the volume's
 `hermes.smoke-test=true` ownership label; `stop` checks the container's same label
 before removing its inspected ID, refusing unrelated name collisions.
+
+Host-side per-volume locks serialize fixture creation and container attachment.
+`test`/`start` refuse a volume attached to any existing container, including stopped
+containers; use another volume for concurrent tests. Before seeding, `init` verifies
+a unique creation label so Docker cannot silently substitute a raced existing volume.
+
 `init` refuses an existing fixture; `test` removes only its own temporary container and
 preserves the volume and isolated bank for later runs. `start` leaves the instance up;
 remove it with `stop` unless an interactive handoff is requested. Skip `stop` if already
@@ -623,7 +630,7 @@ Tune with `HEALTHWATCH_INTERVAL_SECONDS`, `HEALTHWATCH_GRACE_SECONDS`, or disabl
 `s6` binaries live under `/command/` and are only on `PATH` inside supervised processes. Use full paths by hand:
 
 ```bash
-/command/s6-svstat /run/service/gateway-default
+/command/s6-svstat /run/hermes-service/gateway-default
 ```
 
 Node 26 is baked in at `/usr/local/bin/node`. Some shells (notably `railway ssh`) start with a minimal `PATH`; cont-init patches this for current deploys, but if `hermes --tui` ever offers to install Node:
@@ -770,7 +777,7 @@ Defaults below are what the **image** provides (`Dockerfile:161-177`) or what th
 ```bash
 docker build \
   --build-arg HERMES_IMAGE=nousresearch/hermes-agent:v0.23.1 \
-  --build-arg HERMES_WEBUI_VERSION=v0.16.1 \
+  --build-arg HERMES_WEBUI_VERSION=v0.16.2 \
   -t hermes-all-in-one .
 ```
 
@@ -866,7 +873,7 @@ Two version concepts: this package's semver, and the upstream tags baked into th
 ## The `VERSION` file
 
 ```text
-0.16.1
+0.16.2
 hermes-base=v0.23.1
 webui-base=v0.52.544
 webui-sha=687d80333870c3797d6858738621fca13d1bf27a
@@ -874,7 +881,7 @@ webui-sha=687d80333870c3797d6858738621fca13d1bf27a
 
 | Line | Field | Meaning |
 |---|---|---|
-| 1 | package semver | GHCR tag + git tag: `v0.16.1` |
+| 1 | package semver | GHCR tag + git tag: `v0.16.2` |
 | 2 | `hermes-base` | Pinned `nousresearch/hermes-agent` tag in the Dockerfile |
 | 3 | `webui-base` | WebUI release tag. Human label. The image fetches `webui-sha`, not the tag. |
 | 4 | `webui-sha` | Commit archive URL: `https://github.com/nesquena/hermes-webui/archive/<sha>.tar.gz` |
@@ -942,11 +949,11 @@ git tag v0.16.0 && git push origin v0.16.0     # triggers release.yml
 **Layer patch** (same Hermes/WebUI bases — container-only fixes and features):
 
 ```bash
-./scripts/bump-patch.sh              # e.g. 0.16.0 → 0.16.1
+./scripts/bump-patch.sh              # e.g. 0.16.1 → 0.16.2
 ./scripts/smoke.sh
 git commit -am "fix: …"
 # land via PR, then:
-git tag v0.16.1 && git push origin v0.16.1
+git tag v0.16.2 && git push origin v0.16.2
 ```
 
 Only a matching `v*.*.*` git tag publishes an image.
