@@ -30,6 +30,8 @@ image storage is required.
   `e2e-test-` with a lowercase alphanumeric suffix (hyphens allowed after its first
   character); keep the published port loopback-only. `stop` requires the container's
   same ownership label and removes its inspected ID, never an unrelated name collision.
+  Running tests pin exec, restart and final cleanup to the ID returned at creation;
+  replacing the container name must not redirect an older test onto the replacement.
 - Hindsight must use **`hermes-smoke-test-<unique-id>`**, never `personal`, `hermes`,
   `user-richard`, or another production bank. No bank template, additional recall
   banks, or mirrored writes. Do not copy production memories. The runner guards this

@@ -177,6 +177,8 @@ Host-side per-volume locks serialize fixture creation and container attachment.
 `test`/`start` refuse a volume attached to any existing container, including stopped
 containers; use another volume for concurrent tests. Before seeding, `init` verifies
 a unique creation label so Docker cannot silently substitute a raced existing volume.
+Once created, test execs, restarts and final cleanup target the returned container ID,
+not a name that another `stop`/`start` could reassign.
 
 `init` refuses an existing fixture; `test` removes only its own temporary container and
 preserves the volume and isolated bank for later runs. `start` leaves the instance up;
