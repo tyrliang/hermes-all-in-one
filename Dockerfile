@@ -4,7 +4,7 @@
 # Build:  docker build --build-arg HERMES_IMAGE=nousresearch/hermes-agent:latest .
 # Pin:    HERMES_IMAGE=nousresearch/hermes-agent:<tag>
 
-ARG HERMES_IMAGE=nousresearch/hermes-agent:v0.23.1
+ARG HERMES_IMAGE=nousresearch/hermes-agent:v0.23.2
 FROM ${HERMES_IMAGE}
 ENV HOME=/opt/data
 
