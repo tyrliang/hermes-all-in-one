@@ -8,10 +8,10 @@ No terminal setup. Deploy it, open `/admin`, paste an API key, connect a channel
 
 | | |
 |---|---|
-| **Package version** | `0.16.2` (release preparation) |
+| **Package version** | `0.16.2` |
 | **Base image** | `nousresearch/hermes-agent:v0.23.1` |
 | **Fetched at build** | webui `v0.52.544` (`687d80333870c3797d6858738621fca13d1bf27a`) |
-| **Image (after tag publication)** | `ghcr.io/tyrliang/hermes-all-in-one:v0.16.2` / `:latest` |
+| **Published image** | `ghcr.io/tyrliang/hermes-all-in-one:v0.16.2` / `:latest` |
 | **Volume mount** | `/opt/data` (required) |
 | **Public port** | `$PORT` (Railway-injected) or `8787` |
 
@@ -146,22 +146,45 @@ The opt-in functional runner uses SSH and a **Docker named volume on server-elro
 not local Mac storage. It exports only minimal Bifrost configuration and the installed
 Hindsight plugin source from production, never chat databases, identity files, bot
 tokens, cron jobs, or production memory-bank settings.
+The target requires Python 3 and passwordless `sudo python3` / `sudo docker`.
 
 ```bash
-# Once: create the sanitized fixture and a unique hermes-smoke-test-* bank.
-python3 scripts/functional-smoke.py init
+IMAGE='ghcr.io/tyrliang/hermes-all-in-one:v0.16.2' # select the exact candidate
+HOST='richard@server-elrond'
+NAME='e2e-test'
+VOLUME='hermes-smoke-test-managed-data' # retained fixture; independent of NAME
+# Once, only if VOLUME does not exist: create a unique hermes-smoke-test-* bank.
+python3 scripts/functional-smoke.py init --host "$HOST" --name "$NAME" --volume "$VOLUME" --image "$IMAGE"
 # Before deploying a candidate (real cloud calls; not run in public CI):
-python3 scripts/functional-smoke.py test --image ghcr.io/tyrliang/hermes-all-in-one:v0.16.0
-# Keep an interactive instance running, then remove it without deleting its volume:
-python3 scripts/functional-smoke.py start
-ssh -t richard@server-elrond 'sudo docker exec -it hermes-smoke-test-managed /bin/bash'
-python3 scripts/functional-smoke.py stop
+python3 scripts/functional-smoke.py test --host "$HOST" --name "$NAME" --volume "$VOLUME" --image "$IMAGE"
+# Optional interactive instance; otherwise test already removes its container:
+python3 scripts/functional-smoke.py start --host "$HOST" --name "$NAME" --volume "$VOLUME" --image "$IMAGE"
+ssh -t "$HOST" "sudo -n docker exec -it --user hermes '$NAME' /bin/bash"
+python3 scripts/functional-smoke.py stop --host "$HOST" --name "$NAME" --volume "$VOLUME" --image "$IMAGE"
+# After teardown, confirm container absence and retention of the exact fixture volume:
+ssh "$HOST" "sudo -n docker ps -a --filter name='$NAME' --format '{{.Names}} {{.Status}}'"
+ssh "$HOST" "sudo -n docker volume inspect '$VOLUME' --format '{{.Name}} {{json .Labels}}'"
 ```
 
-Defaults: volume `hermes-smoke-test-managed-data`, container `hermes-smoke-test-managed`, loopback-only
-port `18789`; `--host`, `--name`, `--port`, and `--image` select another test target.
+Defaults: volume `hermes-smoke-test-managed-data`, container `e2e-test`, loopback-only
+port `18789`; `--host`, `--name`, `--volume`, `--port`, and `--image` select another test target.
+Only `e2e-test` and safe lowercase `e2e-test-*` container names are accepted; changing
+the container name does not change its volume. `test`/`start` require the volume's
+`hermes.smoke-test=true` ownership label; `stop` checks the container's same label
+before removing its inspected ID, refusing unrelated name collisions.
+
+Host-side per-volume locks serialize fixture creation and container attachment.
+`test`/`start` refuse a volume attached to any existing container, including stopped
+containers; use another volume for concurrent tests. Before seeding, `init` verifies
+a unique creation label so Docker cannot silently substitute a raced existing volume.
+Once created, test execs, restarts and final cleanup target the returned container ID,
+not a name that another `stop`/`start` could reassign.
+
 `init` refuses an existing fixture; `test` removes only its own temporary container and
-preserves the volume and isolated bank for later runs. `start` leaves the instance up.
+preserves the volume and isolated bank for later runs. `start` leaves the instance up;
+remove it with `stop` unless an interactive handoff is requested. Skip `stop` if already
+absent. On the next upgrade, reuse the same `VOLUME` and bank with `test --image`;
+do not rerun `init` or use volume-removal/prune commands for normal teardown.
 Hindsight targets `https://ai-memory.liangacy.com` with a bank named
 `hermes-smoke-test-<unique-id>`. The runner refuses production/multi-bank configuration.
 Synthetic facts stay in this clearly labeled bank; no production memories are copied.

@@ -26,6 +26,11 @@ def docker(args, data=None, timeout=900):
     return remote(options.host, ["sudo", "-n", "docker", *args], data, timeout)
 
 
+def fixture_operation(request):
+    helper = Path(__file__).with_name("functional-volume.py").read_text()
+    return remote(options.host, ["sudo", "-n", "python3", "-c", helper], json.dumps(request).encode())
+
+
 SEED = r'''
 import base64,json,pathlib,secrets,sys
 x=json.load(sys.stdin); root=pathlib.Path('/opt/data/.hermes')
@@ -103,7 +108,15 @@ print('PASS: WebUI readiness, admin auth gate, no bot/vault credentials')
 
 def execute(code, *args):
     launcher = "import os; from pathlib import Path; from pm.environments import project_python; p=str(project_python(Path('/opt/hermes'))); os.execv(p, [p,'-', *__import__('sys').argv[1:]])"
-    return docker(["exec", "--user", "hermes", "-i", "-w", "/opt/hermes", options.name, PYTHON, "-c", launcher, *args], code.encode()).decode()
+    return docker(["exec", "--user", "hermes", "-i", "-w", "/opt/hermes", options.container_id, PYTHON, "-c", launcher, *args], code.encode()).decode()
+
+
+def remove_owned_container(identifier):
+    metadata = json.loads(docker(["container", "inspect", identifier]))[0]
+    if (metadata.get("Config", {}).get("Labels") or {}).get("hermes.smoke-test") != "true":
+        raise RuntimeError("Not a smoke-test-owned container")
+    # Remove the inspected ID, not a name that could be reassigned before removal.
+    docker(["rm", "-f", metadata["Id"]])
 
 
 def main():
@@ -111,62 +124,59 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["init", "test", "start", "stop"])
     parser.add_argument("--host", default="richard@server-elrond")
-    parser.add_argument("--image", default="ghcr.io/tyrliang/hermes-all-in-one:v0.16.0")
+    parser.add_argument("--image", default="ghcr.io/tyrliang/hermes-all-in-one:v0.16.2")
     parser.add_argument("--source-container", default="hermes-personal-richard-hermes-1")
-    parser.add_argument("--name", default="hermes-smoke-test-managed")
+    parser.add_argument("--name", default="e2e-test")
+    parser.add_argument("--volume", default="hermes-smoke-test-managed-data", help="smoke-owned named volume; independent of the container name")
     parser.add_argument("--key-file", default="/opt/hermes-smoke/bifrost.env", help="root-readable env file on Docker host")
     parser.add_argument("--memory-key-file", default="/opt/hermes-smoke/hindsight.env", help="root-readable Hindsight env file on Docker host")
     parser.add_argument("--port", type=int, default=18789)
     options = parser.parse_args()
-    if not re.fullmatch(r"hermes-smoke-test(?:-[a-z0-9-]+)?", options.name):
-        parser.error("name must be hermes-smoke-test or begin hermes-smoke-test-")
-    volume = options.name + "-data"
+    if not re.fullmatch(r"e2e-test(?:-[a-z0-9][a-z0-9-]*)?", options.name):
+        parser.error("name must be e2e-test or begin e2e-test- with a lowercase alphanumeric suffix")
+    volume = options.volume
     if options.action == "stop":
-        docker(["rm", "-f", options.name]); return
+        remove_owned_container(options.name); return
     if options.action == "init":
         fixture = json.loads(docker(["exec", "-i", options.source_container, PYTHON, "-"], Path(__file__).with_name("functional-fixture.py").read_bytes()))
         bank = "hermes-smoke-test-" + uuid.uuid4().hex[:12]
         fixture["memory"] = {"mode": "local_external", "api_url": fixture.pop("memory_url"), "bank_id": bank, "auto_recall": True, "auto_retain": True, "retain_async": False, "memory_mode": "hybrid", "retain_tags": ["smoke-test"], "recall_tags": ["smoke-test"], "recall_tags_match": "any_strict", "timeout": 120}
-        # Never let a typo silently select an existing production volume.
-        existing = docker(["volume", "ls", "--format", "{{.Name}}", "--filter", "name="+volume]).decode().splitlines()
-        if volume in existing: raise RuntimeError("Fixture volume already exists; use test, not init")
-        docker(["volume", "create", "--label", "hermes.smoke-test=true", volume])
-        docker(["run", "--rm", "-i", "--entrypoint", PYTHON, "-v", volume+":/opt/data", options.image, "-c", SEED], json.dumps(fixture).encode())
+        fixture_operation({"action": "init", "volume": volume, "image": options.image,
+                           "python": PYTHON, "fixture": fixture, "seed": SEED})
         print(f"Initialized {volume}; isolated Hindsight bank {bank}; plugin SHA256 {fixture['plugin_sha256']}")
         return
-    metadata = json.loads(docker(["volume", "inspect", volume]))[0]
-    if metadata.get("Labels", {}).get("hermes.smoke-test") != "true": raise RuntimeError("Not a smoke-test-owned volume")
-    docker(["run", "-d", "--name", options.name, "--label", "hermes.smoke-test=true", "-p", f"127.0.0.1:{options.port}:8787", "--env-file", options.key_file, "--env-file", options.memory_key_file, "-e", "HERMES_ADMIN_PASSWORD="+secrets.token_urlsafe(24), "-e", "HERMES_WEBUI_PASSWORD="+secrets.token_urlsafe(24), "-e", "HERMES_GATEWAY_AUTOSTART=0", "-e", "HERMES_DASHBOARD=0", "-v", volume+":/opt/data", options.image])
+    args = ["run", "-d", "--name", options.name, "--label", "hermes.smoke-test=true", "-p", f"127.0.0.1:{options.port}:8787", "--env-file", options.key_file, "--env-file", options.memory_key_file, "-e", "HERMES_ADMIN_PASSWORD="+secrets.token_urlsafe(24), "-e", "HERMES_WEBUI_PASSWORD="+secrets.token_urlsafe(24), "-e", "HERMES_GATEWAY_AUTOSTART=0", "-e", "HERMES_DASHBOARD=0", "-v", volume+":/opt/data", options.image]
+    options.container_id = fixture_operation({"action": "run", "volume": volume, "args": args}).decode().strip()
     try:
         print(execute(INSTALL).strip())
         try:
             print(execute(HEALTH).strip())
         except RuntimeError:
-            print(docker(["logs", "--tail", "100", options.name]).decode(), file=sys.stderr)
+            print(docker(["logs", "--tail", "100", options.container_id]).decode(), file=sys.stderr)
             raise
         if options.action == "start":
-            print(f"Started {options.name} on {options.host}, loopback port {options.port}; attach using sudo docker exec -it {options.name} /bin/bash")
+            print(f"Started {options.name} ({options.container_id}) on {options.host}, loopback port {options.port}; attach using sudo docker exec -it {options.container_id} /bin/bash")
             return
         topic, code = uuid.uuid4().hex, "cobalt-fox-" + secrets.token_hex(6)
         print(execute(MEMORY, "retain", topic, code).strip())
         marker = "workspace-smoke-" + secrets.token_hex(8)
         prompt = f'Use the terminal tool to write exactly {marker} (no newline) into /opt/data/workspace/functional-smoke.txt, then read that file back using a tool. Report the contents. Do not modify anything else.'
-        result = docker(["exec", "-w", "/opt/hermes", options.name, "/opt/hermes/bin/hermes", "chat", "--oneshot", "-q", prompt], timeout=600).decode()
+        result = docker(["exec", "-w", "/opt/hermes", options.container_id, "/opt/hermes/bin/hermes", "chat", "--oneshot", "-q", prompt], timeout=600).decode()
         actual = execute("from pathlib import Path; print(Path('/opt/data/workspace/functional-smoke.txt').read_text(),end='')")
         if actual != marker or marker not in result: raise RuntimeError("Agent file-tool round trip failed")
         print("PASS: real Bifrost LLM turn and workspace tool round trip")
-        docker(["restart", options.name])
+        docker(["restart", options.container_id])
         print(execute(HEALTH).strip())
         if execute("from pathlib import Path; print(Path('/opt/data/workspace/functional-smoke.txt').read_text(),end='')") != marker: raise RuntimeError("Volume persistence failed")
         print(execute(MEMORY, "recall", topic, code).strip())
         prompt = f'Use hindsight_recall to find the launch code of smoke test project {topic}. Report the exact launch code. Do not guess or write any files.'
-        result = docker(["exec", "-w", "/opt/hermes", options.name, "/opt/hermes/bin/hermes", "chat", "--oneshot", "-q", prompt], timeout=600).decode()
+        result = docker(["exec", "-w", "/opt/hermes", options.container_id, "/opt/hermes/bin/hermes", "chat", "--oneshot", "-q", prompt], timeout=600).decode()
         if code not in result: raise RuntimeError("Agent did not retrieve the seeded memory after restart")
         print("PASS: real agent Hindsight recall after restart; named-volume persistence")
         print("[functional-smoke] PASS")
     finally:
         if options.action != "start" or sys.exc_info()[0] is not None:
-            docker(["rm", "-f", options.name])
+            remove_owned_container(options.container_id)
 
 
 if __name__ == "__main__":

@@ -87,9 +87,13 @@ Pushing to `main` publishes **nothing**. Only `git push origin vX.Y.Z` triggers
 
 **Target-server acceptance:** after preparing an upgraded image and before a production
 rollout, follow [hermes-target-server-smoke](../hermes-target-server-smoke/SKILL.md).
-It runs the isolated named-volume fixture on the target host with a dedicated Bifrost
-key and a `hermes-smoke-test-*` Hindsight bank. Pass the exact candidate via `--image`;
-do not infer it from the runner's previous-release default. A pass is not deploy approval.
+It runs the isolated `e2e-test` container (or a safe `e2e-test-*` name) on the target
+host with a dedicated Bifrost key and a `hermes-smoke-test-*` Hindsight bank. Preserve
+the existing fixture with `--volume hermes-smoke-test-managed-data`; the volume is
+independent of `--name`. Always pass the exact candidate via `--image`, even when it
+matches the runner's default. Follow the smoke skill's teardown/reuse steps: remove
+the owned container, retain the exact volume and bank, and do not rerun `init` on the
+next upgrade. A pass is not deploy approval.
 
 Pushing to `main` publishes **nothing**. Only `git push origin vX.Y.Z` triggers
 `.github/workflows/release.yml`.
